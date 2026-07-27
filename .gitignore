@@ -1,0 +1,27 @@
+# JavaScript
+node_modules/
+.next/
+out/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Tests and builds
+coverage/
+htmlcov/
+dist/
+
+# Local configuration
+.env
+.env.local
+.env.*.local
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
