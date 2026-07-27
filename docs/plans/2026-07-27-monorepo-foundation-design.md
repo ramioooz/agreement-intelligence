@@ -174,6 +174,7 @@ directories, coverage output, and local environment files are ignored by Git.
 
 The web application uses:
 
+- Prettier for formatting;
 - ESLint for linting;
 - TypeScript for static type-checking;
 - Vitest for test execution; and
