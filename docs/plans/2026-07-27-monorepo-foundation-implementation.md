@@ -148,6 +148,12 @@ v22.23.1
   "devDependencies": {
     "concurrently": "10.0.4",
     "prettier": "3.9.6"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp",
+      "unrs-resolver"
+    ]
   }
 }
 ```
@@ -234,11 +240,11 @@ Create `apps/web/package.json`:
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.4",
-    "eslint": "10.8.0",
+    "eslint": "9.39.5",
     "eslint-config-next": "16.2.12",
     "jsdom": "29.1.1",
     "tailwindcss": "4.3.3",
-    "typescript": "7.0.2",
+    "typescript": "6.0.3",
     "vite": "8.1.5",
     "vitest": "4.1.10"
   }
