@@ -115,6 +115,10 @@ for replacement in \
   's/KEYCLOAK_DB_USER=keycloak/KEYCLOAK_DB_USER=agreement_app/' \
   's/APP_DB_NAME=agreement_intelligence/APP_DB_NAME=postgres/' \
   's/KEYCLOAK_DB_NAME=keycloak/KEYCLOAK_DB_NAME=postgres/' \
+  's/APP_DB_NAME=agreement_intelligence/APP_DB_NAME=template0/' \
+  's/APP_DB_NAME=agreement_intelligence/APP_DB_NAME=template1/' \
+  's/KEYCLOAK_DB_NAME=keycloak/KEYCLOAK_DB_NAME=template0/' \
+  's/KEYCLOAK_DB_NAME=keycloak/KEYCLOAK_DB_NAME=template1/' \
   's/APP_DB_USER=agreement_app/APP_DB_USER=postgres/' \
   's/KEYCLOAK_DB_USER=keycloak/KEYCLOAK_DB_USER=postgres/'; do
   sed "$replacement" "$env_file" >"$config_file"
@@ -123,6 +127,27 @@ for replacement in \
     exit 1
   fi
 done
+
+if APP_DB_NAME=postgres STACK_ENV_FILE="$env_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+  echo "Reserved database name exported override unexpectedly passed"
+  exit 1
+fi
+
+if API_PORT=0 STACK_ENV_FILE="$env_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+  echo "Invalid port exported override unexpectedly passed"
+  exit 1
+fi
+
+if APP_DB_PASSWORD=unsafe@password STACK_ENV_FILE="$env_file" \
+  scripts/validate-stack-env.sh >/dev/null 2>&1; then
+  echo "Unsafe password exported override unexpectedly passed"
+  exit 1
+fi
+
+if APP_DB_NAME= STACK_ENV_FILE="$env_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+  echo "Empty database name exported override unexpectedly passed"
+  exit 1
+fi
 
 cp "$env_file" "$config_file"
 printf '%s\n' 'COMPOSE_PROJECT_NAME=another-project' >>"$config_file"
