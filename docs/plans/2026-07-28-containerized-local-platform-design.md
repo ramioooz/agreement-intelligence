@@ -123,7 +123,7 @@ or major-only aliases.
 | --- | --- |
 | Web build and runtime | `node:22.23.1-bookworm-slim` |
 | API and worker build and runtime | `python:3.13.14-slim-bookworm` |
-| Python package manager | `ghcr.io/astral-sh/uv:0.11.29` |
+| Python package manager | `ghcr.io/astral-sh/uv:0.11.32` |
 | Database | `pgvector/pgvector:0.8.5-pg17-bookworm` |
 | AWS emulator | `localstack/localstack:2026.07.0` |
 | Identity provider | `quay.io/keycloak/keycloak:26.7.0` |
@@ -222,7 +222,7 @@ standalone server and listens on `0.0.0.0:3000`.
 
 The API Dockerfile:
 
-1. copies uv `0.11.29` from its pinned official image;
+1. copies uv `0.11.32` from its pinned official image;
 2. creates the locked environment in a build stage;
 3. builds or installs only the API package and production dependencies; and
 4. copies the ready environment into a minimal runtime stage.
