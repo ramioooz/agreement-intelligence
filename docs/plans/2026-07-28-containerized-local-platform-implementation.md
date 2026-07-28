@@ -556,9 +556,13 @@ OIDC_CLIENT_SECRET=change-me-oidc-client-secret
 
 DEMO_REVIEWER_USERNAME=legal.reviewer
 DEMO_REVIEWER_EMAIL=legal.reviewer@example.test
+DEMO_REVIEWER_FIRST_NAME=Legal
+DEMO_REVIEWER_LAST_NAME=Reviewer
 DEMO_REVIEWER_PASSWORD=change-me-reviewer-password
 DEMO_ADMIN_USERNAME=platform.admin
 DEMO_ADMIN_EMAIL=platform.admin@example.test
+DEMO_ADMIN_FIRST_NAME=Platform
+DEMO_ADMIN_LAST_NAME=Administrator
 DEMO_ADMIN_PASSWORD=change-me-admin-password
 
 LOCALSTACK_PORT=4566
@@ -619,9 +623,13 @@ OIDC_CLIENT_ID
 OIDC_CLIENT_SECRET
 DEMO_REVIEWER_USERNAME
 DEMO_REVIEWER_EMAIL
+DEMO_REVIEWER_FIRST_NAME
+DEMO_REVIEWER_LAST_NAME
 DEMO_REVIEWER_PASSWORD
 DEMO_ADMIN_USERNAME
 DEMO_ADMIN_EMAIL
+DEMO_ADMIN_FIRST_NAME
+DEMO_ADMIN_LAST_NAME
 DEMO_ADMIN_PASSWORD
 AWS_REGION
 AWS_ACCESS_KEY_ID
@@ -932,9 +940,12 @@ the repository owner merges it.
 
 - Create: `docker/localstack/bootstrap.sh`
 - Create: `docker/keycloak/bootstrap.sh`
+- Create: `docker/keycloak/ClientAttributes.java`
 - Create: `docker/keycloak/realm/agreement-intelligence-realm.json`
 - Create: `tests/stack/test-bootstrap-contracts.sh`
+- Modify: `.env.example`
 - Modify: `compose.yaml`
+- Modify: `scripts/validate-stack-env.sh`
 
 **Interfaces:**
 
@@ -943,7 +954,9 @@ the repository owner merges it.
 - Produces: `localstack-bootstrap` and `keycloak-bootstrap` one-shot services;
   scripts accepting exactly `apply` or `verify`; private S3 bucket; three
   primary queues with DLQs and redrive policies; Keycloak realm, confidential
-  web client, client secret, and two seeded users.
+  web client, client secret, and two profile-complete seeded users whose
+  configured passwords can be verified without enabling application-client
+  direct grants.
 
 **Branch:** After Task 2 is merged and local `main` is updated, create
 `feat/platform-bootstrap`. This task closes #79 and references #3.
@@ -1222,6 +1235,98 @@ chmod +x docker/localstack/bootstrap.sh
 
 - [ ] **Step 5: Add Keycloak apply and verify behavior**
 
+Create `docker/keycloak/ClientAttributes.java`. The bootstrap runs this
+single-file source with Keycloak's bundled Jackson classpath so client
+attribute names are decoded and serialized as JSON rather than interpolated
+into shell expressions:
+
+```java
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Set;
+import java.util.regex.Pattern;
+
+public final class ClientAttributes {
+  private static final ObjectMapper JSON = new ObjectMapper();
+  private static final Set<String> EXPECTED_KEYS =
+      Set.of(
+          "realm_client",
+          "client.secret.creation.time",
+          "post.logout.redirect.uris",
+          "pkce.code.challenge.method");
+  private static final Pattern DECIMAL = Pattern.compile("[0-9]+");
+
+  private ClientAttributes() {}
+
+  public static void main(String[] args) throws Exception {
+    if (args.length != 1) {
+      throw new IllegalArgumentException("Expected clear or verify action");
+    }
+
+    JsonNode root = JSON.readTree(System.in);
+    JsonNode attributes = root.path("attributes");
+    if (!attributes.isObject()) {
+      throw new IllegalStateException("Missing client attributes object");
+    }
+
+    switch (args[0]) {
+      case "clear" -> clear(root, attributes);
+      case "verify" -> verify(attributes);
+      default -> throw new IllegalArgumentException("Expected clear or verify action");
+    }
+  }
+
+  private static void clear(JsonNode root, JsonNode attributes) throws Exception {
+    JsonNode clientId = root.get("clientId");
+    if (clientId == null || !clientId.isTextual()) {
+      throw new IllegalStateException("Missing client identifier");
+    }
+
+    ObjectNode update = JSON.createObjectNode();
+    update.set("clientId", clientId);
+    ObjectNode clearedAttributes = update.putObject("attributes");
+    Iterator<String> keys = attributes.fieldNames();
+    while (keys.hasNext()) {
+      String key = keys.next();
+      if (EXPECTED_KEYS.contains(key)) {
+        clearedAttributes.set(key, attributes.get(key));
+      } else {
+        clearedAttributes.putNull(key);
+      }
+    }
+    JSON.writeValue(System.out, update);
+  }
+
+  private static void verify(JsonNode attributes) {
+    Set<String> actualKeys = new HashSet<>();
+    attributes.fieldNames().forEachRemaining(actualKeys::add);
+    if (!actualKeys.equals(EXPECTED_KEYS)) {
+      throw new IllegalStateException("Client attribute keys do not match the approved set");
+    }
+
+    expectValue(attributes, "realm_client", "false");
+    expectValue(
+        attributes, "post.logout.redirect.uris", "http://localhost:3000/*");
+    expectValue(attributes, "pkce.code.challenge.method", "S256");
+
+    String creationTime = attributes.path("client.secret.creation.time").asText("");
+    if (!DECIMAL.matcher(creationTime).matches()) {
+      throw new IllegalStateException("Client secret creation time is not numeric");
+    }
+  }
+
+  private static void expectValue(
+      JsonNode attributes, String key, String expectedValue) {
+    if (!expectedValue.equals(attributes.path(key).asText(null))) {
+      throw new IllegalStateException("Client attribute value is incorrect");
+    }
+  }
+}
+```
+
 Create `docker/keycloak/bootstrap.sh`:
 
 ```sh
@@ -1440,12 +1545,17 @@ Add these services before the `volumes` section:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
       DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
       DEMO_REVIEWER_EMAIL: ${DEMO_REVIEWER_EMAIL:?required}
+      DEMO_REVIEWER_FIRST_NAME: ${DEMO_REVIEWER_FIRST_NAME:?required}
+      DEMO_REVIEWER_LAST_NAME: ${DEMO_REVIEWER_LAST_NAME:?required}
       DEMO_REVIEWER_PASSWORD: ${DEMO_REVIEWER_PASSWORD:?required}
       DEMO_ADMIN_USERNAME: ${DEMO_ADMIN_USERNAME:?required}
       DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:?required}
+      DEMO_ADMIN_FIRST_NAME: ${DEMO_ADMIN_FIRST_NAME:?required}
+      DEMO_ADMIN_LAST_NAME: ${DEMO_ADMIN_LAST_NAME:?required}
       DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?required}
     volumes:
       - ./docker/keycloak/bootstrap.sh:/bootstrap.sh:ro
+      - ./docker/keycloak/ClientAttributes.java:/ClientAttributes.java:ro
     depends_on:
       keycloak:
         condition: service_healthy
@@ -1518,6 +1628,7 @@ Expected: all commands pass and named volumes remain.
 git add \
   compose.yaml \
   docker/localstack/bootstrap.sh \
+  docker/keycloak/ClientAttributes.java \
   docker/keycloak/bootstrap.sh \
   docker/keycloak/realm/agreement-intelligence-realm.json \
   tests/stack/test-bootstrap-contracts.sh

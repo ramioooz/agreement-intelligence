@@ -49,7 +49,7 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.7.0
-    command: ["start-dev"]
+    command: ["start-dev", "--import-realm"]
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/${KEYCLOAK_DB_NAME:?required}
@@ -61,6 +61,8 @@ services:
       KC_HTTP_ENABLED: "true"
     ports:
       - "127.0.0.1:${KEYCLOAK_PORT:-8080}:8080"
+    volumes:
+      - ./docker/keycloak/realm:/opt/keycloak/data/import:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -76,6 +78,58 @@ services:
       retries: 30
       start_period: 30s
     restart: unless-stopped
+
+  localstack-bootstrap:
+    image: localstack/localstack:4.14.0
+    entrypoint: ["/bootstrap.sh"]
+    command: ["apply"]
+    environment:
+      LOCALSTACK_ENDPOINT: http://localstack:4566
+      AWS_REGION: ${AWS_REGION:?required}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?required}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?required}
+      S3_DOCUMENT_BUCKET: ${S3_DOCUMENT_BUCKET:?required}
+      SQS_PROCESSING_QUEUE: ${SQS_PROCESSING_QUEUE:?required}
+      SQS_PROCESSING_DLQ: ${SQS_PROCESSING_DLQ:?required}
+      SQS_EXPORT_QUEUE: ${SQS_EXPORT_QUEUE:?required}
+      SQS_EXPORT_DLQ: ${SQS_EXPORT_DLQ:?required}
+      SQS_NOTIFICATION_QUEUE: ${SQS_NOTIFICATION_QUEUE:?required}
+      SQS_NOTIFICATION_DLQ: ${SQS_NOTIFICATION_DLQ:?required}
+    volumes:
+      - ./docker/localstack/bootstrap.sh:/bootstrap.sh:ro
+    depends_on:
+      localstack:
+        condition: service_healthy
+    restart: "no"
+
+  keycloak-bootstrap:
+    image: quay.io/keycloak/keycloak:26.7.0
+    entrypoint: ["/bootstrap.sh"]
+    command: ["apply"]
+    environment:
+      KEYCLOAK_SERVER_URL: http://keycloak:8080
+      KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME:?required}
+      KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD:?required}
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?required}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
+      DEMO_REVIEWER_EMAIL: ${DEMO_REVIEWER_EMAIL:?required}
+      DEMO_REVIEWER_FIRST_NAME: ${DEMO_REVIEWER_FIRST_NAME:?required}
+      DEMO_REVIEWER_LAST_NAME: ${DEMO_REVIEWER_LAST_NAME:?required}
+      DEMO_REVIEWER_PASSWORD: ${DEMO_REVIEWER_PASSWORD:?required}
+      DEMO_ADMIN_USERNAME: ${DEMO_ADMIN_USERNAME:?required}
+      DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:?required}
+      DEMO_ADMIN_FIRST_NAME: ${DEMO_ADMIN_FIRST_NAME:?required}
+      DEMO_ADMIN_LAST_NAME: ${DEMO_ADMIN_LAST_NAME:?required}
+      DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?required}
+    volumes:
+      - ./docker/keycloak/bootstrap.sh:/bootstrap.sh:ro
+      - ./docker/keycloak/ClientAttributes.java:/ClientAttributes.java:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: "no"
 
 volumes:
   postgres-data:
