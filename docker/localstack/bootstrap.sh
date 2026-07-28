@@ -53,6 +53,32 @@ ensure_queue() {
   aws_local sqs create-queue --queue-name "$1" >/dev/null
 }
 
+remove_unapproved_queues() {
+  queue_urls=$(aws_local sqs list-queues --query QueueUrls --output json)
+  unapproved_queue_urls=$(python3 - "$queue_urls" \
+    "$SQS_PROCESSING_QUEUE" "$SQS_PROCESSING_DLQ" \
+    "$SQS_EXPORT_QUEUE" "$SQS_EXPORT_DLQ" \
+    "$SQS_NOTIFICATION_QUEUE" "$SQS_NOTIFICATION_DLQ" <<'PY'
+import json
+import sys
+from urllib.parse import unquote, urlparse
+
+expected = set(sys.argv[2:])
+for queue_url in json.loads(sys.argv[1]) or []:
+    queue_name = unquote(urlparse(queue_url).path.rstrip("/").rsplit("/", 1)[-1])
+    if queue_name not in expected:
+        print(queue_url)
+PY
+)
+  printf '%s\n' "$unapproved_queue_urls" \
+    | while IFS= read -r unapproved_queue_url; do
+      test -n "$unapproved_queue_url" || continue
+      aws_local sqs delete-queue \
+        --queue-url "$unapproved_queue_url" \
+        >/dev/null
+    done
+}
+
 configure_redrive() {
   primary_name=$1
   dlq_name=$2
@@ -167,6 +193,7 @@ apply() {
     "$SQS_NOTIFICATION_QUEUE" "$SQS_NOTIFICATION_DLQ"; do
     ensure_queue "$queue"
   done
+  remove_unapproved_queues
   clear_redrive "$SQS_PROCESSING_DLQ"
   clear_redrive "$SQS_EXPORT_DLQ"
   clear_redrive "$SQS_NOTIFICATION_DLQ"

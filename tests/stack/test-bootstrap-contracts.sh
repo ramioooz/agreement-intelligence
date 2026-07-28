@@ -138,6 +138,16 @@ expect_verify_failure localstack-bootstrap "DLQ redrive-policy drift"
 run_bootstrap localstack-bootstrap apply
 run_bootstrap localstack-bootstrap verify
 
+# LocalStack is a dedicated ephemeral emulator, so apply must remove queues
+# outside the exact approved six rather than leaving its own verify contract
+# unsatisfied.
+aws_local sqs create-queue \
+  --queue-name agreement-intelligence-unexpected \
+  >/dev/null
+expect_verify_failure localstack-bootstrap "unexpected seventh queue drift"
+run_bootstrap localstack-bootstrap apply
+run_bootstrap localstack-bootstrap verify
+
 # Use the existing bootstrap-admin session only to introduce controlled drift.
 # The bootstrap's password checks use separate temporary credential files.
 compose exec -T keycloak /bin/sh -eu -c \
