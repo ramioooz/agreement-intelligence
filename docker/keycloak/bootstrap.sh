@@ -15,6 +15,18 @@ esac
 
 server=${KEYCLOAK_SERVER_URL:-http://keycloak:8080}
 kcadm=/opt/keycloak/bin/kcadm.sh
+temporary_auth_config=
+
+cleanup_auth_config() {
+  if test -n "$temporary_auth_config"; then
+    rm -f "$temporary_auth_config"
+    temporary_auth_config=
+  fi
+}
+
+trap cleanup_auth_config EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 login() {
   "$kcadm" config credentials \
@@ -54,6 +66,30 @@ user_id() {
     -q username="$1"
 }
 
+remove_unapproved_client_attributes() {
+  id=$1
+  "$kcadm" get "clients/$id" \
+    -r "$KEYCLOAK_REALM" \
+    --fields 'attributes(*)' \
+    | grep -E '^[[:space:]]*"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | cut -d '"' -f 2 \
+    | while IFS= read -r attribute; do
+      case "$attribute" in
+        realm_client | \
+          client.secret.creation.time | \
+          post.logout.redirect.uris | \
+          pkce.code.challenge.method)
+          ;;
+        *)
+          "$kcadm" update "clients/$id" \
+            -r "$KEYCLOAK_REALM" \
+            -s "attributes.\"$attribute\"=null" \
+            >/dev/null
+          ;;
+      esac
+    done
+}
+
 ensure_client() {
   id=$(client_id || true)
   if test -z "$id"; then
@@ -64,8 +100,11 @@ ensure_client() {
     id=$(client_id)
   fi
 
+  remove_unapproved_client_attributes "$id"
   "$kcadm" update "clients/$id" \
     -r "$KEYCLOAK_REALM" \
+    --no-merge \
+    -s clientId="$OIDC_CLIENT_ID" \
     -s 'name=Agreement Intelligence Web' \
     -s enabled=true \
     -s protocol=openid-connect \
@@ -87,7 +126,9 @@ ensure_client() {
 ensure_user() {
   username=$1
   email=$2
-  password=$3
+  first_name=$3
+  last_name=$4
+  password=$5
   id=$(user_id "$username" || true)
 
   if test -z "$id"; then
@@ -95,6 +136,8 @@ ensure_user() {
       -r "$KEYCLOAK_REALM" \
       -s username="$username" \
       -s email="$email" \
+      -s firstName="$first_name" \
+      -s lastName="$last_name" \
       -s enabled=true \
       -s emailVerified=true \
       >/dev/null
@@ -104,6 +147,8 @@ ensure_user() {
       -r "$KEYCLOAK_REALM" \
       -s username="$username" \
       -s email="$email" \
+      -s firstName="$first_name" \
+      -s lastName="$last_name" \
       -s enabled=true \
       -s emailVerified=true \
       >/dev/null
@@ -141,14 +186,13 @@ verify_realm() {
 
 verify_client() {
   id=$(client_id)
-  client_json=$("$kcadm" get "clients/$id" -r "$KEYCLOAK_REALM")
   client_csv=$("$kcadm" get "clients/$id" \
     -r "$KEYCLOAK_REALM" \
-    --fields clientId,enabled,protocol,clientAuthenticatorType,publicClient,standardFlowEnabled,implicitFlowEnabled,directAccessGrantsEnabled,serviceAccountsEnabled \
+    --fields clientId,name,enabled,protocol,clientAuthenticatorType,publicClient,standardFlowEnabled,implicitFlowEnabled,directAccessGrantsEnabled,serviceAccountsEnabled \
     --format csv \
     --noquotes)
   test "$client_csv" = \
-    "$OIDC_CLIENT_ID,true,openid-connect,client-secret,false,true,false,false,false"
+    "$OIDC_CLIENT_ID,Agreement Intelligence Web,true,openid-connect,client-secret,false,true,false,false,false"
   redirect_json=$("$kcadm" get "clients/$id" \
     -r "$KEYCLOAK_REALM" \
     --fields redirectUris)
@@ -161,8 +205,39 @@ verify_client() {
   assert_compact_json \
     "$origins_json" \
     '{"webOrigins":["http://localhost:3000"]}'
-  assert_json_field "$client_json" '"post[.]logout[.]redirect[.]uris"[[:space:]]*:[[:space:]]*"http://localhost:3000/\*"'
-  assert_json_field "$client_json" '"pkce[.]code[.]challenge[.]method"[[:space:]]*:[[:space:]]*"S256"'
+  attributes_json=$("$kcadm" get "clients/$id" \
+    -r "$KEYCLOAK_REALM" \
+    --fields 'attributes(*)')
+  attribute_count=$(printf '%s\n' "$attributes_json" \
+    | grep -Ec '^[[:space:]]*"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    || true)
+  test "$attribute_count" -eq 4
+  assert_json_field "$attributes_json" '"realm_client"[[:space:]]*:[[:space:]]*"false"'
+  assert_json_field "$attributes_json" '"client[.]secret[.]creation[.]time"[[:space:]]*:[[:space:]]*"[0-9]+"'
+  assert_json_field "$attributes_json" '"post[.]logout[.]redirect[.]uris"[[:space:]]*:[[:space:]]*"http://localhost:3000/\*"'
+  assert_json_field "$attributes_json" '"pkce[.]code[.]challenge[.]method"[[:space:]]*:[[:space:]]*"S256"'
+
+  default_scopes=$("$kcadm" get "clients/$id/default-client-scopes" \
+    -r "$KEYCLOAK_REALM" \
+    --fields name \
+    --format csv \
+    --noquotes \
+    | sort)
+  expected_default_scopes=$(printf '%s\n' \
+    web-origins acr roles profile email \
+    | sort)
+  test "$default_scopes" = "$expected_default_scopes"
+
+  optional_scopes=$("$kcadm" get "clients/$id/optional-client-scopes" \
+    -r "$KEYCLOAK_REALM" \
+    --fields name \
+    --format csv \
+    --noquotes \
+    | sort)
+  expected_optional_scopes=$(printf '%s\n' \
+    address phone offline_access microprofile-jwt \
+    | sort)
+  test "$optional_scopes" = "$expected_optional_scopes"
 
   current_secret=$("$kcadm" get "clients/$id/client-secret" \
     -r "$KEYCLOAK_REALM" \
@@ -176,13 +251,33 @@ verify_client() {
 verify_user() {
   username=$1
   email=$2
+  first_name=$3
+  last_name=$4
+  password=$5
   id=$(user_id "$username")
   user_csv=$("$kcadm" get "users/$id" \
     -r "$KEYCLOAK_REALM" \
-    --fields username,email,enabled,emailVerified \
+    --fields username,email,firstName,lastName,enabled,emailVerified \
     --format csv \
     --noquotes)
-  test "$user_csv" = "$username,$email,true,true"
+  test "$user_csv" = \
+    "$username,$email,$first_name,$last_name,true,true"
+
+  temporary_auth_config=$(mktemp /tmp/kcadm-demo-auth.XXXXXX)
+  if "$kcadm" config credentials \
+    --config "$temporary_auth_config" \
+    --server "$server" \
+    --realm "$KEYCLOAK_REALM" \
+    --client admin-cli \
+    --user "$username" \
+    --password "$password" \
+    >/dev/null 2>&1; then
+    auth_status=0
+  else
+    auth_status=$?
+  fi
+  cleanup_auth_config
+  return "$auth_status"
 }
 
 apply() {
@@ -201,18 +296,32 @@ apply() {
   ensure_user \
     "$DEMO_REVIEWER_USERNAME" \
     "$DEMO_REVIEWER_EMAIL" \
+    "$DEMO_REVIEWER_FIRST_NAME" \
+    "$DEMO_REVIEWER_LAST_NAME" \
     "$DEMO_REVIEWER_PASSWORD"
   ensure_user \
     "$DEMO_ADMIN_USERNAME" \
     "$DEMO_ADMIN_EMAIL" \
+    "$DEMO_ADMIN_FIRST_NAME" \
+    "$DEMO_ADMIN_LAST_NAME" \
     "$DEMO_ADMIN_PASSWORD"
 }
 
 verify() {
   verify_realm
   verify_client
-  verify_user "$DEMO_REVIEWER_USERNAME" "$DEMO_REVIEWER_EMAIL"
-  verify_user "$DEMO_ADMIN_USERNAME" "$DEMO_ADMIN_EMAIL"
+  verify_user \
+    "$DEMO_REVIEWER_USERNAME" \
+    "$DEMO_REVIEWER_EMAIL" \
+    "$DEMO_REVIEWER_FIRST_NAME" \
+    "$DEMO_REVIEWER_LAST_NAME" \
+    "$DEMO_REVIEWER_PASSWORD"
+  verify_user \
+    "$DEMO_ADMIN_USERNAME" \
+    "$DEMO_ADMIN_EMAIL" \
+    "$DEMO_ADMIN_FIRST_NAME" \
+    "$DEMO_ADMIN_LAST_NAME" \
+    "$DEMO_ADMIN_PASSWORD"
 }
 
 login

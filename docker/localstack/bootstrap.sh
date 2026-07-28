@@ -77,6 +77,14 @@ PY
     >/dev/null
 }
 
+clear_redrive() {
+  dlq_url=$(queue_url "$1")
+  aws_local sqs set-queue-attributes \
+    --queue-url "$dlq_url" \
+    --attributes '{"RedrivePolicy":""}' \
+    >/dev/null
+}
+
 verify_bucket() {
   aws_local s3api head-bucket --bucket "$S3_DOCUMENT_BUCKET" >/dev/null
   for setting in \
@@ -117,6 +125,21 @@ assert policy == {
 PY
 }
 
+verify_no_redrive() {
+  dlq_url=$(queue_url "$1")
+  attributes=$(aws_local sqs get-queue-attributes \
+    --queue-url "$dlq_url" \
+    --attribute-names RedrivePolicy \
+    --output json)
+  python3 - "$attributes" <<'PY'
+import json
+import sys
+
+attributes = json.loads(sys.argv[1] or "{}").get("Attributes", {})
+assert "RedrivePolicy" not in attributes, attributes
+PY
+}
+
 verify_exact_queues() {
   queue_urls=$(aws_local sqs list-queues --query QueueUrls --output json)
   python3 - "$queue_urls" \
@@ -144,6 +167,9 @@ apply() {
     "$SQS_NOTIFICATION_QUEUE" "$SQS_NOTIFICATION_DLQ"; do
     ensure_queue "$queue"
   done
+  clear_redrive "$SQS_PROCESSING_DLQ"
+  clear_redrive "$SQS_EXPORT_DLQ"
+  clear_redrive "$SQS_NOTIFICATION_DLQ"
   configure_redrive "$SQS_PROCESSING_QUEUE" "$SQS_PROCESSING_DLQ"
   configure_redrive "$SQS_EXPORT_QUEUE" "$SQS_EXPORT_DLQ"
   configure_redrive "$SQS_NOTIFICATION_QUEUE" "$SQS_NOTIFICATION_DLQ"
@@ -155,6 +181,9 @@ verify() {
   verify_queue_pair "$SQS_PROCESSING_QUEUE" "$SQS_PROCESSING_DLQ"
   verify_queue_pair "$SQS_EXPORT_QUEUE" "$SQS_EXPORT_DLQ"
   verify_queue_pair "$SQS_NOTIFICATION_QUEUE" "$SQS_NOTIFICATION_DLQ"
+  verify_no_redrive "$SQS_PROCESSING_DLQ"
+  verify_no_redrive "$SQS_EXPORT_DLQ"
+  verify_no_redrive "$SQS_NOTIFICATION_DLQ"
 }
 
 case "$action" in

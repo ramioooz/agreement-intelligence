@@ -556,9 +556,13 @@ OIDC_CLIENT_SECRET=change-me-oidc-client-secret
 
 DEMO_REVIEWER_USERNAME=legal.reviewer
 DEMO_REVIEWER_EMAIL=legal.reviewer@example.test
+DEMO_REVIEWER_FIRST_NAME=Legal
+DEMO_REVIEWER_LAST_NAME=Reviewer
 DEMO_REVIEWER_PASSWORD=change-me-reviewer-password
 DEMO_ADMIN_USERNAME=platform.admin
 DEMO_ADMIN_EMAIL=platform.admin@example.test
+DEMO_ADMIN_FIRST_NAME=Platform
+DEMO_ADMIN_LAST_NAME=Administrator
 DEMO_ADMIN_PASSWORD=change-me-admin-password
 
 LOCALSTACK_PORT=4566
@@ -619,9 +623,13 @@ OIDC_CLIENT_ID
 OIDC_CLIENT_SECRET
 DEMO_REVIEWER_USERNAME
 DEMO_REVIEWER_EMAIL
+DEMO_REVIEWER_FIRST_NAME
+DEMO_REVIEWER_LAST_NAME
 DEMO_REVIEWER_PASSWORD
 DEMO_ADMIN_USERNAME
 DEMO_ADMIN_EMAIL
+DEMO_ADMIN_FIRST_NAME
+DEMO_ADMIN_LAST_NAME
 DEMO_ADMIN_PASSWORD
 AWS_REGION
 AWS_ACCESS_KEY_ID
@@ -934,7 +942,9 @@ the repository owner merges it.
 - Create: `docker/keycloak/bootstrap.sh`
 - Create: `docker/keycloak/realm/agreement-intelligence-realm.json`
 - Create: `tests/stack/test-bootstrap-contracts.sh`
+- Modify: `.env.example`
 - Modify: `compose.yaml`
+- Modify: `scripts/validate-stack-env.sh`
 
 **Interfaces:**
 
@@ -943,7 +953,9 @@ the repository owner merges it.
 - Produces: `localstack-bootstrap` and `keycloak-bootstrap` one-shot services;
   scripts accepting exactly `apply` or `verify`; private S3 bucket; three
   primary queues with DLQs and redrive policies; Keycloak realm, confidential
-  web client, client secret, and two seeded users.
+  web client, client secret, and two profile-complete seeded users whose
+  configured passwords can be verified without enabling application-client
+  direct grants.
 
 **Branch:** After Task 2 is merged and local `main` is updated, create
 `feat/platform-bootstrap`. This task closes #79 and references #3.
@@ -1440,9 +1452,13 @@ Add these services before the `volumes` section:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
       DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
       DEMO_REVIEWER_EMAIL: ${DEMO_REVIEWER_EMAIL:?required}
+      DEMO_REVIEWER_FIRST_NAME: ${DEMO_REVIEWER_FIRST_NAME:?required}
+      DEMO_REVIEWER_LAST_NAME: ${DEMO_REVIEWER_LAST_NAME:?required}
       DEMO_REVIEWER_PASSWORD: ${DEMO_REVIEWER_PASSWORD:?required}
       DEMO_ADMIN_USERNAME: ${DEMO_ADMIN_USERNAME:?required}
       DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:?required}
+      DEMO_ADMIN_FIRST_NAME: ${DEMO_ADMIN_FIRST_NAME:?required}
+      DEMO_ADMIN_LAST_NAME: ${DEMO_ADMIN_LAST_NAME:?required}
       DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?required}
     volumes:
       - ./docker/keycloak/bootstrap.sh:/bootstrap.sh:ro
