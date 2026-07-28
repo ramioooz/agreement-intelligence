@@ -17,7 +17,8 @@ The stack must:
 - build and run the Next.js web application, FastAPI API, and Python worker;
 - provide PostgreSQL with pgvector, S3 and SQS emulation, and OIDC identity;
 - bootstrap required local resources deterministically;
-- preserve development data across normal shutdown and restart;
+- preserve PostgreSQL-backed development and identity data across normal
+  shutdown and restart;
 - fail visibly when configuration, health checks, or bootstrap steps fail; and
 - keep application images reusable for a later AWS ECS/Fargate deployment.
 
@@ -68,6 +69,14 @@ One LocalStack container provides both S3 and SQS. This keeps the local
 protocols and client configuration aligned with the AWS reference deployment
 without operating separate MinIO and ElasticMQ services.
 
+LocalStack is intentionally ephemeral: it has no durable data volume and its
+resources are recreated idempotently by the bootstrap service on each stack
+start. Production AWS S3 and SQS, rather than the local emulator, provide the
+durability relied upon by deployed workloads. The stack pins
+`localstack/localstack:4.14.0`, the final upstream open-source release, because
+it supports unauthenticated community S3/SQS emulation; the later calendar
+baseline required license activation in local runtime verification.
+
 ### 2.4 Identity bootstrap
 
 Keycloak realm structure is version-controlled. It defines the realm, OIDC web
@@ -82,12 +91,14 @@ Keycloak's administration CLI to idempotently:
 
 ### 2.5 Persistent state
 
-Normal shutdown preserves named volumes. Destructive reset requires an explicit
-confirmation value and removes project volumes before recreating the stack.
+Normal shutdown preserves the PostgreSQL named volume. Destructive reset
+requires an explicit confirmation value and removes project volumes before
+recreating the stack.
 
 PostgreSQL is the durable source for both application and Keycloak data.
-LocalStack also receives a named volume, but its bootstrap remains idempotent so
-the required resources can be recreated safely.
+LocalStack has no named volume; its S3 and SQS resources are recreated safely
+by idempotent bootstrap on every local stack start. Production AWS S3 and SQS
+provide durable object and queue storage.
 
 ## 3. Scope
 
@@ -130,7 +141,7 @@ or major-only aliases.
 | API and worker build and runtime | `python:3.13.14-slim-bookworm` |
 | Python package manager | `ghcr.io/astral-sh/uv:0.11.32` |
 | Database | `pgvector/pgvector:0.8.5-pg17-bookworm` |
-| AWS emulator | `localstack/localstack:2026.07.0` |
+| AWS emulator | `localstack/localstack:4.14.0` |
 | Identity provider | `quay.io/keycloak/keycloak:26.7.0` |
 
 All selected images must support Linux AMD64 and Linux ARM64. Implementation
@@ -175,7 +186,7 @@ flowchart TB
 | `api` | FastAPI application interface | `127.0.0.1:8000` | None |
 | `worker` | Long-running Python worker | None | None |
 | `postgres` | Application and Keycloak databases with pgvector | `127.0.0.1:5432` | `postgres-data` |
-| `localstack` | S3 and SQS emulation | `127.0.0.1:4566` | `localstack-data` |
+| `localstack` | Ephemeral S3 and SQS emulation | `127.0.0.1:4566` | None |
 | `keycloak` | Local OIDC identity provider | `127.0.0.1:8080` | PostgreSQL |
 
 ### 5.2 One-shot bootstrap services
@@ -281,7 +292,8 @@ entrypoint initialization.
 
 ### 7.2 LocalStack
 
-The bootstrap service waits for LocalStack health and then idempotently creates:
+LocalStack resources are ephemeral. The bootstrap service waits for LocalStack
+health and then idempotently recreates:
 
 - private bucket `agreement-intelligence-documents`;
 - queue `agreement-intelligence-agreement-processing`;
@@ -543,9 +555,9 @@ A reviewer with Docker Compose and GNU Make will:
 9. confirm that no project containers remain.
 
 The demonstration proves portable application execution, cloud-shaped local
-dependencies, deterministic identity and resource bootstrap, persistence, and
-safe lifecycle management. It does not claim that deferred business workflows
-already exist.
+dependencies, deterministic identity and ephemeral-resource bootstrap,
+PostgreSQL-backed persistence, and safe lifecycle management. It does not
+claim that deferred business workflows already exist.
 
 ## 16. Implementation constraints
 
