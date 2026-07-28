@@ -78,6 +78,29 @@ for variable in APP_DB_NAME APP_DB_USER KEYCLOAK_DB_NAME KEYCLOAK_DB_USER; do
   }
 done
 
+app_db_name=$(sed -n 's/^APP_DB_NAME=//p' "$env_file" | tail -n 1)
+keycloak_db_name=$(sed -n 's/^KEYCLOAK_DB_NAME=//p' "$env_file" | tail -n 1)
+app_db_user=$(sed -n 's/^APP_DB_USER=//p' "$env_file" | tail -n 1)
+keycloak_db_user=$(sed -n 's/^KEYCLOAK_DB_USER=//p' "$env_file" | tail -n 1)
+
+test "$app_db_name" != "$keycloak_db_name" || {
+  echo "APP_DB_NAME and KEYCLOAK_DB_NAME must be different."
+  exit 1
+}
+
+test "$app_db_user" != "$keycloak_db_user" || {
+  echo "APP_DB_USER and KEYCLOAK_DB_USER must be different."
+  exit 1
+}
+
+for variable in APP_DB_NAME KEYCLOAK_DB_NAME APP_DB_USER KEYCLOAK_DB_USER; do
+  value=$(sed -n "s/^${variable}=//p" "$env_file" | tail -n 1)
+  test "$value" != postgres || {
+    echo "$variable must not use the reserved PostgreSQL bootstrap identifier."
+    exit 1
+  }
+done
+
 port_variables='POSTGRES_PORT KEYCLOAK_PORT LOCALSTACK_PORT WEB_PORT API_PORT'
 ports=
 for variable in $port_variables; do

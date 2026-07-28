@@ -110,6 +110,20 @@ for replacement in \
   fi
 done
 
+for replacement in \
+  's/KEYCLOAK_DB_NAME=keycloak/KEYCLOAK_DB_NAME=agreement_intelligence/' \
+  's/KEYCLOAK_DB_USER=keycloak/KEYCLOAK_DB_USER=agreement_app/' \
+  's/APP_DB_NAME=agreement_intelligence/APP_DB_NAME=postgres/' \
+  's/KEYCLOAK_DB_NAME=keycloak/KEYCLOAK_DB_NAME=postgres/' \
+  's/APP_DB_USER=agreement_app/APP_DB_USER=postgres/' \
+  's/KEYCLOAK_DB_USER=keycloak/KEYCLOAK_DB_USER=postgres/'; do
+  sed "$replacement" "$env_file" >"$config_file"
+  if STACK_ENV_FILE="$config_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+    echo "Unsafe database identity unexpectedly passed: $replacement"
+    exit 1
+  fi
+done
+
 cp "$env_file" "$config_file"
 printf '%s\n' 'COMPOSE_PROJECT_NAME=another-project' >>"$config_file"
 if STACK_ENV_FILE="$config_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
