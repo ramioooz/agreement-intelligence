@@ -125,6 +125,7 @@ services:
       DEMO_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?required}
     volumes:
       - ./docker/keycloak/bootstrap.sh:/bootstrap.sh:ro
+      - ./docker/keycloak/ClientAttributes.java:/ClientAttributes.java:ro
     depends_on:
       keycloak:
         condition: service_healthy

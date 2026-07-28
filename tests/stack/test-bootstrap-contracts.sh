@@ -162,6 +162,16 @@ expect_verify_failure keycloak-bootstrap "client configuration drift"
 run_bootstrap keycloak-bootstrap apply
 run_bootstrap keycloak-bootstrap verify
 
+# Escaped quotes are valid in JSON object keys. Verification must count this as
+# a fifth attribute, and apply must remove it without evaluating key text.
+keycloak_admin update "clients/$client_uuid" \
+  -r agreement-intelligence \
+  -s 'attributes={"post.logout.redirect.uris":"http://localhost:3000/*","pkce.code.challenge.method":"S256","unexpected\"key":"true"}' \
+  >/dev/null
+expect_verify_failure keycloak-bootstrap "escaped-quote client attribute drift"
+run_bootstrap keycloak-bootstrap apply
+run_bootstrap keycloak-bootstrap verify
+
 mutated_password="invalid-$project_name"
 for username in legal.reviewer platform.admin; do
   user_uuid=$(keycloak_admin get users \

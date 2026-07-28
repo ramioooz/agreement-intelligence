@@ -940,6 +940,7 @@ the repository owner merges it.
 
 - Create: `docker/localstack/bootstrap.sh`
 - Create: `docker/keycloak/bootstrap.sh`
+- Create: `docker/keycloak/ClientAttributes.java`
 - Create: `docker/keycloak/realm/agreement-intelligence-realm.json`
 - Create: `tests/stack/test-bootstrap-contracts.sh`
 - Modify: `.env.example`

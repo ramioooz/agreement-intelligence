@@ -15,6 +15,8 @@ esac
 
 server=${KEYCLOAK_SERVER_URL:-http://keycloak:8080}
 kcadm=/opt/keycloak/bin/kcadm.sh
+client_attributes=/ClientAttributes.java
+keycloak_classpath='/opt/keycloak/lib/lib/main/*'
 temporary_auth_config=
 
 cleanup_auth_config() {
@@ -66,28 +68,17 @@ user_id() {
     -q username="$1"
 }
 
-remove_unapproved_client_attributes() {
+clear_client_attributes() {
   id=$1
-  "$kcadm" get "clients/$id" \
+  update=$("$kcadm" get "clients/$id" \
     -r "$KEYCLOAK_REALM" \
-    --fields 'attributes(*)' \
-    | grep -E '^[[:space:]]*"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    | cut -d '"' -f 2 \
-    | while IFS= read -r attribute; do
-      case "$attribute" in
-        realm_client | \
-          client.secret.creation.time | \
-          post.logout.redirect.uris | \
-          pkce.code.challenge.method)
-          ;;
-        *)
-          "$kcadm" update "clients/$id" \
-            -r "$KEYCLOAK_REALM" \
-            -s "attributes.\"$attribute\"=null" \
-            >/dev/null
-          ;;
-      esac
-    done
+    --fields 'clientId,attributes(*)' \
+    | java --class-path "$keycloak_classpath" "$client_attributes" clear)
+  "$kcadm" update "clients/$id" \
+    -r "$KEYCLOAK_REALM" \
+    --no-merge \
+    --body "$update" \
+    >/dev/null
 }
 
 ensure_client() {
@@ -100,7 +91,7 @@ ensure_client() {
     id=$(client_id)
   fi
 
-  remove_unapproved_client_attributes "$id"
+  clear_client_attributes "$id"
   "$kcadm" update "clients/$id" \
     -r "$KEYCLOAK_REALM" \
     --no-merge \
@@ -208,14 +199,8 @@ verify_client() {
   attributes_json=$("$kcadm" get "clients/$id" \
     -r "$KEYCLOAK_REALM" \
     --fields 'attributes(*)')
-  attribute_count=$(printf '%s\n' "$attributes_json" \
-    | grep -Ec '^[[:space:]]*"[^"]+"[[:space:]]*:[[:space:]]*"[^"]*"' \
-    || true)
-  test "$attribute_count" -eq 4
-  assert_json_field "$attributes_json" '"realm_client"[[:space:]]*:[[:space:]]*"false"'
-  assert_json_field "$attributes_json" '"client[.]secret[.]creation[.]time"[[:space:]]*:[[:space:]]*"[0-9]+"'
-  assert_json_field "$attributes_json" '"post[.]logout[.]redirect[.]uris"[[:space:]]*:[[:space:]]*"http://localhost:3000/\*"'
-  assert_json_field "$attributes_json" '"pkce[.]code[.]challenge[.]method"[[:space:]]*:[[:space:]]*"S256"'
+  printf '%s\n' "$attributes_json" \
+    | java --class-path "$keycloak_classpath" "$client_attributes" verify
 
   default_scopes=$("$kcadm" get "clients/$id/default-client-scopes" \
     -r "$KEYCLOAK_REALM" \
