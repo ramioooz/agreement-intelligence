@@ -20,11 +20,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13.14-slim-bookworm AS runtime
 ENV PATH=/workspace/.venv/bin:$PATH
 ENV PYTHONUNBUFFERED=1
+ENV WORKER_HEARTBEAT_PATH=/tmp/agreement-worker-heartbeat
 RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home app
 WORKDIR /workspace
 COPY --from=build --chown=app:app /workspace/.venv /workspace/.venv
 USER app
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \
-  CMD ["python", "-c", "import os; os.kill(1, 0)"]
+  CMD ["python", "-c", "import os,time; age=time.time()-os.path.getmtime(os.environ['WORKER_HEARTBEAT_PATH']); assert age < 15"]
 CMD ["agreement-worker"]

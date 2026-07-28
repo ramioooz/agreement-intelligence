@@ -7,8 +7,10 @@ cd "$project_root"
 api_id=
 web_id=
 worker_id=
+secret_probe=local-build-context-secret.pem
 
 cleanup() {
+  rm -f "$secret_probe"
   for container_id in "$web_id" "$worker_id" "$api_id"; do
     if test -n "$container_id"; then
       docker rm --force "$container_id" >/dev/null 2>&1 || true
@@ -16,6 +18,17 @@ cleanup() {
   done
 }
 trap cleanup EXIT INT TERM
+
+printf '%s\n' 'test-only-secret-probe' >"$secret_probe"
+docker build --file - --tag agreement-intelligence-context-probe:test . <<EOF
+FROM node:22.23.1-bookworm-slim
+COPY . /context
+RUN test ! -e /context/$secret_probe \
+    && test ! -e /context/apps/web/.next \
+    && test ! -e /context/apps/web/node_modules \
+    && test ! -e /context/.venv \
+    && test ! -e /context/dist
+EOF
 
 for service in web api worker; do
   dockerfile="apps/$service/Dockerfile"
