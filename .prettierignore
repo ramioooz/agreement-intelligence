@@ -1,0 +1,10 @@
+.next
+.venv
+dist
+docs
+*.md
+node_modules
+pnpm-lock.yaml
+uv.lock
+apps/api
+apps/worker
