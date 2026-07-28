@@ -17,7 +17,7 @@ identity resources before the applications start.
 
 **Tech Stack:** Docker Engine 29+, Docker Compose 2.24+, GNU Make, Node.js
 22.23.1, pnpm 10.28.0, Next.js 16.2.12, Python 3.13.14, uv 0.11.32,
-PostgreSQL 17 with pgvector 0.8.5, LocalStack 2026.07.0, and Keycloak 26.7.0.
+PostgreSQL 17 with pgvector 0.8.5, LocalStack 4.14.0, and Keycloak 26.7.0.
 
 ## Global Constraints
 
@@ -27,10 +27,15 @@ PostgreSQL 17 with pgvector 0.8.5, LocalStack 2026.07.0, and Keycloak 26.7.0.
 - Bind published ports only to `127.0.0.1`.
 - Use exact image tags; do not use `latest`, `stable`, or major-only tags.
 - Application containers run as non-root users with no new privileges.
-- LocalStack provides both S3 and SQS without paid features or a Docker socket.
+- LocalStack 4.14.0 provides both S3 and SQS without paid features, activation
+  tokens, or a Docker socket. This final upstream open-source release replaces
+  the later calendar baseline, which required license activation at runtime.
+- LocalStack is ephemeral; bootstrap recreates its S3 and SQS resources
+  idempotently on every local stack start. Production AWS S3 and SQS provide
+  deployed-workload durability.
 - Keycloak imports version-controlled non-secret configuration.
 - Demo users and all credentials come from ignored environment configuration.
-- Normal shutdown preserves named volumes.
+- Normal shutdown preserves the PostgreSQL named volume and its Keycloak data.
 - Destructive reset requires `CONFIRM=reset`.
 - Support Linux ARM64 and Linux AMD64 images.
 - Keep authentication integration, business migrations, queue consumption,
@@ -427,8 +432,8 @@ the repository owner merges it.
 
 - Consumes: exact image baselines from the approved design.
 - Produces: Compose project `agreement-intelligence`; services `postgres`,
-  `localstack`, and `keycloak`; volumes `postgres-data` and
-  `localstack-data`; `scripts/validate-stack-env.sh [ENV_FILE]`.
+  `localstack`, and `keycloak`; persistent volume `postgres-data`; ephemeral
+  LocalStack resources; `scripts/validate-stack-env.sh [ENV_FILE]`.
 
 **Branch:** After Task 1 is merged and local `main` is updated, create
 `feat/core-platform-services`. This task closes #78 and references #3.
@@ -471,7 +476,7 @@ for service in postgres localstack keycloak; do
 done
 
 grep -q 'pgvector/pgvector:0.8.5-pg17-bookworm' "$config_file"
-grep -q 'localstack/localstack:2026.07.0' "$config_file"
+grep -q 'localstack/localstack:4.14.0' "$config_file"
 grep -q 'quay.io/keycloak/keycloak:26.7.0' "$config_file"
 awk '
   /host_ip:/ {
@@ -781,15 +786,12 @@ services:
     restart: unless-stopped
 
   localstack:
-    image: localstack/localstack:2026.07.0
+    image: localstack/localstack:4.14.0
     environment:
       SERVICES: s3,sqs
       AWS_DEFAULT_REGION: ${AWS_REGION:?required}
-      PERSISTENCE: "1"
     ports:
       - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"
-    volumes:
-      - localstack-data:/var/lib/localstack
     healthcheck:
       test:
         - CMD-SHELL
@@ -836,7 +838,6 @@ services:
 
 volumes:
   postgres-data:
-  localstack-data:
 ```
 
 - [ ] **Step 7: Explicitly ignore stack test environment files**
@@ -917,7 +918,7 @@ gh pr create \
   --base main \
   --head feat/core-platform-services \
   --title "Define the health-checked core platform" \
-  --body $'## Summary\n\n- define pinned PostgreSQL, LocalStack, and Keycloak services\n- validate safe local configuration before startup\n- add health, persistence, and loopback-binding contracts\n\n## Verification\n\n- make check\n- tests/stack/test-compose-contract.sh\n\nCloses #78\nRefs #3\n\nOnly the repository owner merges this pull request.'
+  --body $'## Summary\n\n- define pinned PostgreSQL, LocalStack, and Keycloak services\n- validate safe local configuration before startup\n- add health, ephemeral LocalStack, and loopback-binding contracts\n\n## Verification\n\n- make check\n- tests/stack/test-compose-contract.sh\n\nCloses #78\nRefs #3\n\nOnly the repository owner merges this pull request.'
 ```
 
 Stop after the ready-for-review pull request is open. Task 3 starts only after
@@ -1404,7 +1405,7 @@ Add these services before the `volumes` section:
 
 ```yaml
   localstack-bootstrap:
-    image: localstack/localstack:2026.07.0
+    image: localstack/localstack:4.14.0
     entrypoint: ["/bootstrap.sh"]
     command: ["apply"]
     environment:
@@ -2080,9 +2081,10 @@ the repository owner merges it.
 **Interfaces:**
 
 - Consumes: the complete stack and Make command surface from Tasks 1–4.
-- Produces: clone-to-run documentation, persistence and reset evidence, and a
-  business-visible screenshot showing the grouped project and healthy
-  application.
+- Produces: clone-to-run documentation, PostgreSQL persistence and reset
+  evidence, and a business-visible screenshot showing the grouped project and
+  healthy application. LocalStack resources are recreated idempotently because
+  the emulator is ephemeral.
 
 **Branch:** After Task 4 is merged and local `main` is updated, create
 `docs/portable-stack-guide`. This task closes #81 and references #3.
