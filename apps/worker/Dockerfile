@@ -27,5 +27,5 @@ WORKDIR /workspace
 COPY --from=build --chown=app:app /workspace/.venv /workspace/.venv
 USER app
 HEALTHCHECK --interval=5s --timeout=3s --start-period=5s --retries=12 \
-  CMD ["python", "-c", "import os,time; age=time.time()-os.path.getmtime(os.environ['WORKER_HEARTBEAT_PATH']); assert age < 15"]
+  CMD ["python", "-c", "import os,sys,time; age=time.time()-os.path.getmtime(os.environ['WORKER_HEARTBEAT_PATH']); sys.exit(0 if age < 15 else 1)"]
 CMD ["agreement-worker"]

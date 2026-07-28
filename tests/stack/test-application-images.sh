@@ -58,6 +58,25 @@ for service in web api worker; do
   }
 done
 
+worker_health_code=$(docker image inspect \
+  --format '{{index .Config.Healthcheck.Test 3}}' \
+  agreement-intelligence-worker:test)
+docker run --rm \
+  --env PYTHONOPTIMIZE=1 \
+  --env "HEALTH_CODE=$worker_health_code" \
+  --entrypoint sh \
+  agreement-intelligence-worker:test \
+  -c 'touch "$WORKER_HEARTBEAT_PATH"; python -c "$HEALTH_CODE"'
+if docker run --rm \
+  --env PYTHONOPTIMIZE=1 \
+  --env "HEALTH_CODE=$worker_health_code" \
+  --entrypoint sh \
+  agreement-intelligence-worker:test \
+  -c 'touch -d "1 minute ago" "$WORKER_HEARTBEAT_PATH"; python -c "$HEALTH_CODE"'; then
+  echo "Worker health check accepted a stale heartbeat"
+  exit 1
+fi
+
 api_id=$(docker run --detach --publish 127.0.0.1::8000 \
   agreement-intelligence-api:test)
 worker_id=$(docker run --detach agreement-intelligence-worker:test)
