@@ -53,6 +53,11 @@ Docker therefore groups containers, networks, and volumes under the
 globally unique, while Docker Desktop presents service instances within the
 project group.
 
+Repository commands also pass `--project-name agreement-intelligence`, and
+configuration validation rejects a conflicting `COMPOSE_PROJECT_NAME`. This
+keeps status, shutdown, and reset scoped to the intended project even when a
+developer has global Compose environment settings.
+
 The design intentionally does not use `container_name`. Hard-coded container
 names would prevent parallel stacks, interfere with scaling, and introduce
 global Docker name collisions.
@@ -329,7 +334,8 @@ granted from Keycloak claims.
 
 Compose dependency conditions enforce readiness:
 
-1. `postgres` starts and becomes healthy.
+1. `postgres` completes first-volume initialization, starts accepting
+   connections, and becomes healthy.
 2. `localstack` starts and becomes healthy.
 3. PostgreSQL first-volume initialization creates databases and pgvector.
 4. `localstack-bootstrap` runs after LocalStack is healthy and exits `0`.
@@ -368,9 +374,18 @@ script rejects:
 - missing `.env`;
 - empty required values;
 - unchanged secret placeholders; and
-- invalid or conflicting local port values.
+- invalid or conflicting local port values; and
+- database credentials that cannot be safely represented in the internal
+  PostgreSQL/JDBC connection URLs.
 
 `make stack-up` runs validation before invoking Compose.
+
+PostgreSQL role passwords and Keycloak bootstrap administrator credentials are
+initial-volume settings. Changing them requires
+`make stack-reset CONFIRM=reset`; normal startup must not imply that these
+credentials converge against an existing volume. The OIDC client secret and
+seeded demo-user credentials do converge through the idempotent Keycloak
+bootstrap.
 
 The local `.env` is not presented as a production secret-management mechanism.
 AWS deployments will source runtime secrets from Secrets Manager or another
@@ -412,6 +427,8 @@ The runtime commands are:
 | `make stack-reset CONFIRM=reset` | Remove project containers and volumes, then recreate the stack. |
 
 `stack-reset` exits without changing state unless `CONFIRM=reset` is supplied.
+After confirmation, it validates `.env` and the rendered Compose model before
+deleting any volume.
 
 The existing `make setup`, formatting, linting, type-checking, testing, build,
 and `make check` commands remain source-quality commands. Host application

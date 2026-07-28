@@ -37,6 +37,8 @@ PostgreSQL 17 with pgvector 0.8.5, LocalStack 2026.07.0, and Keycloak 26.7.0.
   telemetry, and AWS provisioning out of this story.
 - Every task is implemented on a dedicated branch and delivered through a
   ready-for-review pull request targeting `main`.
+- Tasks execute sequentially. Start Task N only after the repository owner
+  merges Task N-1; update local `main`, then branch from that merged state.
 - Only the repository owner merges to `main`.
 - Do not include assistant, vendor, or model-provider branding in branches,
   commits, pull requests, code, or delivery metadata.
@@ -96,6 +98,9 @@ PostgreSQL 17 with pgvector 0.8.5, LocalStack 2026.07.0, and Keycloak 26.7.0.
   `agreement-intelligence-api:test`, and
   `agreement-intelligence-worker:test`; web standalone server at
   `apps/web/server.js`; API on port `8000`; worker as a signal-aware PID 1.
+
+**Branch:** After updating local `main`, create
+`feat/application-container-images`. This task closes #77 and references #3.
 
 - [ ] **Step 1: Add the failing image contract**
 
@@ -247,8 +252,6 @@ docs
 Create `apps/web/Dockerfile`:
 
 ```dockerfile
-# syntax=docker/dockerfile:1.7
-
 FROM node:22.23.1-bookworm-slim AS base
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -285,8 +288,6 @@ CMD ["node", "apps/web/server.js"]
 Create `apps/api/Dockerfile`:
 
 ```dockerfile
-# syntax=docker/dockerfile:1.7
-
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 
 FROM python:3.13.14-slim-bookworm AS build
@@ -324,8 +325,6 @@ CMD ["uvicorn", "agreement_intelligence_api.main:app", \
 Create `apps/worker/Dockerfile`:
 
 ```dockerfile
-# syntax=docker/dockerfile:1.7
-
 FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
 
 FROM python:3.13.14-slim-bookworm AS build
@@ -397,6 +396,20 @@ git add \
 git commit -m "build: package application containers"
 ```
 
+- [ ] **Step 11: Publish the Task 1 review**
+
+```bash
+git push --set-upstream origin feat/application-container-images
+gh pr create \
+  --base main \
+  --head feat/application-container-images \
+  --title "Package application container images" \
+  --body $'## Summary\n\n- package the web, API, and worker as pinned multi-stage images\n- run application processes as non-root users\n- add executable container contracts\n\n## Verification\n\n- make check\n- tests/stack/test-application-images.sh\n\nCloses #77\nRefs #3\n\nOnly the repository owner merges this pull request.'
+```
+
+Stop after the ready-for-review pull request is open. Task 2 starts only after
+the repository owner merges it.
+
 ---
 
 ### Task 2: Define the health-checked core platform
@@ -416,6 +429,9 @@ git commit -m "build: package application containers"
 - Produces: Compose project `agreement-intelligence`; services `postgres`,
   `localstack`, and `keycloak`; volumes `postgres-data` and
   `localstack-data`; `scripts/validate-stack-env.sh [ENV_FILE]`.
+
+**Branch:** After Task 1 is merged and local `main` is updated, create
+`feat/core-platform-services`. This task closes #78 and references #3.
 
 - [ ] **Step 1: Add the failing Compose contract**
 
@@ -440,25 +456,55 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-sed 's/change-me/[test-only-value]/g' .env.example >"$env_file"
+sed 's/change-me/test-only-value/g' .env.example >"$env_file"
 STACK_ENV_FILE="$env_file" scripts/validate-stack-env.sh
-docker compose --env-file "$env_file" config >"$config_file"
+docker compose --project-name agreement-intelligence \
+  --env-file "$env_file" config >"$config_file"
 
 grep -q '^name: agreement-intelligence$' "$config_file"
 ! grep -q 'container_name:' compose.yaml
 
 for service in postgres localstack keycloak; do
-  docker compose --env-file "$env_file" config --services \
+  docker compose --project-name agreement-intelligence \
+    --env-file "$env_file" config --services \
     | grep -qx "$service"
 done
 
 grep -q 'pgvector/pgvector:0.8.5-pg17-bookworm' "$config_file"
 grep -q 'localstack/localstack:2026.07.0' "$config_file"
 grep -q 'quay.io/keycloak/keycloak:26.7.0' "$config_file"
-grep -q '127.0.0.1:' "$config_file"
+awk '
+  /host_ip:/ {
+    host_ip=$2
+    gsub(/"/, "", host_ip)
+    count += 1
+    if (host_ip != "127.0.0.1") exit 1
+  }
+  END { if (count == 0) exit 1 }
+' "$config_file"
 
 if grep -Eq 'image: .*(latest|stable)([[:space:]]|$)' "$config_file"; then
   echo "Floating image tag found"
+  exit 1
+fi
+
+for replacement in \
+  's/API_PORT=8000/API_PORT=0/' \
+  's/API_PORT=8000/API_PORT=70000/' \
+  's/API_PORT=8000/API_PORT=not-a-port/' \
+  's/API_PORT=8000/API_PORT=3000/' \
+  's/APP_DB_PASSWORD=test-only-value/APP_DB_PASSWORD=unsafe@password/'; do
+  sed "$replacement" "$env_file" >"$config_file"
+  if STACK_ENV_FILE="$config_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+    echo "Invalid environment unexpectedly passed: $replacement"
+    exit 1
+  fi
+done
+
+cp "$env_file" "$config_file"
+printf '%s\n' 'COMPOSE_PROJECT_NAME=another-project' >>"$config_file"
+if STACK_ENV_FILE="$config_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+  echo "Conflicting Compose project name unexpectedly passed"
   exit 1
 fi
 ```
@@ -541,6 +587,18 @@ test -f "$env_file" || {
   exit 1
 }
 
+if test -n "${COMPOSE_PROJECT_NAME:-}" \
+  && test "$COMPOSE_PROJECT_NAME" != agreement-intelligence; then
+  echo "COMPOSE_PROJECT_NAME must be agreement-intelligence when set."
+  exit 1
+fi
+file_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$env_file" | tail -n 1)
+if test -n "$file_project_name" \
+  && test "$file_project_name" != agreement-intelligence; then
+  echo "COMPOSE_PROJECT_NAME in $env_file must be agreement-intelligence."
+  exit 1
+fi
+
 required_variables='
 POSTGRES_PASSWORD
 APP_DB_NAME
@@ -570,6 +628,11 @@ SQS_EXPORT_QUEUE
 SQS_EXPORT_DLQ
 SQS_NOTIFICATION_QUEUE
 SQS_NOTIFICATION_DLQ
+POSTGRES_PORT
+KEYCLOAK_PORT
+LOCALSTACK_PORT
+WEB_PORT
+API_PORT
 '
 
 for variable in $required_variables; do
@@ -594,12 +657,34 @@ for variable in APP_DB_NAME APP_DB_USER KEYCLOAK_DB_NAME KEYCLOAK_DB_USER; do
   }
 done
 
-ports=$(sed -n -E 's/^(POSTGRES|KEYCLOAK|LOCALSTACK|WEB|API)_PORT=([0-9]+)$/\2/p' \
-  "$env_file")
+port_variables='POSTGRES_PORT KEYCLOAK_PORT LOCALSTACK_PORT WEB_PORT API_PORT'
+ports=
+for variable in $port_variables; do
+  value=$(sed -n "s/^${variable}=//p" "$env_file" | tail -n 1)
+  printf '%s\n' "$value" | grep -Eq '^[0-9]+$' || {
+    echo "$variable must be an integer from 1 through 65535."
+    exit 1
+  }
+  test "$value" -ge 1 && test "$value" -le 65535 || {
+    echo "$variable must be an integer from 1 through 65535."
+    exit 1
+  }
+  ports="${ports}${value}
+"
+done
+
 test "$(printf '%s\n' "$ports" | sort | uniq -d | wc -l | tr -d ' ')" -eq 0 || {
   echo "Local ports must be unique."
   exit 1
 }
+
+for variable in APP_DB_PASSWORD KEYCLOAK_DB_PASSWORD; do
+  value=$(sed -n "s/^${variable}=//p" "$env_file" | tail -n 1)
+  printf '%s\n' "$value" | grep -Eq '^[A-Za-z0-9._~-]+$' || {
+    echo "$variable must contain only URI-safe letters, digits, ., _, ~, and -."
+    exit 1
+  }
+done
 ```
 
 Make it executable:
@@ -709,9 +794,10 @@ services:
       test:
         - CMD-SHELL
         - >-
-          curl --fail --silent
-          http://127.0.0.1:4566/_localstack/health
-          | grep -q '"s3": "available"'
+          health="$$(curl --fail --silent
+          http://127.0.0.1:4566/_localstack/health)"
+          && printf '%s' "$$health" | grep -Eq '"s3":[[:space:]]*"available"'
+          && printf '%s' "$$health" | grep -Eq '"sqs":[[:space:]]*"available"'
       interval: 5s
       timeout: 5s
       retries: 30
@@ -784,8 +870,9 @@ Replace every `change-me` value, then run:
 
 ```bash
 scripts/validate-stack-env.sh
-docker compose up --detach --wait postgres localstack keycloak
-docker compose ps
+docker compose --project-name agreement-intelligence \
+  up --detach --wait postgres localstack keycloak
+docker compose --project-name agreement-intelligence ps
 ```
 
 Expected:
@@ -797,7 +884,7 @@ Expected:
 Stop while preserving volumes:
 
 ```bash
-docker compose down
+docker compose --project-name agreement-intelligence down
 ```
 
 - [ ] **Step 10: Run source-quality checks**
@@ -822,6 +909,20 @@ git add \
 git commit -m "feat(infra): add containerized platform services"
 ```
 
+- [ ] **Step 12: Publish the Task 2 review**
+
+```bash
+git push --set-upstream origin feat/core-platform-services
+gh pr create \
+  --base main \
+  --head feat/core-platform-services \
+  --title "Define the health-checked core platform" \
+  --body $'## Summary\n\n- define pinned PostgreSQL, LocalStack, and Keycloak services\n- validate safe local configuration before startup\n- add health, persistence, and loopback-binding contracts\n\n## Verification\n\n- make check\n- tests/stack/test-compose-contract.sh\n\nCloses #78\nRefs #3\n\nOnly the repository owner merges this pull request.'
+```
+
+Stop after the ready-for-review pull request is open. Task 3 starts only after
+the repository owner merges it.
+
 ---
 
 ### Task 3: Bootstrap LocalStack and Keycloak deterministically
@@ -843,6 +944,9 @@ git commit -m "feat(infra): add containerized platform services"
   primary queues with DLQs and redrive policies; Keycloak realm, confidential
   web client, client secret, and two seeded users.
 
+**Branch:** After Task 2 is merged and local `main` is updated, create
+`feat/platform-bootstrap`. This task closes #79 and references #3.
+
 - [ ] **Step 1: Add the failing bootstrap contract**
 
 Create `tests/stack/test-bootstrap-contracts.sh`:
@@ -853,6 +957,20 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$project_root"
+
+env_file=$(mktemp)
+cleanup() {
+  docker compose --project-name agreement-intelligence \
+    --env-file "$env_file" down --remove-orphans >/dev/null 2>&1 || true
+  rm -f "$env_file"
+}
+trap cleanup EXIT INT TERM
+
+sed 's/change-me/test-only-value/g' .env.example >"$env_file"
+compose() {
+  docker compose --project-name agreement-intelligence \
+    --env-file "$env_file" "$@"
+}
 
 for script in \
   docker/localstack/bootstrap.sh \
@@ -865,20 +983,20 @@ done
 
 test -f docker/keycloak/realm/agreement-intelligence-realm.json
 
-docker compose config --services | grep -qx localstack-bootstrap
-docker compose config --services | grep -qx keycloak-bootstrap
+compose config --services | grep -qx localstack-bootstrap
+compose config --services | grep -qx keycloak-bootstrap
 
-docker compose up --detach --wait postgres localstack keycloak
-docker compose up localstack-bootstrap keycloak-bootstrap
+compose up --detach --wait postgres localstack keycloak
+compose up localstack-bootstrap keycloak-bootstrap
 
 for service in localstack-bootstrap keycloak-bootstrap; do
-  container_id=$(docker compose ps --all --quiet "$service")
+  container_id=$(compose ps --all --quiet "$service")
   test -n "$container_id"
   test "$(docker inspect --format '{{.State.ExitCode}}' "$container_id")" -eq 0
 done
 
-docker compose run --rm --no-deps localstack-bootstrap verify
-docker compose run --rm --no-deps keycloak-bootstrap verify
+compose run --rm --no-deps localstack-bootstrap verify
+compose run --rm --no-deps keycloak-bootstrap verify
 ```
 
 Make it executable:
@@ -1022,11 +1140,17 @@ configure_redrive() {
 
 verify_bucket() {
   aws_local s3api head-bucket --bucket "$S3_DOCUMENT_BUCKET" >/dev/null
-  status=$(aws_local s3api get-public-access-block \
-    --bucket "$S3_DOCUMENT_BUCKET" \
-    --query PublicAccessBlockConfiguration.RestrictPublicBuckets \
-    --output text)
-  test "$status" = "True"
+  for setting in \
+    BlockPublicAcls \
+    IgnorePublicAcls \
+    BlockPublicPolicy \
+    RestrictPublicBuckets; do
+    status=$(aws_local s3api get-public-access-block \
+      --bucket "$S3_DOCUMENT_BUCKET" \
+      --query "PublicAccessBlockConfiguration.$setting" \
+      --output text)
+    test "$status" = "True"
+  done
 }
 
 verify_queue_pair() {
@@ -1042,7 +1166,16 @@ verify_queue_pair() {
     --attribute-names RedrivePolicy \
     --query Attributes.RedrivePolicy \
     --output text)
-  printf '%s' "$redrive" | grep -q "$dlq_arn"
+  python - "$redrive" "$dlq_arn" <<'PY'
+import json
+import sys
+
+policy = json.loads(sys.argv[1])
+assert policy == {
+    "deadLetterTargetArn": sys.argv[2],
+    "maxReceiveCount": "5",
+}
+PY
 }
 
 apply() {
@@ -1125,6 +1258,36 @@ user_id() {
   single_id users -r "$KEYCLOAK_REALM" -q username="$1"
 }
 
+ensure_client() {
+  id=$(client_id)
+  if test -z "$id"; then
+    "$kcadm" create clients \
+      -r "$KEYCLOAK_REALM" \
+      -s clientId="$OIDC_CLIENT_ID" \
+      >/dev/null
+    id=$(client_id)
+  fi
+
+  "$kcadm" update "clients/$id" \
+    -r "$KEYCLOAK_REALM" \
+    -s name="Agreement Intelligence Web" \
+    -s enabled=true \
+    -s protocol=openid-connect \
+    -s clientAuthenticatorType=client-secret \
+    -s publicClient=false \
+    -s standardFlowEnabled=true \
+    -s implicitFlowEnabled=false \
+    -s directAccessGrantsEnabled=false \
+    -s serviceAccountsEnabled=false \
+    -s 'redirectUris=["http://localhost:3000/auth/callback"]' \
+    -s 'webOrigins=["http://localhost:3000"]' \
+    -s 'attributes={"post.logout.redirect.uris":"http://localhost:3000/*","pkce.code.challenge.method":"S256"}' \
+    -s 'defaultClientScopes=["web-origins","acr","roles","profile","email"]' \
+    -s 'optionalClientScopes=["address","phone","offline_access","microprofile-jwt"]' \
+    -s secret="$OIDC_CLIENT_SECRET" \
+    >/dev/null
+}
+
 ensure_user() {
   username=$1
   email=$2
@@ -1158,17 +1321,18 @@ ensure_user() {
 }
 
 apply() {
-  id=$(client_id)
-  test -n "$id" || {
-    echo "OIDC client not found: $OIDC_CLIENT_ID"
-    exit 1
-  }
-
-  "$kcadm" update "clients/$id" \
-    -r "$KEYCLOAK_REALM" \
-    -s secret="$OIDC_CLIENT_SECRET" \
+  "$kcadm" update "realms/$KEYCLOAK_REALM" \
+    -s enabled=true \
+    -s displayName="Agreement Intelligence" \
+    -s registrationAllowed=false \
+    -s resetPasswordAllowed=true \
+    -s rememberMe=false \
+    -s verifyEmail=false \
+    -s loginWithEmailAllowed=true \
+    -s duplicateEmailsAllowed=false \
     >/dev/null
 
+  ensure_client
   ensure_user \
     "$DEMO_REVIEWER_USERNAME" \
     "$DEMO_REVIEWER_EMAIL" \
@@ -1182,6 +1346,14 @@ apply() {
 verify() {
   id=$(client_id)
   test -n "$id"
+  client_json=$("$kcadm" get "clients/$id" -r "$KEYCLOAK_REALM")
+  for expected in \
+    'http://localhost:3000/auth/callback' \
+    'http://localhost:3000' \
+    'pkce.code.challenge.method' \
+    'S256'; do
+    printf '%s' "$client_json" | grep -q "$expected"
+  done
   current_secret=$("$kcadm" get "clients/$id/client-secret" \
     -r "$KEYCLOAK_REALM" \
     --fields value \
@@ -1217,7 +1389,10 @@ chmod +x docker/keycloak/bootstrap.sh
 
 - [ ] **Step 6: Mount the realm and add bootstrap services**
 
-Change the Keycloak command and add its realm volume in `compose.yaml`:
+Change the Keycloak command and add its realm volume in `compose.yaml`.
+The import creates a missing realm on the first boot; the bootstrap script
+reapplies every mutable realm, client, and user setting on every run so
+persisted identity state converges after version-controlled changes:
 
 ```yaml
     command: ["start-dev", "--import-realm"]
@@ -1297,12 +1472,30 @@ Expected:
 Run:
 
 ```bash
-docker compose up --detach \
+env_file=$(mktemp)
+cleanup_bootstrap_test() {
+  docker compose --project-name agreement-intelligence \
+    --env-file "$env_file" down --remove-orphans \
+    >/dev/null 2>&1 || true
+  rm -f "$env_file"
+}
+trap cleanup_bootstrap_test EXIT INT TERM
+sed 's/change-me/test-only-value/g' .env.example >"$env_file"
+
+docker compose --project-name agreement-intelligence \
+  --env-file "$env_file" up --detach \
   localstack-bootstrap keycloak-bootstrap
-docker compose wait \
+docker compose --project-name agreement-intelligence \
+  --env-file "$env_file" wait \
   localstack-bootstrap keycloak-bootstrap
-docker compose run --rm --no-deps localstack-bootstrap verify
-docker compose run --rm --no-deps keycloak-bootstrap verify
+docker compose --project-name agreement-intelligence \
+  --env-file "$env_file" run --rm --no-deps \
+  localstack-bootstrap verify
+docker compose --project-name agreement-intelligence \
+  --env-file "$env_file" run --rm --no-deps \
+  keycloak-bootstrap verify
+cleanup_bootstrap_test
+trap - EXIT INT TERM
 ```
 
 Expected: repeat apply and verify commands exit `0` without duplicate-resource
@@ -1312,7 +1505,7 @@ errors.
 
 ```bash
 make check
-docker compose down
+docker compose --project-name agreement-intelligence down
 git diff --check
 ```
 
@@ -1329,6 +1522,20 @@ git add \
   tests/stack/test-bootstrap-contracts.sh
 git commit -m "feat(infra): bootstrap local cloud and identity"
 ```
+
+- [ ] **Step 11: Publish the Task 3 review**
+
+```bash
+git push --set-upstream origin feat/platform-bootstrap
+gh pr create \
+  --base main \
+  --head feat/platform-bootstrap \
+  --title "Bootstrap local cloud and identity services" \
+  --body $'## Summary\n\n- provision private S3 and SQS resources idempotently\n- converge Keycloak realm, client, and demo users\n- verify repeated bootstrap execution\n\n## Verification\n\n- make check\n- tests/stack/test-bootstrap-contracts.sh\n\nCloses #79\nRefs #3\n\nOnly the repository owner merges this pull request.'
+```
+
+Stop after the ready-for-review pull request is open. Task 4 starts only after
+the repository owner merges it.
 
 ---
 
@@ -1351,6 +1558,9 @@ git commit -m "feat(infra): bootstrap local cloud and identity"
   `stack-up`, `stack-down`, `stack-status`, `stack-logs`, `stack-check`, and
   `stack-reset CONFIRM=reset`; one complete container runtime.
 
+**Branch:** After Task 3 is merged and local `main` is updated, create
+`feat/containerized-stack`. This task closes #80 and references #3.
+
 - [ ] **Step 1: Add the failing lifecycle contract**
 
 Create `tests/stack/test-stack-lifecycle.sh`:
@@ -1361,6 +1571,15 @@ set -eu
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$project_root"
+
+env_file=$(mktemp)
+reset_output=$(mktemp)
+cleanup() {
+  STACK_ENV_FILE="$env_file" make stack-down >/dev/null 2>&1 || true
+  rm -f "$env_file" "$reset_output"
+}
+trap cleanup EXIT INT TERM
+sed 's/change-me/test-only-value/g' .env.example >"$env_file"
 
 for target in \
   stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset; do
@@ -1377,21 +1596,31 @@ for removed in dev dev-web dev-api dev-worker; do
   fi
 done
 
-make stack-up
-make stack-check
+STACK_ENV_FILE="$env_file" make stack-up
+STACK_ENV_FILE="$env_file" make stack-check
 
 for service in web api worker postgres localstack keycloak; do
-  docker compose ps --services --status running | grep -qx "$service"
+  docker compose --project-name agreement-intelligence \
+    --env-file "$env_file" ps --services --status running \
+    | grep -qx "$service"
 done
 
-if make stack-reset >/tmp/agreement-intelligence-reset.out 2>&1; then
+if STACK_ENV_FILE="$env_file" make stack-reset >"$reset_output" 2>&1; then
   echo "Unconfirmed reset unexpectedly succeeded"
   exit 1
 fi
-grep -q 'CONFIRM=reset' /tmp/agreement-intelligence-reset.out
+grep -q 'CONFIRM=reset' "$reset_output"
 
-make stack-down
-test -z "$(docker compose ps --all --quiet)"
+sed 's/API_PORT=8000/API_PORT=not-a-port/' "$env_file" >"$reset_output"
+if STACK_ENV_FILE="$reset_output" make stack-reset CONFIRM=reset >/dev/null 2>&1; then
+  echo "Reset with invalid configuration unexpectedly succeeded"
+  exit 1
+fi
+STACK_ENV_FILE="$env_file" make stack-check
+
+STACK_ENV_FILE="$env_file" make stack-down
+test -z "$(docker compose --project-name agreement-intelligence \
+  --env-file "$env_file" ps --all --quiet)"
 ```
 
 Make it executable:
@@ -1529,6 +1758,11 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
 
+compose() {
+  docker compose --project-name agreement-intelligence \
+    --env-file "${STACK_ENV_FILE:-.env}" "$@"
+}
+
 expected_running='api
 keycloak
 localstack
@@ -1536,7 +1770,7 @@ postgres
 web
 worker'
 
-actual_running=$(docker compose ps --services --status running | sort)
+actual_running=$(compose ps --services --status running | sort)
 test "$actual_running" = "$expected_running" || {
   echo "Unexpected running services:"
   printf '%s\n' "$actual_running"
@@ -1544,7 +1778,7 @@ test "$actual_running" = "$expected_running" || {
 }
 
 for service in web api worker postgres localstack keycloak; do
-  container_id=$(docker compose ps --quiet "$service")
+  container_id=$(compose ps --quiet "$service")
   status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
     "$container_id")
   test "$status" = healthy || {
@@ -1554,7 +1788,7 @@ for service in web api worker postgres localstack keycloak; do
 done
 
 for service in localstack-bootstrap keycloak-bootstrap; do
-  container_id=$(docker compose ps --all --quiet "$service")
+  container_id=$(compose ps --all --quiet "$service")
   exit_code=$(docker inspect --format '{{.State.ExitCode}}' "$container_id")
   test "$exit_code" -eq 0 || {
     echo "$service failed with exit code $exit_code"
@@ -1562,29 +1796,51 @@ for service in localstack-bootstrap keycloak-bootstrap; do
   }
 done
 
-docker compose exec -T postgres sh -c \
-  'psql \
+compose exec -T postgres sh -c \
+  'PGPASSWORD="$APP_DB_PASSWORD" psql \
+    --host 127.0.0.1 \
     --username "$APP_DB_USER" \
     --dbname "$APP_DB_NAME" \
     --tuples-only \
     --command "SELECT extversion FROM pg_extension WHERE extname = '\''vector'\'';"' \
   | grep -Eq '[0-9]+\.[0-9]+'
 
-docker compose run --rm --no-deps localstack-bootstrap verify
-docker compose run --rm --no-deps keycloak-bootstrap verify
+compose exec -T postgres sh -c \
+  'PGPASSWORD="$KEYCLOAK_DB_PASSWORD" psql \
+    --host 127.0.0.1 \
+    --username "$KEYCLOAK_DB_USER" \
+    --dbname "$KEYCLOAK_DB_NAME" \
+    --tuples-only \
+    --command "SELECT 1;"' \
+  | grep -Eq '1'
 
-docker compose exec -T api python - <<'PY'
+compose run --rm --no-deps localstack-bootstrap verify
+compose run --rm --no-deps keycloak-bootstrap verify
+
+compose exec -T api python - <<'PY'
 import json
 from urllib.request import urlopen
 
 with urlopen("http://127.0.0.1:8000/health/live", timeout=2) as response:
     payload = json.load(response)
 
-assert payload["status"] == "ok"
-assert payload["service"] == "api"
+assert payload == {
+    "status": "ok",
+    "service": "api",
+    "version": "0.1.0",
+}
+
+with urlopen("http://127.0.0.1:8000/docs", timeout=2) as response:
+    assert response.status == 200
+    assert "swagger-ui" in response.read().decode().lower()
+
+with urlopen("http://127.0.0.1:8000/openapi.json", timeout=2) as response:
+    schema = json.load(response)
+
+assert "/health/live" in schema["paths"]
 PY
 
-docker compose exec -T web node -e "
+compose exec -T web node -e "
 fetch('http://127.0.0.1:3000')
   .then(async response => {
     const body = await response.text();
@@ -1593,7 +1849,7 @@ fetch('http://127.0.0.1:3000')
   .catch(() => process.exit(1));
 "
 
-docker compose logs worker | grep -q '"event":"worker.started"'
+compose logs worker | grep -q '"event":"worker.started"'
 echo "Agreement Intelligence stack is healthy."
 ```
 
@@ -1621,6 +1877,8 @@ SHELL := /bin/sh
 NODE_VERSION ?= $(shell cat .node-version)
 PYTHON_VERSION ?= $(shell cat .python-version)
 PNPM_VERSION ?= 10.28.0
+STACK_ENV_FILE ?= .env
+COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STACK_ENV_FILE)
 
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
@@ -1678,33 +1936,35 @@ setup: check-toolchain
 	uv sync --all-packages --frozen
 
 stack-build: check-container-toolchain
-	@scripts/validate-stack-env.sh
-	docker compose build
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	$(COMPOSE) build
 
 stack-up: check-container-toolchain
-	@scripts/validate-stack-env.sh
-	docker compose up --detach --build --wait --wait-timeout 180
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	$(COMPOSE) up --detach --build --wait --wait-timeout 180
 
 stack-down: check-container-toolchain
-	docker compose down --remove-orphans
+	$(COMPOSE) down --remove-orphans
 
 stack-status: check-container-toolchain
-	docker compose ps --all
+	$(COMPOSE) ps --all
 
 stack-logs: check-container-toolchain
-	docker compose logs --follow
+	$(COMPOSE) logs --follow
 
 stack-check: check-container-toolchain
-	@scripts/validate-stack-env.sh
-	@scripts/stack-check.sh
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/stack-check.sh
 
 stack-reset: check-container-toolchain
 	@[ "$(CONFIRM)" = "reset" ] || { \
 		echo "Refusing to delete project volumes. Re-run with CONFIRM=reset."; \
 		exit 1; \
 	}
-	docker compose down --volumes --remove-orphans
-	$(MAKE) stack-up
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@$(COMPOSE) config --quiet
+	$(COMPOSE) down --volumes --remove-orphans
+	$(MAKE) stack-up STACK_ENV_FILE="$(STACK_ENV_FILE)"
 
 format:
 	pnpm format
@@ -1793,6 +2053,20 @@ git add \
 git commit -m "feat(infra): orchestrate containerized application stack"
 ```
 
+- [ ] **Step 10: Publish the Task 4 review**
+
+```bash
+git push --set-upstream origin feat/containerized-stack
+gh pr create \
+  --base main \
+  --head feat/containerized-stack \
+  --title "Orchestrate the complete containerized stack" \
+  --body $'## Summary\n\n- run the web, API, and worker through Docker Compose\n- add deterministic lifecycle and verification commands\n- protect destructive reset behind confirmation and configuration validation\n\n## Verification\n\n- make check\n- make stack-check\n- tests/stack/test-stack-lifecycle.sh\n\nCloses #80\nRefs #3\n\nOnly the repository owner merges this pull request.'
+```
+
+Stop after the ready-for-review pull request is open. Task 5 starts only after
+the repository owner merges it.
+
 ---
 
 ### Task 5: Document and demonstrate the portable stack
@@ -1810,6 +2084,9 @@ git commit -m "feat(infra): orchestrate containerized application stack"
   business-visible screenshot showing the grouped project and healthy
   application.
 
+**Branch:** After Task 4 is merged and local `main` is updated, create
+`docs/portable-stack-guide`. This task closes #81 and references #3.
+
 - [ ] **Step 1: Add the persistence and reset contract**
 
 Create `tests/stack/test-stack-persistence.sh`:
@@ -1821,22 +2098,36 @@ set -eu
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$project_root"
 
-make stack-up
-docker compose exec -T postgres sh -c \
+env_file=$(mktemp)
+reset_output=$(mktemp)
+cleanup() {
+  STACK_ENV_FILE="$env_file" make stack-down >/dev/null 2>&1 || true
+  rm -f "$env_file" "$reset_output"
+}
+trap cleanup EXIT INT TERM
+sed 's/change-me/test-only-value/g' .env.example >"$env_file"
+
+compose() {
+  docker compose --project-name agreement-intelligence \
+    --env-file "$env_file" "$@"
+}
+
+STACK_ENV_FILE="$env_file" make stack-up
+compose exec -T postgres sh -c \
   'psql \
     --username "$APP_DB_USER" \
     --dbname "$APP_DB_NAME" \
     --command "CREATE TABLE IF NOT EXISTS stack_persistence_marker (value text NOT NULL);"'
-docker compose exec -T postgres sh -c \
+compose exec -T postgres sh -c \
   'psql \
     --username "$APP_DB_USER" \
     --dbname "$APP_DB_NAME" \
     --command "TRUNCATE stack_persistence_marker; INSERT INTO stack_persistence_marker VALUES ('\''preserved'\'');"'
 
-make stack-down
-make stack-up
+STACK_ENV_FILE="$env_file" make stack-down
+STACK_ENV_FILE="$env_file" make stack-up
 
-docker compose exec -T postgres sh -c \
+compose exec -T postgres sh -c \
   'psql \
     --username "$APP_DB_USER" \
     --dbname "$APP_DB_NAME" \
@@ -1844,14 +2135,14 @@ docker compose exec -T postgres sh -c \
     --command "SELECT value FROM stack_persistence_marker;"' \
   | grep -q preserved
 
-if make stack-reset >/tmp/agreement-intelligence-reset.out 2>&1; then
+if STACK_ENV_FILE="$env_file" make stack-reset >"$reset_output" 2>&1; then
   echo "Unconfirmed reset unexpectedly succeeded"
   exit 1
 fi
 
-make stack-reset CONFIRM=reset
+STACK_ENV_FILE="$env_file" make stack-reset CONFIRM=reset
 
-if docker compose exec -T postgres sh -c \
+if compose exec -T postgres sh -c \
   'psql \
     --username "$APP_DB_USER" \
     --dbname "$APP_DB_NAME" \
@@ -1862,7 +2153,7 @@ if docker compose exec -T postgres sh -c \
   exit 1
 fi
 
-make stack-check
+STACK_ENV_FILE="$env_file" make stack-check
 ```
 
 Make it executable:
@@ -2012,7 +2303,7 @@ Expected: every command passes.
 
 ```bash
 make stack-down
-docker compose ps --all --quiet
+docker compose --project-name agreement-intelligence ps --all --quiet
 ```
 
 Expected: the second command prints nothing.
@@ -2043,10 +2334,21 @@ Expected:
 - the working tree is clean; and
 - source checks pass immediately before publication.
 
-- [ ] **Step 10: Publish the final task branch**
+- [ ] **Step 10: Publish the Task 5 review**
 
-Push only the current feature branch and open a ready-for-review pull request
-targeting `main`. The pull request must include:
+Push only `docs/portable-stack-guide` and open a ready-for-review pull request
+targeting `main`:
+
+```bash
+git push --set-upstream origin docs/portable-stack-guide
+gh pr create \
+  --base main \
+  --head docs/portable-stack-guide \
+  --title "Document and demonstrate the portable stack" \
+  --body $'## Summary\n\n- document the Docker-only application runtime\n- prove persistence and confirmed reset behavior\n- add the grouped-stack business demonstration\n\n## Verification\n\n- make check\n- make stack-check\n- tests/stack/test-application-images.sh\n- tests/stack/test-compose-contract.sh\n- tests/stack/test-bootstrap-contracts.sh\n- tests/stack/test-stack-lifecycle.sh\n- tests/stack/test-stack-persistence.sh\n\nCloses #81\nRefs #3\n\nOnly the repository owner merges this pull request.'
+```
+
+The pull request description must also include:
 
 - its child task closure;
 - a reference to story #3;
