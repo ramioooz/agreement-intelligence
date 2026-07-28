@@ -3,23 +3,30 @@ SHELL := /bin/sh
 NODE_VERSION ?= $(shell cat .node-version)
 PYTHON_VERSION ?= $(shell cat .python-version)
 PNPM_VERSION ?= $(shell node -p "require('./package.json').packageManager.split('@')[1]")
+STACK_ENV_FILE ?= .env
+COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STACK_ENV_FILE)
 
-.PHONY: help check-toolchain setup dev dev-web dev-api dev-worker \
+.PHONY: help check-toolchain check-container-toolchain setup \
+	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
 	format format-check lint typecheck test build check
 
 help:
 	@echo "Agreement Intelligence developer commands"
-	@echo "  make setup         Verify tools and install locked dependencies"
-	@echo "  make dev           Start web, API, and worker"
-	@echo "  make dev-web       Start only the web application"
-	@echo "  make dev-api       Start only the API"
-	@echo "  make dev-worker    Start only the worker"
-	@echo "  make format        Format TypeScript and Python"
-	@echo "  make lint          Lint TypeScript and Python"
-	@echo "  make typecheck     Type-check TypeScript and Python"
-	@echo "  make test          Run JavaScript and Python tests"
-	@echo "  make build         Build every application"
-	@echo "  make check         Run all pre-review checks"
+	@echo "  make setup          Verify source tools and install locked dependencies"
+	@echo "  make stack-build    Build application container images"
+	@echo "  make stack-up       Build, start, and wait for the complete stack"
+	@echo "  make stack-down     Stop containers while preserving project data"
+	@echo "  make stack-status   Show project containers and health"
+	@echo "  make stack-logs     Follow logs for the complete stack"
+	@echo "  make stack-check    Verify services and bootstrapped resources"
+	@echo "  make stack-reset    Recreate the stack and volumes with CONFIRM=reset"
+	@echo "  make format         Format TypeScript and Python"
+	@echo "  make format-check   Check TypeScript and Python formatting"
+	@echo "  make lint           Lint TypeScript and Python"
+	@echo "  make typecheck      Type-check TypeScript and Python"
+	@echo "  make test           Run JavaScript and Python tests"
+	@echo "  make build          Build every application"
+	@echo "  make check          Run all pre-review source checks"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -37,25 +44,55 @@ check-toolchain:
 			exit 1; \
 		}
 	@command -v uv >/dev/null 2>&1 || { echo "uv is not installed."; exit 1; }
-	@echo "Toolchain versions are valid."
+	@echo "Source toolchain versions are valid."
+
+check-container-toolchain:
+	@command -v docker >/dev/null 2>&1 || { echo "Docker is not installed."; exit 1; }
+	@docker info >/dev/null 2>&1 || { echo "Docker is not running."; exit 1; }
+	@docker compose version >/dev/null 2>&1 || { echo "Docker Compose is unavailable."; exit 1; }
+	@version="$$(docker compose version --short | sed 's/^v//')"; \
+		major="$${version%%.*}"; rest="$${version#*.}"; minor="$${rest%%.*}"; \
+		[ "$$major" -gt 2 ] || { [ "$$major" -eq 2 ] && [ "$$minor" -ge 24 ]; } || { \
+			echo "Docker Compose 2.24 or newer is required; found $$version."; \
+			exit 1; \
+		}
+	@echo "Container toolchain is valid."
 
 setup: check-toolchain
 	uv python install $(PYTHON_VERSION)
 	pnpm install --frozen-lockfile
 	uv sync --all-packages --frozen
 
-dev: check-toolchain
-	pnpm dev
+stack-build: check-container-toolchain
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	$(COMPOSE) build
 
-dev-web: check-toolchain
-	pnpm --filter @agreement-intelligence/web dev
+stack-up: check-container-toolchain
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	$(COMPOSE) up --detach --build --wait --wait-timeout 180
 
-dev-api: check-toolchain
-	uv run --package agreement-intelligence-api uvicorn \
-		agreement_intelligence_api.main:app --reload --host 127.0.0.1 --port 8000
+stack-down: check-container-toolchain
+	$(COMPOSE) down --remove-orphans
 
-dev-worker: check-toolchain
-	uv run --package agreement-intelligence-worker agreement-worker
+stack-status: check-container-toolchain
+	$(COMPOSE) ps --all
+
+stack-logs: check-container-toolchain
+	$(COMPOSE) logs --follow
+
+stack-check: check-container-toolchain
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/stack-check.sh
+
+stack-reset: check-container-toolchain
+	@[ "$(CONFIRM)" = "reset" ] || { \
+		echo "Refusing to delete project volumes. Re-run with CONFIRM=reset."; \
+		exit 1; \
+	}
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@$(COMPOSE) config --quiet
+	$(COMPOSE) down --volumes --remove-orphans
+	$(MAKE) stack-up STACK_ENV_FILE="$(STACK_ENV_FILE)"
 
 format:
 	pnpm format

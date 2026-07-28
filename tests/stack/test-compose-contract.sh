@@ -38,6 +38,11 @@ if (config.services?.keycloak?.depends_on?.postgres?.condition !== "service_heal
   throw new Error("Keycloak must wait for a healthy PostgreSQL service");
 }
 
+const workerHealthcheck = config.services?.worker?.healthcheck?.test?.join(" ") ?? "";
+if (workerHealthcheck.includes("kill -0 1")) {
+  throw new Error("Worker Compose healthcheck must not replace the image heartbeat check");
+}
+
 if (!config.volumes?.["postgres-data"]) {
   throw new Error("Missing named PostgreSQL volume");
 }
