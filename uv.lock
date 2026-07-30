@@ -65,6 +65,18 @@ requires-dist = [
 name = "agreement-intelligence-worker"
 version = "0.1.0"
 source = { editable = "apps/worker" }
+dependencies = [
+    { name = "boto3" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "sqlalchemy" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "boto3", specifier = "==1.43.60" },
+    { name = "psycopg", extras = ["binary"], specifier = "==3.2.9" },
+    { name = "sqlalchemy", specifier = "==2.0.46" },
+]
 
 [[package]]
 name = "alembic"

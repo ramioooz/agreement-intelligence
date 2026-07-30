@@ -2,7 +2,11 @@
 name = "agreement-intelligence-worker"
 version = "0.1.0"
 requires-python = "==3.13.*"
-dependencies = []
+dependencies = [
+  "boto3==1.43.60",
+  "psycopg[binary]==3.2.9",
+  "sqlalchemy==2.0.46",
+]
 
 [project.scripts]
 agreement-worker = "agreement_intelligence_worker.main:main"
