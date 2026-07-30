@@ -47,8 +47,17 @@ jobs:
       - name: Install locked dependencies
         run: make setup
 
+      - name: Audit JavaScript dependencies
+        run: pnpm audit --audit-level critical
+
       - name: Run source checks
         run: make check
 
       - name: Check whitespace
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"
+
+      - name: Scan for leaked secrets
+        uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
