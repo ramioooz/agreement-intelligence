@@ -1,6 +1,8 @@
 import NextAuth from "next-auth";
 import Keycloak from "next-auth/providers/keycloak";
 
+import { isAllowedPostSignOutRedirect } from "@/lib/keycloak-logout";
+
 const localIssuer =
   process.env.OIDC_ISSUER ??
   "http://localhost:8080/realms/agreement-intelligence";
@@ -53,6 +55,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   callbacks: {
     authorized({ auth: session }) {
       return Boolean(session?.user);
+    },
+    redirect({ url, baseUrl }) {
+      if (url.startsWith("/")) {
+        return `${baseUrl}${url}`;
+      }
+
+      if (new URL(url).origin === baseUrl) {
+        return url;
+      }
+
+      if (isAllowedPostSignOutRedirect(url)) {
+        return url;
+      }
+
+      return baseUrl;
     },
     jwt({ token, profile }) {
       if (profile?.sub) {

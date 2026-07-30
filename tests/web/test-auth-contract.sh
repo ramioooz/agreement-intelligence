@@ -35,6 +35,8 @@ grep -q 'sameSite' apps/web/src/auth.ts
 grep -q 'secure:' apps/web/src/auth.ts
 grep -q 'maxAge:' apps/web/src/auth.ts
 grep -q 'secret:' apps/web/src/auth.ts
+grep -q 'isAllowedPostSignOutRedirect' apps/web/src/auth.ts
+grep -q 'buildKeycloakLogoutUrl' apps/web/src/app/dashboard/page.tsx
 grep -q 'export const { handlers, auth, signIn, signOut }' apps/web/src/auth.ts
 grep -q 'export { auth as proxy }' apps/web/src/proxy.ts
 grep -Fq '"/dashboard/:path*"' apps/web/src/proxy.ts
