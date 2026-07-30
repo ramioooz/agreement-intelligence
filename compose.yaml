@@ -108,7 +108,7 @@ services:
         - -c
         - >-
           import json,urllib.request;
-          data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/live',timeout=2));
+          data=json.load(urllib.request.urlopen('http://127.0.0.1:8000/health/ready',timeout=2));
           assert data['status']=='ok'
       interval: 5s
       timeout: 5s
