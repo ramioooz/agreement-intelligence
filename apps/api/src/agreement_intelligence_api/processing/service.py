@@ -93,7 +93,12 @@ class ProcessingJobService:
             if existing.profile != request.profile:
                 raise IdempotencyKeyConflictError from error
             return self._repository.response(existing), False
-        self._set_agreement_state(agreement_id, state="queued", updated_at=now)
+        self._set_agreement_state(
+            agreement_id,
+            state="queued",
+            updated_at=now,
+            processing_job_id=response.id,
+        )
         self._repository.enqueue_outbox(
             response,
             idempotency_key=idempotency_key,
@@ -188,12 +193,28 @@ class ProcessingJobService:
         ):
             raise AgreementNotFoundError
 
-    def _set_agreement_state(self, agreement_id: UUID, *, state: str, updated_at: datetime) -> None:
+    def _set_agreement_state(
+        self,
+        agreement_id: UUID,
+        *,
+        state: str,
+        updated_at: datetime,
+        processing_job_id: UUID | None = None,
+    ) -> None:
         agreement = self._agreements.get(agreement_id)
         if agreement is None:
             raise AgreementNotFoundError
+        metadata = dict(agreement.audit_metadata)
+        if processing_job_id is not None:
+            metadata["processing_job_id"] = str(processing_job_id)
         self._agreements.replace(
-            agreement.model_copy(update={"processing_state": state, "updated_at": updated_at})
+            agreement.model_copy(
+                update={
+                    "processing_state": state,
+                    "updated_at": updated_at,
+                    "audit_metadata": metadata,
+                }
+            )
         )
 
     def _authorize(

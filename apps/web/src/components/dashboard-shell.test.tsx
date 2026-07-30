@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { DashboardShell } from "@/components/dashboard-shell";
 
 describe("DashboardShell", () => {
-  it("shows account context and honest placeholder navigation", () => {
+  it("links authenticated users to the agreement repository", () => {
     render(
       <DashboardShell
         user={{
@@ -31,7 +31,11 @@ describe("DashboardShell", () => {
       expect(screen.getByLabelText(item)).toBeInTheDocument();
     }
 
-    expect(screen.getAllByText("Coming soon")).toHaveLength(5);
+    expect(screen.getByRole("link", { name: "Repository" })).toHaveAttribute(
+      "href",
+      "/dashboard/agreements",
+    );
+    expect(screen.getAllByText("Coming soon")).toHaveLength(4);
     expect(
       screen.getByRole("button", { name: "Sign out" }),
     ).toBeInTheDocument();

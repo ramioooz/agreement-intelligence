@@ -99,6 +99,11 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?required}
       AWS_ENDPOINT_URL: http://localstack:4566
       S3_DOCUMENT_BUCKET: ${S3_DOCUMENT_BUCKET:?required}
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:?required}
+      OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/${KEYCLOAK_REALM:?required}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      DEMO_REVIEWER_SUBJECT: ${DEMO_REVIEWER_SUBJECT:?required}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
@@ -166,6 +171,8 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
       OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:?required}
       OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/${KEYCLOAK_REALM:?required}
+      API_ORGANIZATION_ID: ${API_ORGANIZATION_ID:?required}
+      API_WORKSPACE_ID: ${API_WORKSPACE_ID:?required}
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:
@@ -226,6 +233,7 @@ services:
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
       WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:?required}
       DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
+      DEMO_REVIEWER_SUBJECT: ${DEMO_REVIEWER_SUBJECT:?required}
       DEMO_REVIEWER_EMAIL: ${DEMO_REVIEWER_EMAIL:?required}
       DEMO_REVIEWER_FIRST_NAME: ${DEMO_REVIEWER_FIRST_NAME:?required}
       DEMO_REVIEWER_LAST_NAME: ${DEMO_REVIEWER_LAST_NAME:?required}

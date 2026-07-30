@@ -95,6 +95,7 @@ class AgreementService:
         workspace_id: UUID,
         limit: int,
         cursor: int,
+        query: str | None,
         agreement_type: str | None,
         status: str | None,
         include_archived: bool,
@@ -108,6 +109,7 @@ class AgreementService:
         agreements = self._repository.list_for_scope(
             organization_id,
             workspace_id,
+            query=query,
             agreement_type=agreement_type,
             status=status,
             include_archived=include_archived,

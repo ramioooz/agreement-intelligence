@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.agreements.models import AgreementRecord
@@ -44,6 +44,7 @@ class SQLAlchemyAgreementRepository:
         organization_id: UUID,
         workspace_id: UUID,
         *,
+        query: str | None,
         agreement_type: str | None,
         status: str | None,
         include_archived: bool,
@@ -54,6 +55,8 @@ class SQLAlchemyAgreementRepository:
             .where(AgreementRecord.workspace_id == workspace_id)
             .order_by(AgreementRecord.created_at, AgreementRecord.id)
         )
+        if query is not None:
+            statement = statement.where(func.lower(AgreementRecord.title).contains(query.lower()))
         if agreement_type is not None:
             statement = statement.where(AgreementRecord.agreement_type == agreement_type)
         if status is not None:

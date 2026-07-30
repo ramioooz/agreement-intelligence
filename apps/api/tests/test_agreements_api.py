@@ -224,6 +224,14 @@ def test_list_scopes_results_filters_and_uses_cursor_pagination(
     assert filtered.status_code == 200
     assert filtered.json()["items"] == [second.json()]
 
+    searched = client.get(
+        "/agreements",
+        params={**_scope_query(organization, workspace), "query": "two"},
+    )
+
+    assert searched.status_code == 200
+    assert searched.json()["items"] == [second.json()]
+
 
 def test_cross_workspace_detail_archive_and_restore_are_hidden(
     session: Session,
