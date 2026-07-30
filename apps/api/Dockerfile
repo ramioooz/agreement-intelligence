@@ -24,6 +24,8 @@ RUN groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home app
 WORKDIR /workspace
 COPY --from=build --chown=app:app /workspace/.venv /workspace/.venv
+COPY --chown=app:app apps/api/alembic.ini apps/api/alembic.ini
+COPY --chown=app:app apps/api/migrations apps/api/migrations
 USER app
 EXPOSE 8000
 HEALTHCHECK --interval=5s --timeout=3s --start-period=10s --retries=12 \
