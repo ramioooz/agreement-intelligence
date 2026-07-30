@@ -14,6 +14,7 @@ case "$action" in
 esac
 
 server=${KEYCLOAK_SERVER_URL:-http://keycloak:8080}
+web_public_origin=${WEB_PUBLIC_ORIGIN:-http://localhost:3000}
 kcadm=/opt/keycloak/bin/kcadm.sh
 client_attributes=/ClientAttributes.java
 keycloak_classpath='/opt/keycloak/lib/lib/main/*'
@@ -105,9 +106,9 @@ ensure_client() {
     -s implicitFlowEnabled=false \
     -s directAccessGrantsEnabled=false \
     -s serviceAccountsEnabled=false \
-    -s 'redirectUris=["http://localhost:3000/auth/callback"]' \
-    -s 'webOrigins=["http://localhost:3000"]' \
-    -s 'attributes={"post.logout.redirect.uris":"http://localhost:3000/*","pkce.code.challenge.method":"S256"}' \
+    -s "redirectUris=[\"$web_public_origin/api/auth/callback/keycloak\"]" \
+    -s "webOrigins=[\"$web_public_origin\"]" \
+    -s "attributes={\"post.logout.redirect.uris\":\"$web_public_origin/*\",\"pkce.code.challenge.method\":\"S256\"}" \
     -s 'defaultClientScopes=["web-origins","acr","roles","profile","email"]' \
     -s 'optionalClientScopes=["address","phone","offline_access","microprofile-jwt"]' \
     -s "secret=$OIDC_CLIENT_SECRET" \
@@ -189,13 +190,13 @@ verify_client() {
     --fields redirectUris)
   assert_compact_json \
     "$redirect_json" \
-    '{"redirectUris":["http://localhost:3000/auth/callback"]}'
+    "{\"redirectUris\":[\"$web_public_origin/api/auth/callback/keycloak\"]}"
   origins_json=$("$kcadm" get "clients/$id" \
     -r "$KEYCLOAK_REALM" \
     --fields webOrigins)
   assert_compact_json \
     "$origins_json" \
-    '{"webOrigins":["http://localhost:3000"]}'
+    "{\"webOrigins\":[\"$web_public_origin\"]}"
   attributes_json=$("$kcadm" get "clients/$id" \
     -r "$KEYCLOAK_REALM" \
     --fields 'attributes(*)')

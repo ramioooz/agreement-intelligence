@@ -114,6 +114,7 @@ test:
 	pnpm --filter @agreement-intelligence/web test
 	uv run pytest
 	tests/ci/test-ci-workflow.sh
+	tests/web/test-auth-contract.sh
 
 build:
 	pnpm --filter @agreement-intelligence/web build

@@ -42,6 +42,11 @@ KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD
 KEYCLOAK_REALM
 OIDC_CLIENT_ID
 OIDC_CLIENT_SECRET
+OIDC_ISSUER
+OIDC_INTERNAL_ISSUER
+WEB_PUBLIC_ORIGIN
+AUTH_URL
+AUTH_SECRET
 DEMO_REVIEWER_USERNAME
 DEMO_REVIEWER_EMAIL
 DEMO_REVIEWER_FIRST_NAME
@@ -152,3 +157,40 @@ for variable in APP_DB_PASSWORD KEYCLOAK_DB_PASSWORD; do
     exit 1
   }
 done
+
+for variable in OIDC_ISSUER OIDC_INTERNAL_ISSUER AUTH_URL; do
+  value=$(effective_value "$variable")
+  case "$value" in
+    http://* | https://*) ;;
+    *)
+      echo "$variable must be an HTTP(S) URL."
+      exit 1
+      ;;
+  esac
+  case "$value" in
+    */)
+      echo "$variable must not end with a trailing slash."
+      exit 1
+      ;;
+  esac
+done
+
+web_public_origin=$(effective_value WEB_PUBLIC_ORIGIN)
+printf '%s\n' "$web_public_origin" | grep -Eq '^https?://[^/:?#]+(:[0-9]+)?$' || {
+  echo "WEB_PUBLIC_ORIGIN must be an HTTP(S) origin without a path or trailing slash."
+  exit 1
+}
+
+web_origin_port=$(printf '%s\n' "$web_public_origin" \
+  | sed -nE 's#^https?://[^/:?#]+:([0-9]+)$#\1#p')
+if test -z "$web_origin_port"; then
+  case "$web_public_origin" in
+    http://*) web_origin_port=80 ;;
+    https://*) web_origin_port=443 ;;
+  esac
+fi
+
+test "$web_origin_port" = "$(effective_value WEB_PORT)" || {
+  echo "WEB_PUBLIC_ORIGIN port must match WEB_PORT."
+  exit 1
+}
