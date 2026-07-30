@@ -1,7 +1,16 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    DateTime,
+    Enum,
+    ForeignKey,
+    ForeignKeyConstraint,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from agreement_intelligence_api.identity.permissions import PermissionKey, RoleKey
@@ -34,7 +43,10 @@ class Organization(Base):
 
 class Workspace(Base):
     __tablename__ = "workspaces"
-    __table_args__ = (UniqueConstraint("organization_id", "slug"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id"),
+        UniqueConstraint("organization_id", "slug"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
@@ -85,7 +97,10 @@ class RolePermission(Base):
 
 class Membership(Base):
     __tablename__ = "memberships"
-    __table_args__ = (UniqueConstraint("organization_id", "user_id", "role_id"),)
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id"),
+        UniqueConstraint("organization_id", "user_id", "role_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
@@ -97,9 +112,20 @@ class Membership(Base):
 
 class WorkspaceMembership(Base):
     __tablename__ = "workspace_memberships"
-    __table_args__ = (UniqueConstraint("workspace_id", "membership_id"),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "membership_id"],
+            ["memberships.organization_id", "memberships.id"],
+        ),
+        UniqueConstraint("workspace_id", "membership_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
-    membership_id: Mapped[UUID] = mapped_column(ForeignKey("memberships.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    membership_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

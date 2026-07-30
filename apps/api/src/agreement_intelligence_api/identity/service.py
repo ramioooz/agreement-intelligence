@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.identity.authz import Principal
@@ -76,6 +76,7 @@ class IdentityService:
         return organization
 
     def create_workspace(self, *, organization_id: UUID, name: str, slug: str) -> Workspace:
+        self._set_tenant_scope(organization_id)
         workspace = Workspace(organization_id=organization_id, name=name, slug=slug)
         self.session.add(workspace)
         self.session.flush()
@@ -84,6 +85,7 @@ class IdentityService:
     def grant_membership(
         self, *, organization_id: UUID, user_id: UUID, role_key: RoleKey
     ) -> Membership:
+        self._set_tenant_scope(organization_id)
         role = self.session.scalar(select(Role).where(Role.key == role_key))
         if role is None:
             raise RuntimeError("authorization catalog has not been bootstrapped")
@@ -103,14 +105,16 @@ class IdentityService:
         return membership
 
     def grant_workspace_membership(
-        self, *, membership_id: UUID, workspace_id: UUID
+        self, *, organization_id: UUID, membership_id: UUID, workspace_id: UUID
     ) -> WorkspaceMembership:
+        self._set_tenant_scope(organization_id)
         membership = self.session.get(Membership, membership_id)
         workspace = self.session.get(Workspace, workspace_id)
         if (
             membership is None
             or workspace is None
-            or membership.organization_id != workspace.organization_id
+            or membership.organization_id != organization_id
+            or workspace.organization_id != organization_id
         ):
             raise ValueError("workspace membership must remain within its organization")
         workspace_membership = self.session.scalar(
@@ -121,7 +125,9 @@ class IdentityService:
         )
         if workspace_membership is None:
             workspace_membership = WorkspaceMembership(
-                membership_id=membership_id, workspace_id=workspace_id
+                organization_id=workspace.organization_id,
+                membership_id=membership_id,
+                workspace_id=workspace_id,
             )
             self.session.add(workspace_membership)
             self.session.flush()
@@ -130,6 +136,7 @@ class IdentityService:
     def can_access_organization(
         self, principal: Principal, *, organization_id: UUID, permission: PermissionKey
     ) -> bool:
+        self._set_tenant_scope(organization_id)
         memberships = self.session.scalars(
             select(Membership)
             .join(Membership.role)
@@ -148,6 +155,7 @@ class IdentityService:
         workspace_id: UUID,
         permission: PermissionKey,
     ) -> bool:
+        self._set_tenant_scope(organization_id)
         workspace = self.session.get(Workspace, workspace_id)
         if workspace is None or workspace.organization_id != organization_id:
             return False
@@ -187,6 +195,7 @@ class IdentityService:
     def list_workspaces_for_organization(
         self, principal: Principal, *, organization_id: UUID
     ) -> list[Workspace] | None:
+        self._set_tenant_scope(organization_id)
         memberships = list(
             self.session.scalars(
                 select(Membership)
@@ -224,4 +233,12 @@ class IdentityService:
                 .where(WorkspaceMembership.membership_id.in_(membership_ids))
                 .order_by(Workspace.name)
             )
+        )
+
+    def _set_tenant_scope(self, organization_id: UUID) -> None:
+        if self.session.get_bind().dialect.name != "postgresql":
+            return
+        self.session.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
         )

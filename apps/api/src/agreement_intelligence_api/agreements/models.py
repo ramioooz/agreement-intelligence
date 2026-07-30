@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Uuid, func
+from sqlalchemy import JSON, DateTime, ForeignKey, ForeignKeyConstraint, Index, String, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agreement_intelligence_api.identity.models import Base
@@ -11,12 +11,16 @@ from agreement_intelligence_api.identity.models import Base
 class AgreementRecord(Base):
     __tablename__ = "agreements"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
         Index("ix_agreements_scope_created", "organization_id", "workspace_id", "created_at"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
-    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     title: Mapped[str] = mapped_column(String(500))
     agreement_type: Mapped[str] = mapped_column(String(100), index=True)
     status: Mapped[str] = mapped_column(String(32), index=True)
