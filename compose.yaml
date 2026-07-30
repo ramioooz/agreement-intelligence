@@ -39,8 +39,8 @@ services:
         - >-
           health="$$(curl --fail --silent
           http://127.0.0.1:4566/_localstack/health)"
-          && printf '%s' "$$health" | grep -Eq '"s3":[[:space:]]*"available"'
-          && printf '%s' "$$health" | grep -Eq '"sqs":[[:space:]]*"available"'
+          && printf '%s' "$$health" | grep -Eq '"s3":[[:space:]]*"(available|running)"'
+          && printf '%s' "$$health" | grep -Eq '"sqs":[[:space:]]*"(available|running)"'
       interval: 5s
       timeout: 5s
       retries: 30
