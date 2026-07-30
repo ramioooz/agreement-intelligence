@@ -47,12 +47,14 @@ Docker groups every container, network, and volume under the
 ![Containerized Agreement Intelligence stack](docs/assets/containerized-stack.jpg)
 
 The stack contains the web application, API, worker, PostgreSQL with pgvector,
-LocalStack for S3 and SQS, and Keycloak. Authentication integration and
-document-processing workflows are delivered in later iterations.
+LocalStack for S3 and SQS, Keycloak, and the protected web dashboard shell.
+Document-processing workflows are delivered in later iterations.
 
 The local applications are available at:
 
 - Web application: <http://localhost:3000>
+- Sign-in page: <http://localhost:3000/sign-in>
+- Protected dashboard: <http://localhost:3000/dashboard>
 - API liveness: <http://localhost:8000/health/live>
 - API documentation: <http://localhost:8000/docs>
 - Keycloak: <http://localhost:8080>
@@ -66,6 +68,12 @@ The development realm includes these seeded demo users after startup:
 | Platform Administrator | `platform.admin` | Administrative user for platform setup workflows. |
 
 Passwords come from `.env` and must not be committed.
+
+Use the sign-in page to authenticate with Keycloak. The application stores its
+local session in HTTP-only cookies and redirects unauthenticated dashboard
+requests back to sign-in.
+If you change `WEB_PORT`, also update `WEB_PUBLIC_ORIGIN` so Keycloak and the
+web app agree on callback URLs.
 
 | Command | Purpose |
 | --- | --- |

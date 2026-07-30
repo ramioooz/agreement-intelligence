@@ -59,6 +59,8 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD:?required}
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_ENABLED: "true"
+      KC_HOSTNAME: http://localhost:${KEYCLOAK_PORT:-8080}
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
     ports:
       - "127.0.0.1:${KEYCLOAK_PORT:-8080}:8080"
     volumes:
@@ -151,6 +153,12 @@ services:
       dockerfile: apps/web/Dockerfile
     environment:
       API_BASE_URL: http://api:8000
+      AUTH_SECRET: ${AUTH_SECRET:?required}
+      AUTH_URL: ${WEB_PUBLIC_ORIGIN:?required}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:?required}
+      OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/${KEYCLOAK_REALM:?required}
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     depends_on:
@@ -209,6 +217,7 @@ services:
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:?required}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      WEB_PUBLIC_ORIGIN: ${WEB_PUBLIC_ORIGIN:?required}
       DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
       DEMO_REVIEWER_EMAIL: ${DEMO_REVIEWER_EMAIL:?required}
       DEMO_REVIEWER_FIRST_NAME: ${DEMO_REVIEWER_FIRST_NAME:?required}
