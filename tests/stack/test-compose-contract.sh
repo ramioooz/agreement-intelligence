@@ -73,6 +73,13 @@ if (localstack?.volumes?.some((volume) => volume.target === "/var/lib/localstack
 if (config.volumes?.["localstack-data"]) {
   throw new Error("LocalStack data volume must not be defined");
 }
+
+const localstackHealthcheck = localstack?.healthcheck?.test?.join(" ") ?? "";
+for (const expectedState of ["available", "running"]) {
+  if (!localstackHealthcheck.includes(expectedState)) {
+    throw new Error(`LocalStack healthcheck must accept the ${expectedState} service state`);
+  }
+}
 NODE
 
 grep -q '^name: agreement-intelligence$' "$config_file"

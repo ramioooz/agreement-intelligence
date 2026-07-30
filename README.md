@@ -21,52 +21,110 @@ Agreements, IB Agreements, ISDA documentation, and regulatory documents.
 - Human review, approval, and immutable audit history
 - Measured AI quality, security controls, and operational telemetry
 
-## Local development
+## Run the complete application
 
 ### Prerequisites
 
-- Node.js 22.23.1
-- pnpm 10.28.0
-- Python 3.13.14, installed automatically by uv
-- uv
+- Docker Engine with Docker Compose 2.24 or newer
 - GNU Make
 
-From the repository root, install the locked dependencies and start all
-applications:
+Copy the safe environment template and replace every `change-me` value:
 
 ```bash
-make setup
-make dev
+cp .env.example .env
 ```
+
+Build and start the complete application:
+
+```bash
+make stack-up
+make stack-check
+```
+
+Docker groups every container, network, and volume under the
+`agreement-intelligence` Compose project.
+
+![Containerized Agreement Intelligence stack](docs/assets/containerized-stack.jpg)
+
+The stack contains the web application, API, worker, PostgreSQL with pgvector,
+LocalStack for S3 and SQS, and Keycloak. Authentication integration and
+document-processing workflows are delivered in later iterations.
 
 The local applications are available at:
 
 - Web application: <http://localhost:3000>
 - API liveness: <http://localhost:8000/health/live>
 - API documentation: <http://localhost:8000/docs>
+- Keycloak: <http://localhost:8080>
+- LocalStack gateway: <http://localhost:4566>
 
-![Agreement Intelligence application shell](docs/assets/application-shell.jpg)
+The development realm includes these seeded demo users after startup:
 
-The worker starts as a long-running Python process and logs its lifecycle. It
-does not consume messages until the queue infrastructure is delivered. Press
-Control-C in the terminal running `make dev` to stop all three applications.
+| User | Username | Purpose |
+| --- | --- | --- |
+| Legal Reviewer | `legal.reviewer` | Business user for agreement review workflows. |
+| Platform Administrator | `platform.admin` | Administrative user for platform setup workflows. |
+
+Passwords come from `.env` and must not be committed.
 
 | Command | Purpose |
 | --- | --- |
 | `make help` | List supported commands. |
-| `make check-toolchain` | Verify the pinned Node.js and pnpm versions and uv availability. |
-| `make setup` | Verify tools and install locked dependencies. |
-| `make dev` | Start web, API, and worker. |
-| `make dev-web` | Start only the web application. |
-| `make dev-api` | Start only the API. |
-| `make dev-worker` | Start only the worker. |
+| `make stack-build` | Build application container images. |
+| `make stack-up` | Build, start, and wait for the complete stack. |
+| `make stack-down` | Stop containers while preserving project data. |
+| `make stack-status` | Show project containers and health state. |
+| `make stack-logs` | Follow logs for the complete stack. |
+| `make stack-check` | Verify services and bootstrapped resources. |
+| `make stack-reset CONFIRM=reset` | Delete project volumes and recreate the stack. |
+
+`make stack-down` removes containers and the network, but preserves the
+PostgreSQL named volume. LocalStack is intentionally ephemeral; its S3 bucket
+and SQS queues are recreated idempotently on startup.
+
+`make stack-reset CONFIRM=reset` permanently deletes local project volumes and
+recreates the stack. The command refuses to run without the explicit
+confirmation value.
+
+### Troubleshooting
+
+If startup fails after changing database users or passwords, run the confirmed
+reset command to recreate local volumes:
+
+```bash
+make stack-reset CONFIRM=reset
+```
+
+If a service is unhealthy, inspect status and logs:
+
+```bash
+make stack-status
+make stack-logs
+```
+
+Run `make stack-check` after fixes. It verifies container health, pgvector,
+LocalStack resources, Keycloak configuration, API liveness and documentation,
+web-to-API connectivity, and worker startup.
+
+### Source-quality commands
+
+Contributors changing source code also use the pinned Node.js, pnpm, Python,
+and uv toolchains:
+
+```bash
+make setup
+```
+
+| Command | Purpose |
+| --- | --- |
+| `make setup` | Install locked source dependencies. |
 | `make format` | Format TypeScript and Python. |
-| `make format-check` | Check TypeScript and Python formatting without changing files. |
+| `make format-check` | Check formatting without changing files. |
 | `make lint` | Lint TypeScript and Python. |
 | `make typecheck` | Type-check TypeScript and Python. |
 | `make test` | Run JavaScript and Python tests. |
-| `make build` | Build every application. |
-| `make check` | Run all pre-review checks. |
+| `make build` | Build every application outside Docker. |
+| `make check` | Run all pre-review source checks. |
 
 See the
 [monorepo foundation design](docs/plans/2026-07-27-monorepo-foundation-design.md)
