@@ -11,7 +11,9 @@ def test_worker_waits_until_stop_is_requested(
 ) -> None:
     async def exercise() -> None:
         stop_event = asyncio.Event()
-        task = asyncio.create_task(run_worker(stop_event))
+        task = asyncio.create_task(
+            run_worker(stop_event, correlation_id="worker-test-correlation-id")
+        )
 
         await asyncio.sleep(0)
         assert not task.done()
@@ -27,6 +29,9 @@ def test_worker_waits_until_stop_is_requested(
 
     events = [getattr(record, "event", None) for record in caplog.records]
     assert events == ["worker.started", "worker.stopped"]
+    assert {getattr(record, "correlation_id", None) for record in caplog.records} == {
+        "worker-test-correlation-id"
+    }
 
 
 def test_worker_refreshes_its_liveness_heartbeat(tmp_path: Path) -> None:

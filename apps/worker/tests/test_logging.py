@@ -21,6 +21,7 @@ def test_json_formatter_preserves_lifecycle_fields() -> None:
     payload = json.loads(JsonFormatter().format(record))
 
     assert payload == {
+        "correlation_id": "unavailable",
         "event": "worker.started",
         "level": "INFO",
         "message": "worker started",
@@ -43,6 +44,7 @@ def test_configure_logging_writes_one_json_line_to_stderr(
         logger.info(
             "worker started",
             extra={
+                "correlation_id": "worker-lifecycle-id",
                 "event": "worker.started",
                 "service": "worker",
             },
@@ -56,8 +58,37 @@ def test_configure_logging_writes_one_json_line_to_stderr(
     assert captured.out == ""
     assert len(captured.err.splitlines()) == 1
     assert json.loads(captured.err) == {
+        "correlation_id": "worker-lifecycle-id",
         "event": "worker.started",
         "level": "INFO",
         "message": "worker started",
+        "service": "worker",
+    }
+
+
+def test_worker_structured_logs_do_not_emit_sensitive_fields() -> None:
+    record = logging.LogRecord(
+        name="agreement_intelligence.worker",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="worker saw password token and agreement contents",
+        args=(),
+        exc_info=None,
+    )
+    record.event = "worker.job.received"
+    record.service = "worker"
+    record.correlation_id = "job-correlation-id"
+    record.password = "super-secret"
+    record.refresh_token = "token-value"
+    record.agreement_text = "Confidential agreement body"
+
+    payload = json.loads(JsonFormatter().format(record))
+
+    assert payload == {
+        "correlation_id": "job-correlation-id",
+        "event": "worker.job.received",
+        "level": "INFO",
+        "message": "[redacted]",
         "service": "worker",
     }
