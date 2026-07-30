@@ -1,4 +1,5 @@
 type KeycloakLogoutConfig = {
+  idTokenHint?: string;
   oidcClientId?: string;
   oidcIssuer?: string;
   webPublicOrigin?: string;
@@ -21,6 +22,7 @@ function signInUrl(webPublicOrigin: string): string {
 }
 
 export function buildKeycloakLogoutUrl({
+  idTokenHint,
   oidcClientId = process.env.OIDC_CLIENT_ID ?? defaultOidcClientId,
   oidcIssuer = process.env.OIDC_ISSUER ?? defaultOidcIssuer,
   webPublicOrigin = process.env.WEB_PUBLIC_ORIGIN ??
@@ -30,6 +32,9 @@ export function buildKeycloakLogoutUrl({
   const logoutUrl = logoutEndpoint(oidcIssuer);
 
   logoutUrl.searchParams.set("client_id", oidcClientId);
+  if (idTokenHint) {
+    logoutUrl.searchParams.set("id_token_hint", idTokenHint);
+  }
   logoutUrl.searchParams.set(
     "post_logout_redirect_uri",
     signInUrl(webPublicOrigin),

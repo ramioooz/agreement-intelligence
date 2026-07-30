@@ -71,9 +71,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       return baseUrl;
     },
-    jwt({ token, profile }) {
+    jwt({ token, account, profile }) {
       if (profile?.sub) {
         token.sub = profile.sub;
+      }
+
+      if (account?.id_token) {
+        token.keycloakIdToken = account.id_token;
       }
 
       return token;

@@ -26,6 +26,21 @@ describe("buildKeycloakLogoutUrl", () => {
       "http://localhost:3000/sign-in",
     );
   });
+
+  it("adds an ID token hint when one is available", () => {
+    const logoutUrl = new URL(
+      buildKeycloakLogoutUrl({
+        idTokenHint: "id-token-from-keycloak",
+        oidcClientId: "agreement-intelligence-web",
+        oidcIssuer: "http://localhost:8080/realms/agreement-intelligence",
+        webPublicOrigin: "http://localhost:3000",
+      }),
+    );
+
+    expect(logoutUrl.searchParams.get("id_token_hint")).toBe(
+      "id-token-from-keycloak",
+    );
+  });
 });
 
 describe("isAllowedPostSignOutRedirect", () => {

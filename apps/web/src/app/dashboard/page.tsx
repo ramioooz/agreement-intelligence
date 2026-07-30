@@ -1,7 +1,9 @@
 import { redirect } from "next/navigation";
+import { headers } from "next/headers";
 
 import { auth, signOut } from "@/auth";
 import { DashboardShell } from "@/components/dashboard-shell";
+import { getKeycloakIdTokenHint } from "@/lib/auth-session-token";
 import { buildKeycloakLogoutUrl } from "@/lib/keycloak-logout";
 
 export default async function DashboardPage() {
@@ -14,7 +16,9 @@ export default async function DashboardPage() {
   async function signOutOfApplication() {
     "use server";
 
-    await signOut({ redirectTo: buildKeycloakLogoutUrl() });
+    const idTokenHint = await getKeycloakIdTokenHint(await headers());
+
+    await signOut({ redirectTo: buildKeycloakLogoutUrl({ idTokenHint }) });
   }
 
   return (
