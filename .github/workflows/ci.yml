@@ -1,0 +1,54 @@
+name: CI
+
+"on":
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-quality:
+    name: Source quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          version: 0.11.32
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install "$(cat .python-version)"
+
+      - name: Install locked dependencies
+        run: make setup
+
+      - name: Run source checks
+        run: make check
+
+      - name: Check whitespace
+        run: git diff --check "origin/${{ github.base_ref }}...HEAD"
