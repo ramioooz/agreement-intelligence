@@ -1,0 +1,391 @@
+from collections.abc import Callable, Generator
+from pathlib import Path
+from uuid import UUID, uuid4
+
+from agreement_intelligence_api.db import get_session
+from agreement_intelligence_api.identity.authz import Principal, current_principal
+from agreement_intelligence_api.identity.models import Base, Organization, Workspace
+from agreement_intelligence_api.identity.permissions import RoleKey
+from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.main import app
+from alembic import command
+from alembic.config import Config
+from fastapi.testclient import TestClient
+from pytest import fixture
+from sqlalchemy import create_engine
+from sqlalchemy import inspect as inspect_database
+from sqlalchemy.orm import Session, sessionmaker
+
+AUTH_CORRELATION_ID = "11111111-1111-4111-8111-111111111111"
+MISSING_SCOPE_CORRELATION_ID = "22222222-2222-4222-8222-222222222222"
+BAD_LIMIT_CORRELATION_ID = "33333333-3333-4333-8333-333333333333"
+CROSS_WORKSPACE_CORRELATION_IDS = {
+    "get": "44444444-4444-4444-8444-444444444444",
+    "post_archive": "55555555-5555-4555-8555-555555555555",
+    "post_restore": "66666666-6666-4666-8666-666666666666",
+}
+
+
+@fixture
+def session() -> Generator[Session]:
+    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    database_session = sessionmaker(bind=engine)()
+    try:
+        yield database_session
+    finally:
+        database_session.close()
+        engine.dispose()
+
+
+@fixture
+def client_for_session(session: Session) -> Generator[Callable[[UUID], TestClient]]:
+    app.dependency_overrides[get_session] = lambda: session
+
+    def build_client(user_id: UUID) -> TestClient:
+        app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
+        return TestClient(app)
+
+    try:
+        yield build_client
+    finally:
+        app.dependency_overrides.clear()
+
+
+def _agreement_payload(title: str, agreement_type: str = "client") -> dict[str, object]:
+    return {
+        "title": title,
+        "agreement_type": agreement_type,
+        "status": "draft",
+        "parties": [
+            {"name": "Example Client Ltd", "role": "client"},
+            {"name": "Example Broker Ltd", "role": "provider"},
+        ],
+        "files": [
+            {
+                "file_name": "agreement.pdf",
+                "content_type": "application/pdf",
+                "storage_key": "source/tenant/agreement.pdf",
+                "checksum": "sha256:abc123",
+                "byte_size": 1234,
+                "version_number": 1,
+            }
+        ],
+        "processing_state": "pending",
+        "audit_metadata": {"source": "api"},
+    }
+
+
+def _scope_query(organization: Organization, workspace: Workspace) -> dict[str, str]:
+    return {
+        "organization_id": str(organization.id),
+        "workspace_id": str(workspace.id),
+    }
+
+
+def _create_business_user_scope(session: Session) -> tuple[UUID, Organization, Workspace]:
+    identity = IdentityService(session)
+    identity.bootstrap_authorization_catalog()
+    user = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject=f"user-{uuid4()}",
+        display_name="Business User",
+    )
+    organization = identity.create_organization(name=f"Acme {uuid4()}", slug=f"acme-{uuid4()}")
+    workspace = identity.create_workspace(
+        organization_id=organization.id,
+        name="Derivatives",
+        slug=f"derivatives-{uuid4()}",
+    )
+    membership = identity.grant_membership(
+        organization_id=organization.id,
+        user_id=user.id,
+        role_key=RoleKey.BUSINESS_USER,
+    )
+    identity.grant_workspace_membership(membership_id=membership.id, workspace_id=workspace.id)
+    session.commit()
+    return user.id, organization, workspace
+
+
+def test_create_agreement_persists_repository_metadata(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    user_id, organization, workspace = _create_business_user_scope(session)
+    client = client_for_session(user_id)
+
+    response = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload("Client agreement"),
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["organization_id"] == str(organization.id)
+    assert created["workspace_id"] == str(workspace.id)
+    assert created["parties"] == [
+        {"name": "Example Client Ltd", "role": "client"},
+        {"name": "Example Broker Ltd", "role": "provider"},
+    ]
+    assert created["files"] == [
+        {
+            "file_name": "agreement.pdf",
+            "content_type": "application/pdf",
+            "storage_key": "source/tenant/agreement.pdf",
+            "checksum": "sha256:abc123",
+            "byte_size": 1234,
+            "version_number": 1,
+        }
+    ]
+    assert created["processing_state"] == "pending"
+    assert created["audit_metadata"] == {"source": "api"}
+    assert created["audit_events"][0]["action"] == "created"
+    assert created["audit_events"][0]["actor_id"] == str(user_id)
+    assert created["audit_events"][0]["occurred_at"]
+    assert created["archived_at"] is None
+    assert created["created_at"]
+    assert created["updated_at"]
+
+    detail = client.get(
+        f"/agreements/{created['id']}",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert detail.status_code == 200
+    assert detail.json() == created
+
+
+def test_list_scopes_results_filters_and_uses_cursor_pagination(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    user_id, organization, workspace = _create_business_user_scope(session)
+    client = client_for_session(user_id)
+    other_workspace = IdentityService(session).create_workspace(
+        organization_id=organization.id,
+        name="Credit",
+        slug=f"credit-{uuid4()}",
+    )
+    session.commit()
+    first = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload("One", "client"),
+    )
+    second = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload("Two", "liquidity"),
+    )
+    unauthorized = client.post(
+        "/agreements",
+        params=_scope_query(organization, other_workspace),
+        json=_agreement_payload("Other", "client"),
+    )
+
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert unauthorized.status_code == 404
+
+    first_page = client.get(
+        "/agreements",
+        params={**_scope_query(organization, workspace), "limit": "1"},
+    )
+
+    assert first_page.status_code == 200
+    assert first_page.json()["items"] == [first.json()]
+    assert first_page.json()["page"] == {"limit": 1, "next_cursor": "1"}
+
+    second_page = client.get(
+        "/agreements",
+        params={**_scope_query(organization, workspace), "limit": "1", "cursor": "1"},
+    )
+
+    assert second_page.status_code == 200
+    assert second_page.json()["items"] == [second.json()]
+    assert second_page.json()["page"] == {"limit": 1, "next_cursor": None}
+
+    filtered = client.get(
+        "/agreements",
+        params={**_scope_query(organization, workspace), "agreement_type": "liquidity"},
+    )
+
+    assert filtered.status_code == 200
+    assert filtered.json()["items"] == [second.json()]
+
+
+def test_cross_workspace_detail_archive_and_restore_are_hidden(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    user_id, organization, workspace = _create_business_user_scope(session)
+    other_workspace = IdentityService(session).create_workspace(
+        organization_id=organization.id,
+        name="Credit",
+        slug=f"credit-{uuid4()}",
+    )
+    session.commit()
+    client = client_for_session(user_id)
+    created = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload("Private"),
+    ).json()
+
+    for label, method, url in (
+        ("get", "get", f"/agreements/{created['id']}"),
+        ("post_archive", "post", f"/agreements/{created['id']}/archive"),
+        ("post_restore", "post", f"/agreements/{created['id']}/restore"),
+    ):
+        response = getattr(client, method)(
+            url,
+            params=_scope_query(organization, other_workspace),
+            headers={"X-Correlation-ID": CROSS_WORKSPACE_CORRELATION_IDS[label]},
+        )
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "agreement_not_found",
+            "message": "Agreement not found",
+            "correlation_id": CROSS_WORKSPACE_CORRELATION_IDS[label],
+        }
+
+
+def test_archive_is_recoverable_and_retains_source_file_metadata(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    user_id, organization, workspace = _create_business_user_scope(session)
+    client = client_for_session(user_id)
+    created = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload("Recoverable agreement"),
+    ).json()
+
+    archived = client.post(
+        f"/agreements/{created['id']}/archive",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"]
+    assert archived.json()["files"] == created["files"]
+    assert archived.json()["audit_events"][-1]["action"] == "archived"
+    assert archived.json()["audit_events"][-1]["actor_id"] == str(user_id)
+    assert (
+        client.get("/agreements", params=_scope_query(organization, workspace)).json()["items"]
+        == []
+    )
+
+    restored = client.post(
+        f"/agreements/{created['id']}/restore",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+    assert restored.json()["files"] == created["files"]
+    assert restored.json()["audit_events"][-1]["action"] == "restored"
+    assert restored.json()["audit_events"][-1]["actor_id"] == str(user_id)
+    assert client.get("/agreements", params=_scope_query(organization, workspace)).json()[
+        "items"
+    ] == [restored.json()]
+
+
+def test_agreements_persist_across_database_sessions(tmp_path: Path) -> None:
+    database_path = tmp_path / "agreements.db"
+    engine = create_engine(f"sqlite+pysqlite:///{database_path}")
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine)
+    first_session = session_factory()
+    user_id, organization, workspace = _create_business_user_scope(first_session)
+    organization_id = organization.id
+    workspace_id = workspace.id
+    app.dependency_overrides[get_session] = lambda: first_session
+    app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
+    try:
+        created = TestClient(app).post(
+            "/agreements",
+            params=_scope_query(organization, workspace),
+            json=_agreement_payload("Durable"),
+        )
+        assert created.status_code == 201
+        agreement_id = created.json()["id"]
+    finally:
+        app.dependency_overrides.clear()
+        first_session.close()
+
+    second_session = session_factory()
+    app.dependency_overrides[get_session] = lambda: second_session
+    app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
+    try:
+        detail = TestClient(app).get(
+            f"/agreements/{agreement_id}",
+            params={"organization_id": str(organization_id), "workspace_id": str(workspace_id)},
+        )
+    finally:
+        app.dependency_overrides.clear()
+        second_session.close()
+        engine.dispose()
+
+    assert detail.status_code == 200
+    assert detail.json()["title"] == "Durable"
+
+
+def test_missing_auth_and_invalid_scope_errors_include_stable_correlation_ids(
+    session: Session,
+) -> None:
+    _user_id, organization, workspace = _create_business_user_scope(session)
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        missing_auth = TestClient(app).get(
+            "/agreements",
+            params=_scope_query(organization, workspace),
+            headers={"X-Correlation-ID": AUTH_CORRELATION_ID},
+        )
+        app.dependency_overrides[current_principal] = lambda: Principal(user_id=_user_id)
+        missing_scope = TestClient(app).get(
+            "/agreements",
+            params={"organization_id": str(organization.id)},
+            headers={"X-Correlation-ID": MISSING_SCOPE_CORRELATION_ID},
+        )
+        invalid_limit = TestClient(app).get(
+            "/agreements",
+            params={**_scope_query(organization, workspace), "limit": "0"},
+            headers={"X-Correlation-ID": BAD_LIMIT_CORRELATION_ID},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert missing_auth.status_code == 401
+    assert missing_auth.json() == {
+        "code": "authentication_required",
+        "message": "Authentication required",
+        "correlation_id": AUTH_CORRELATION_ID,
+    }
+    assert missing_scope.status_code == 422
+    assert missing_scope.json() == {
+        "code": "validation_error",
+        "message": "Request validation failed",
+        "correlation_id": MISSING_SCOPE_CORRELATION_ID,
+    }
+    assert invalid_limit.status_code == 422
+    assert invalid_limit.json() == {
+        "code": "validation_error",
+        "message": "Request validation failed",
+        "correlation_id": BAD_LIMIT_CORRELATION_ID,
+    }
+
+
+def test_agreement_migration_creates_repository_tables(tmp_path: Path) -> None:
+    database_path = tmp_path / "agreement-migration.db"
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+pysqlite:///{database_path}")
+
+    command.upgrade(config, "head")
+
+    table_names = inspect_database(
+        create_engine(f"sqlite+pysqlite:///{database_path}")
+    ).get_table_names()
+    assert "agreements" in table_names
