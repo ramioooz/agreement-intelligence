@@ -110,6 +110,12 @@ linked issue to `In review` when the change is ready for owner review.
 Run the narrow checks during development and the complete relevant checks
 before requesting review.
 
+Pull requests targeting `main` run the source-quality CI gate automatically.
+The current gate installs locked dependencies, runs `make check`, and checks
+for whitespace errors with `git diff --check`. Docker stack checks, dependency
+audits, secret scanning, and container scanning are intentionally handled by
+later security-hardening work.
+
 | Change | Minimum evidence |
 | --- | --- |
 | Documentation | Markdown structure, internal links, diagrams, and consistency review |

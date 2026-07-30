@@ -113,6 +113,7 @@ typecheck:
 test:
 	pnpm --filter @agreement-intelligence/web test
 	uv run pytest
+	tests/ci/test-ci-workflow.sh
 
 build:
 	pnpm --filter @agreement-intelligence/web build
