@@ -24,6 +24,12 @@ CROSS_WORKSPACE_CORRELATION_IDS = {
     "post_archive": "55555555-5555-4555-8555-555555555555",
     "post_restore": "66666666-6666-4666-8666-666666666666",
 }
+CROSS_TENANT_CORRELATION_IDS = {
+    "list": "77777777-7777-4777-8777-777777777777",
+    "get": "88888888-8888-4888-8888-888888888888",
+    "archive": "99999999-9999-4999-8999-999999999999",
+    "restore": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+}
 
 
 @fixture
@@ -102,7 +108,11 @@ def _create_business_user_scope(session: Session) -> tuple[UUID, Organization, W
         user_id=user.id,
         role_key=RoleKey.BUSINESS_USER,
     )
-    identity.grant_workspace_membership(membership_id=membership.id, workspace_id=workspace.id)
+    identity.grant_workspace_membership(
+        organization_id=organization.id,
+        membership_id=membership.id,
+        workspace_id=workspace.id,
+    )
     session.commit()
     return user.id, organization, workspace
 
@@ -248,6 +258,59 @@ def test_cross_workspace_detail_archive_and_restore_are_hidden(
             "code": "agreement_not_found",
             "message": "Agreement not found",
             "correlation_id": CROSS_WORKSPACE_CORRELATION_IDS[label],
+        }
+
+
+def test_cross_tenant_agreement_operations_are_non_disclosing(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    outsider_id, _outsider_organization, _outsider_workspace = _create_business_user_scope(session)
+    owner_id, owner_organization, owner_workspace = _create_business_user_scope(session)
+    owner_client = client_for_session(owner_id)
+    created = owner_client.post(
+        "/agreements",
+        params=_scope_query(owner_organization, owner_workspace),
+        json=_agreement_payload("Tenant secret"),
+    )
+    assert created.status_code == 201
+
+    outsider_client = client_for_session(outsider_id)
+    requests = (
+        (
+            "list",
+            "get",
+            "/agreements",
+        ),
+        (
+            "get",
+            "get",
+            f"/agreements/{created.json()['id']}",
+        ),
+        (
+            "archive",
+            "post",
+            f"/agreements/{created.json()['id']}/archive",
+        ),
+        (
+            "restore",
+            "post",
+            f"/agreements/{created.json()['id']}/restore",
+        ),
+    )
+
+    for operation, method, url in requests:
+        response = getattr(outsider_client, method)(
+            url,
+            params=_scope_query(owner_organization, owner_workspace),
+            headers={"X-Correlation-ID": CROSS_TENANT_CORRELATION_IDS[operation]},
+        )
+
+        assert response.status_code == 404
+        assert response.json() == {
+            "code": "agreement_not_found",
+            "message": "Agreement not found",
+            "correlation_id": CROSS_TENANT_CORRELATION_IDS[operation],
         }
 
 
