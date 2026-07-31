@@ -17,6 +17,15 @@ from agreement_intelligence_api.middleware import (
     CorrelationIdMiddleware,
     DocumentUploadBodyLimitMiddleware,
 )
+from agreement_intelligence_api.processing.routes import (
+    idempotency_conflict_handler,
+    retry_not_permitted_handler,
+)
+from agreement_intelligence_api.processing.routes import router as processing_router
+from agreement_intelligence_api.processing.service import (
+    IdempotencyKeyConflictError,
+    RetryNotPermittedError,
+)
 
 app = FastAPI(
     title="Agreement Intelligence API",
@@ -26,9 +35,12 @@ configure_logging()
 app.add_middleware(DocumentUploadBodyLimitMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_exception_handler(AgreementNotFoundError, agreement_not_found_handler)
+app.add_exception_handler(IdempotencyKeyConflictError, idempotency_conflict_handler)
+app.add_exception_handler(RetryNotPermittedError, retry_not_permitted_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 app.include_router(health_router)
 app.include_router(identity_router)
 app.include_router(agreements_router)
 app.include_router(documents_router)
+app.include_router(processing_router)

@@ -1,8 +1,26 @@
 import asyncio
+import os
 import signal
+from dataclasses import dataclass
+
+import boto3
 
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
+from agreement_intelligence_worker.processing import (
+    JobProcessor,
+    PlaceholderAgreementProcessor,
+    SQLAlchemyProcessingJobRepository,
+    SQSProcessingMessageReceiver,
+    SQSProcessingQueue,
+    processing_engine_from_url,
+)
+
+
+@dataclass(frozen=True)
+class ProcessingRuntime:
+    receiver: SQSProcessingMessageReceiver
+    processor: JobProcessor
 
 
 async def serve() -> None:
@@ -12,7 +30,36 @@ async def serve() -> None:
     for shutdown_signal in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(shutdown_signal, stop_event.set)
 
-    await run_worker(stop_event)
+    runtime = processing_runtime_from_environment()
+    if runtime is None:
+        await run_worker(stop_event)
+        return
+    await run_worker(
+        stop_event,
+        message_receiver=runtime.receiver,
+        job_processor=runtime.processor,
+    )
+
+
+def processing_runtime_from_environment() -> ProcessingRuntime | None:
+    queue_url = os.environ.get("SQS_PROCESSING_QUEUE")
+    if not queue_url:
+        return None
+    region = os.environ.get("AWS_REGION")
+    database_url = os.environ.get("DATABASE_URL")
+    if not region or not database_url:
+        raise RuntimeError("AWS_REGION and DATABASE_URL are required for processing worker runtime")
+    client = boto3.client(
+        "sqs",
+        endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
+        region_name=region,
+    )
+    engine = processing_engine_from_url(database_url)
+    queue = SQSProcessingQueue(client=client, queue_url=queue_url)
+    repository = SQLAlchemyProcessingJobRepository(engine)
+    processor = JobProcessor(repository, queue, PlaceholderAgreementProcessor())
+    receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
+    return ProcessingRuntime(receiver=receiver, processor=processor)
 
 
 def main() -> None:

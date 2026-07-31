@@ -5,7 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 AgreementStatus = Literal["draft", "active", "expired", "terminated"]
-ProcessingState = Literal["pending", "processing", "completed", "failed"]
+ProcessingState = Literal["pending", "queued", "processing", "completed", "failed"]
 
 
 class Party(BaseModel):
