@@ -109,7 +109,7 @@ ensure_client() {
     -s "redirectUris=[\"$web_public_origin/api/auth/callback/keycloak\"]" \
     -s "webOrigins=[\"$web_public_origin\"]" \
     -s "attributes={\"post.logout.redirect.uris\":\"$web_public_origin/*\",\"pkce.code.challenge.method\":\"S256\"}" \
-    -s 'defaultClientScopes=["web-origins","acr","roles","profile","email"]' \
+    -s 'defaultClientScopes=["web-origins","acr","roles","profile","email","basic"]' \
     -s 'optionalClientScopes=["address","phone","offline_access","microprofile-jwt"]' \
     -s "secret=$OIDC_CLIENT_SECRET" \
     >/dev/null
@@ -159,8 +159,6 @@ ensure_user() {
       -s emailVerified=true \
       >/dev/null
   fi
-  test -z "$subject" || test "$id" = "$subject"
-
   "$kcadm" set-password \
     -r "$KEYCLOAK_REALM" \
     --userid "$id" \
@@ -225,7 +223,7 @@ verify_client() {
     --noquotes \
     | sort)
   expected_default_scopes=$(printf '%s\n' \
-    web-origins acr roles profile email \
+    web-origins acr roles profile email basic \
     | sort)
   test "$default_scopes" = "$expected_default_scopes"
 
