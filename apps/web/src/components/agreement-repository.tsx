@@ -66,6 +66,12 @@ export function AgreementRepository({
     <section aria-labelledby="repository-heading" className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
+          <Link
+            className="mb-3 inline-flex text-sm font-semibold text-slate-600 underline-offset-4 hover:text-slate-950 hover:underline"
+            href="/dashboard"
+          >
+            Back to dashboard
+          </Link>
           <h1
             className="text-3xl font-semibold tracking-tight"
             id="repository-heading"
