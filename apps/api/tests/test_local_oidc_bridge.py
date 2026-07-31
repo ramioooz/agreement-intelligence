@@ -253,3 +253,40 @@ def test_local_demo_membership_allows_the_seeded_username_when_keycloak_generate
 
     assert identity.granted_roles == ["legal_reviewer", "business_user"]
     assert identity.granted_workspace_memberships == 2
+
+
+def test_local_demo_membership_grants_seeded_admin_platform_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
+
+    monkeypatch.setenv("DEMO_ADMIN_USERNAME", "platform.admin")
+    identity = _RlsLikeIdentity()
+    user = type("User", (), {"id": "local-admin-id"})()
+
+    ensure_local_demo_membership(
+        identity,  # type: ignore[arg-type]
+        user=user,
+        subject="keycloak-generated-admin-subject",
+        username="platform.admin",
+    )
+
+    assert identity.granted_roles == ["platform_admin"]
+    assert identity.granted_workspace_memberships == 0
+
+
+def test_local_demo_membership_ignores_unknown_users() -> None:
+    from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
+
+    identity = _RlsLikeIdentity()
+    user = type("User", (), {"id": "unknown-user-id"})()
+
+    ensure_local_demo_membership(
+        identity,  # type: ignore[arg-type]
+        user=user,
+        subject="unknown-subject",
+        username="unknown.user",
+    )
+
+    assert identity.granted_roles == []
+    assert identity.granted_workspace_memberships == 0
