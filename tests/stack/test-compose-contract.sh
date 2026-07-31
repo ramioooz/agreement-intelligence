@@ -80,6 +80,19 @@ for (const expectedState of ["available", "running"]) {
     throw new Error(`LocalStack healthcheck must accept the ${expectedState} service state`);
   }
 }
+
+for (const [serviceName, expected] of Object.entries({
+  api: ["OIDC_ISSUER", "OIDC_INTERNAL_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "DEMO_REVIEWER_SUBJECT"],
+  web: ["API_ORGANIZATION_ID", "API_WORKSPACE_ID"],
+  "keycloak-bootstrap": ["DEMO_REVIEWER_SUBJECT"],
+})) {
+  const environment = config.services?.[serviceName]?.environment ?? {};
+  for (const key of expected) {
+    if (!Object.hasOwn(environment, key)) {
+      throw new Error(`${serviceName} must receive ${key} for the local repository demo`);
+    }
+  }
+}
 NODE
 
 grep -q '^name: agreement-intelligence$' "$config_file"

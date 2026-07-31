@@ -161,6 +161,12 @@ def test_submission_is_idempotent_and_conflicting_payload_is_rejected(
     assert first.json()["retry_permitted"] is False
     assert repeated.status_code == 200
     assert repeated.json() == first.json()
+    detail = client.get(
+        f"/agreements/{agreement.json()['id']}",
+        params=_scope_query(organization, workspace),
+    )
+    assert detail.json()["processing_state"] == "queued"
+    assert detail.json()["audit_metadata"]["processing_job_id"] == first.json()["id"]
     assert conflict.status_code == 409
     assert conflict.json() == {
         "code": "idempotency_key_conflict",

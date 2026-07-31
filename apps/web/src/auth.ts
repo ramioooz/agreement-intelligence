@@ -80,6 +80,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         token.keycloakIdToken = account.id_token;
       }
 
+      if (account?.access_token) {
+        token.keycloakAccessToken = account.access_token;
+      }
+
       return token;
     },
     session({ session, token }) {

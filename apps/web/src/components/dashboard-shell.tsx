@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 type DashboardUser = {
   email?: string | null;
   name?: string | null;
@@ -8,10 +10,16 @@ type DashboardShellProps = {
   signOutAction: () => void | Promise<void>;
 };
 
-const navigationItems = [
+const navigationItems: Array<{
+  label: string;
+  summary: string;
+  href?: string;
+}> = [
   {
     label: "Repository",
-    summary: "Upload and browse agreements once the repository story lands.",
+    summary:
+      "Upload and browse agreements in the authorized workspace repository.",
+    href: "/dashboard/agreements",
   },
   {
     label: "Reviews",
@@ -82,10 +90,25 @@ export function DashboardShell({ user, signOutAction }: DashboardShellProps) {
               key={item.label}
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="font-semibold">{item.label}</span>
-                <span className="rounded-full bg-amber-300/15 px-2.5 py-1 text-xs font-semibold text-amber-100">
-                  Coming soon
-                </span>
+                {item.href ? (
+                  <Link
+                    className="font-semibold underline-offset-4 hover:underline"
+                    href={item.href}
+                  >
+                    {item.label}
+                  </Link>
+                ) : (
+                  <span className="font-semibold">{item.label}</span>
+                )}
+                {!item.href ? (
+                  <span className="rounded-full bg-amber-300/15 px-2.5 py-1 text-xs font-semibold text-amber-100">
+                    Coming soon
+                  </span>
+                ) : (
+                  <span className="rounded-full bg-emerald-300/15 px-2.5 py-1 text-xs font-semibold text-emerald-100">
+                    Available
+                  </span>
+                )}
               </div>
               <p className="mt-4 text-sm leading-6 text-slate-300">
                 {item.summary}

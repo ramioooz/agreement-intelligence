@@ -121,18 +121,32 @@ ensure_user() {
   first_name=$3
   last_name=$4
   password=$5
+  subject=$6
   id=$(user_id "$username" || true)
 
   if test -z "$id"; then
-    "$kcadm" create users \
-      -r "$KEYCLOAK_REALM" \
-      -s username="$username" \
-      -s email="$email" \
-      -s firstName="$first_name" \
-      -s lastName="$last_name" \
-      -s enabled=true \
-      -s emailVerified=true \
-      >/dev/null
+    if test -n "$subject"; then
+      "$kcadm" create users \
+        -r "$KEYCLOAK_REALM" \
+        -s id="$subject" \
+        -s username="$username" \
+        -s email="$email" \
+        -s firstName="$first_name" \
+        -s lastName="$last_name" \
+        -s enabled=true \
+        -s emailVerified=true \
+        >/dev/null
+    else
+      "$kcadm" create users \
+        -r "$KEYCLOAK_REALM" \
+        -s username="$username" \
+        -s email="$email" \
+        -s firstName="$first_name" \
+        -s lastName="$last_name" \
+        -s enabled=true \
+        -s emailVerified=true \
+        >/dev/null
+    fi
     id=$(user_id "$username")
   else
     "$kcadm" update "users/$id" \
@@ -145,6 +159,7 @@ ensure_user() {
       -s emailVerified=true \
       >/dev/null
   fi
+  test -z "$subject" || test "$id" = "$subject"
 
   "$kcadm" set-password \
     -r "$KEYCLOAK_REALM" \
@@ -284,13 +299,15 @@ apply() {
     "$DEMO_REVIEWER_EMAIL" \
     "$DEMO_REVIEWER_FIRST_NAME" \
     "$DEMO_REVIEWER_LAST_NAME" \
-    "$DEMO_REVIEWER_PASSWORD"
+    "$DEMO_REVIEWER_PASSWORD" \
+    "$DEMO_REVIEWER_SUBJECT"
   ensure_user \
     "$DEMO_ADMIN_USERNAME" \
     "$DEMO_ADMIN_EMAIL" \
     "$DEMO_ADMIN_FIRST_NAME" \
     "$DEMO_ADMIN_LAST_NAME" \
-    "$DEMO_ADMIN_PASSWORD"
+    "$DEMO_ADMIN_PASSWORD" \
+    ""
 }
 
 verify() {
