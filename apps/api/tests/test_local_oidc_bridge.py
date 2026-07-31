@@ -4,12 +4,14 @@ import pytest
 from agreement_intelligence_api.identity import authz
 from agreement_intelligence_api.identity.authz import current_principal
 from agreement_intelligence_api.identity.local_demo import (
+    DEMO_ADMIN_SUBJECT,
     DEMO_ORGANIZATION_ID,
     DEMO_REVIEWER_SUBJECT,
     DEMO_WORKSPACE_ID,
+    provision_local_demo_identities,
 )
 from agreement_intelligence_api.identity.models import Base, Organization, Workspace
-from agreement_intelligence_api.identity.permissions import PermissionKey
+from agreement_intelligence_api.identity.permissions import PermissionKey, RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from fastapi import HTTPException
 from sqlalchemy import create_engine
@@ -102,6 +104,11 @@ def test_verified_demo_access_token_provisions_the_scoped_application_principal(
         },
     )
     monkeypatch.setattr(authz, "_new_session", lambda: session)
+    provision_local_demo_identities(
+        IdentityService(session),
+        issuer="http://localhost:8080/realms/agreement-intelligence",
+    )
+    session.commit()
 
     principal = current_principal("Bearer verified-access-token")
 
@@ -143,11 +150,48 @@ def test_userinfo_validated_demo_access_token_provisions_the_scoped_application_
         raising=False,
     )
     monkeypatch.setattr(authz, "_new_session", lambda: session)
+    provision_local_demo_identities(
+        IdentityService(session),
+        issuer="http://localhost:8080/realms/agreement-intelligence",
+    )
+    session.commit()
 
     principal = current_principal("Bearer userinfo-validated-access-token")
 
     identity = IdentityService(session)
     assert identity.can_access_workspace(
+        principal,
+        organization_id=DEMO_ORGANIZATION_ID,
+        workspace_id=DEMO_WORKSPACE_ID,
+        permission=PermissionKey.AGREEMENTS_READ,
+    )
+
+
+def test_current_principal_does_not_grant_demo_memberships_during_authentication(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    monkeypatch.setenv("OIDC_ISSUER", "http://localhost:8080/realms/agreement-intelligence")
+    monkeypatch.setenv("OIDC_INTERNAL_ISSUER", "http://keycloak:8080/realms/agreement-intelligence")
+    monkeypatch.setenv("OIDC_CLIENT_ID", "agreement-intelligence-web")
+    monkeypatch.setenv("OIDC_CLIENT_SECRET", "local-secret")
+    monkeypatch.setattr(
+        authz,
+        "_introspect_access_token",
+        lambda _: {
+            "active": True,
+            "iss": "http://localhost:8080/realms/agreement-intelligence",
+            "sub": str(DEMO_REVIEWER_SUBJECT),
+            "client_id": "agreement-intelligence-web",
+            "preferred_username": "legal.reviewer",
+            "email": "legal.reviewer@example.test",
+        },
+    )
+    monkeypatch.setattr(authz, "_new_session", lambda: session)
+
+    principal = current_principal("Bearer verified-access-token")
+
+    identity = IdentityService(session)
+    assert not identity.can_access_workspace(
         principal,
         organization_id=DEMO_ORGANIZATION_ID,
         workspace_id=DEMO_WORKSPACE_ID,
@@ -218,12 +262,12 @@ def test_userinfo_claims_without_expected_token_context_fail_closed(
 
 
 def test_local_demo_membership_sets_tenant_scope_before_loading_workspace() -> None:
-    from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
+    from agreement_intelligence_api.identity.local_demo import grant_local_demo_membership
 
     identity = _RlsLikeIdentity()
     user = type("User", (), {"id": "local-user-id"})()
 
-    ensure_local_demo_membership(
+    grant_local_demo_membership(
         identity,  # type: ignore[arg-type]
         user=user,
         subject=str(DEMO_REVIEWER_SUBJECT),
@@ -234,40 +278,40 @@ def test_local_demo_membership_sets_tenant_scope_before_loading_workspace() -> N
     assert identity.granted_workspace_memberships == 2
 
 
-def test_local_demo_membership_allows_the_seeded_username_when_keycloak_generates_subject(
+def test_local_demo_membership_rejects_seeded_username_without_configured_subject(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
+    from agreement_intelligence_api.identity.local_demo import grant_local_demo_membership
 
     monkeypatch.setenv("DEMO_REVIEWER_SUBJECT", str(DEMO_REVIEWER_SUBJECT))
     monkeypatch.setenv("DEMO_REVIEWER_USERNAME", "legal.reviewer")
     identity = _RlsLikeIdentity()
     user = type("User", (), {"id": "local-user-id"})()
 
-    ensure_local_demo_membership(
+    grant_local_demo_membership(
         identity,  # type: ignore[arg-type]
         user=user,
         subject="keycloak-generated-subject",
         username="legal.reviewer",
     )
 
-    assert identity.granted_roles == ["legal_reviewer", "business_user"]
-    assert identity.granted_workspace_memberships == 2
+    assert identity.granted_roles == []
+    assert identity.granted_workspace_memberships == 0
 
 
 def test_local_demo_membership_grants_seeded_admin_platform_access(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
+    from agreement_intelligence_api.identity.local_demo import grant_local_demo_membership
 
     monkeypatch.setenv("DEMO_ADMIN_USERNAME", "platform.admin")
     identity = _RlsLikeIdentity()
     user = type("User", (), {"id": "local-admin-id"})()
 
-    ensure_local_demo_membership(
+    grant_local_demo_membership(
         identity,  # type: ignore[arg-type]
         user=user,
-        subject="keycloak-generated-admin-subject",
+        subject=str(DEMO_ADMIN_SUBJECT),
         username="platform.admin",
     )
 
@@ -276,12 +320,12 @@ def test_local_demo_membership_grants_seeded_admin_platform_access(
 
 
 def test_local_demo_membership_ignores_unknown_users() -> None:
-    from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
+    from agreement_intelligence_api.identity.local_demo import grant_local_demo_membership
 
     identity = _RlsLikeIdentity()
     user = type("User", (), {"id": "unknown-user-id"})()
 
-    ensure_local_demo_membership(
+    grant_local_demo_membership(
         identity,  # type: ignore[arg-type]
         user=user,
         subject="unknown-subject",
@@ -290,3 +334,61 @@ def test_local_demo_membership_ignores_unknown_users() -> None:
 
     assert identity.granted_roles == []
     assert identity.granted_workspace_memberships == 0
+
+
+def test_local_demo_provisioning_creates_reviewer_and_admin_access(
+    monkeypatch: pytest.MonkeyPatch, session: Session
+) -> None:
+    monkeypatch.setenv("DEMO_ADMIN_SUBJECT", str(DEMO_ADMIN_SUBJECT))
+    identity = IdentityService(session)
+    stale_admin = identity.provision_user(
+        issuer="http://localhost:8080/realms/agreement-intelligence",
+        subject="stale-admin-subject",
+        display_name="Platform Administrator",
+        email="platform.admin@example.test",
+    )
+    identity.grant_membership(
+        organization_id=DEMO_ORGANIZATION_ID,
+        user_id=stale_admin.id,
+        role_key=RoleKey.PLATFORM_ADMIN,
+    )
+    session.commit()
+
+    provision_local_demo_identities(
+        IdentityService(session),
+        issuer="http://localhost:8080/realms/agreement-intelligence",
+    )
+    session.commit()
+
+    identity = IdentityService(session)
+    reviewer = identity.provision_user(
+        issuer="http://localhost:8080/realms/agreement-intelligence",
+        subject=str(DEMO_REVIEWER_SUBJECT),
+        display_name="Legal Reviewer",
+        email="legal.reviewer@example.test",
+    )
+    admin = identity.provision_user(
+        issuer="http://localhost:8080/realms/agreement-intelligence",
+        subject=str(DEMO_ADMIN_SUBJECT),
+        display_name="Platform Administrator",
+        email="platform.admin@example.test",
+    )
+
+    assert identity.can_access_workspace(
+        type("Principal", (), {"user_id": reviewer.id})(),
+        organization_id=DEMO_ORGANIZATION_ID,
+        workspace_id=DEMO_WORKSPACE_ID,
+        permission=PermissionKey.AGREEMENTS_READ,
+    )
+    assert identity.can_access_workspace(
+        type("Principal", (), {"user_id": admin.id})(),
+        organization_id=DEMO_ORGANIZATION_ID,
+        workspace_id=DEMO_WORKSPACE_ID,
+        permission=PermissionKey.AGREEMENTS_READ,
+    )
+    assert not identity.can_access_workspace(
+        type("Principal", (), {"user_id": stale_admin.id})(),
+        organization_id=DEMO_ORGANIZATION_ID,
+        workspace_id=DEMO_WORKSPACE_ID,
+        permission=PermissionKey.AGREEMENTS_READ,
+    )

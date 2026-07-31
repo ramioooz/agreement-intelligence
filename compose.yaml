@@ -90,6 +90,7 @@ services:
       - -c
       - >-
         alembic -c apps/api/alembic.ini upgrade head
+        && python -m agreement_intelligence_api.identity.local_demo
         && exec uvicorn agreement_intelligence_api.main:app
         --host 0.0.0.0 --port 8000
     environment:
@@ -103,8 +104,19 @@ services:
       OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/${KEYCLOAK_REALM:?required}
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      KEYCLOAK_SERVER_URL: http://keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:?required}
+      KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME:?required}
+      KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD:?required}
       DEMO_REVIEWER_SUBJECT: ${DEMO_REVIEWER_SUBJECT:?required}
       DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
+      DEMO_REVIEWER_EMAIL: ${DEMO_REVIEWER_EMAIL:?required}
+      DEMO_REVIEWER_FIRST_NAME: ${DEMO_REVIEWER_FIRST_NAME:?required}
+      DEMO_REVIEWER_LAST_NAME: ${DEMO_REVIEWER_LAST_NAME:?required}
+      DEMO_ADMIN_USERNAME: ${DEMO_ADMIN_USERNAME:?required}
+      DEMO_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:?required}
+      DEMO_ADMIN_FIRST_NAME: ${DEMO_ADMIN_FIRST_NAME:?required}
+      DEMO_ADMIN_LAST_NAME: ${DEMO_ADMIN_LAST_NAME:?required}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
