@@ -1,7 +1,10 @@
 import logging
+import os
 
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from agreement_intelligence_api.correlation import (
     CORRELATION_ID_HEADER,
@@ -11,6 +14,84 @@ from agreement_intelligence_api.correlation import (
 )
 
 logger = logging.getLogger("agreement_intelligence.api")
+
+DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+
+
+class DocumentUploadBodyLimitMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == "/documents":
+            headers = dict(scope.get("headers", []))
+            content_length = headers.get(b"content-length")
+            if content_length is None:
+                await JSONResponse(
+                    status_code=411,
+                    content={"detail": "A Content-Length header is required for document uploads."},
+                )(scope, receive, send)
+                return
+            try:
+                declared_length = int(content_length.decode("ascii"))
+            except ValueError:
+                await JSONResponse(
+                    status_code=400,
+                    content={"detail": "Content-Length must be an integer."},
+                )(scope, receive, send)
+                return
+            max_bytes = _configured_max_upload_bytes()
+            if declared_length > max_bytes:
+                await JSONResponse(
+                    status_code=413,
+                    content={"detail": "The request body exceeds the maximum allowed size."},
+                )(scope, receive, send)
+                return
+            received_bytes = 0
+            body_messages: list[Message] = []
+
+            while True:
+                message = await receive()
+                if message["type"] == "http.request":
+                    body = message.get("body", b"")
+                    if isinstance(body, bytes):
+                        received_bytes += len(body)
+                    if received_bytes > max_bytes:
+                        await JSONResponse(
+                            status_code=413,
+                            content={
+                                "detail": "The request body exceeds the maximum allowed size."
+                            },
+                        )(scope, receive, send)
+                        return
+                    body_messages.append(message)
+                    if not message.get("more_body", False):
+                        break
+                elif message["type"] == "http.disconnect":
+                    return
+
+            async def replay_receive() -> Message:
+                if body_messages:
+                    return body_messages.pop(0)
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            await self.app(scope, replay_receive, send)
+            return
+
+        await self.app(scope, receive, send)
+
+
+def _configured_max_upload_bytes() -> int:
+    configured = os.environ.get("MAX_DOCUMENT_UPLOAD_BYTES")
+    if configured is None:
+        return DEFAULT_MAX_UPLOAD_BYTES
+    try:
+        value = int(configured)
+    except ValueError as error:
+        raise RuntimeError("MAX_DOCUMENT_UPLOAD_BYTES must be an integer.") from error
+    if value <= 0:
+        raise RuntimeError("MAX_DOCUMENT_UPLOAD_BYTES must be positive.")
+    return value
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):

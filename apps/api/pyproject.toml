@@ -4,9 +4,11 @@ version = "0.1.0"
 requires-python = "==3.13.*"
 dependencies = [
   "alembic==1.16.4",
+  "boto3==1.43.60",
   "fastapi==0.140.0",
   "psycopg[binary]==3.2.9",
   "pydantic==2.13.4",
+  "python-multipart==0.0.32",
   "sqlalchemy==2.0.46",
   "uvicorn[standard]==0.51.0",
 ]

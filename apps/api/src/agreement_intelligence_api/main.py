@@ -5,6 +5,7 @@ from agreement_intelligence_api import __version__
 from agreement_intelligence_api.agreements.routes import agreement_not_found_handler
 from agreement_intelligence_api.agreements.routes import router as agreements_router
 from agreement_intelligence_api.agreements.service import AgreementNotFoundError
+from agreement_intelligence_api.documents.routes import router as documents_router
 from agreement_intelligence_api.errors import (
     http_exception_handler,
     request_validation_exception_handler,
@@ -12,13 +13,17 @@ from agreement_intelligence_api.errors import (
 from agreement_intelligence_api.health import router as health_router
 from agreement_intelligence_api.identity.routes import router as identity_router
 from agreement_intelligence_api.logging_config import configure_logging
-from agreement_intelligence_api.middleware import CorrelationIdMiddleware
+from agreement_intelligence_api.middleware import (
+    CorrelationIdMiddleware,
+    DocumentUploadBodyLimitMiddleware,
+)
 
 app = FastAPI(
     title="Agreement Intelligence API",
     version=__version__,
 )
 configure_logging()
+app.add_middleware(DocumentUploadBodyLimitMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_exception_handler(AgreementNotFoundError, agreement_not_found_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
@@ -26,3 +31,4 @@ app.add_exception_handler(RequestValidationError, request_validation_exception_h
 app.include_router(health_router)
 app.include_router(identity_router)
 app.include_router(agreements_router)
+app.include_router(documents_router)
