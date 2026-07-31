@@ -35,7 +35,6 @@ def current_principal(
 
     session = _new_session()
     try:
-        from agreement_intelligence_api.identity.local_demo import ensure_local_demo_membership
         from agreement_intelligence_api.identity.service import IdentityService
 
         identity = IdentityService(session)
@@ -44,12 +43,6 @@ def current_principal(
             subject=claims.subject,
             display_name=claims.display_name,
             email=claims.email,
-        )
-        ensure_local_demo_membership(
-            identity,
-            user=user,
-            subject=claims.subject,
-            username=claims.username,
         )
         session.commit()
         user_id = user.id

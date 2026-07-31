@@ -82,7 +82,17 @@ for (const expectedState of ["available", "running"]) {
 }
 
 for (const [serviceName, expected] of Object.entries({
-  api: ["OIDC_ISSUER", "OIDC_INTERNAL_ISSUER", "OIDC_CLIENT_ID", "OIDC_CLIENT_SECRET", "DEMO_REVIEWER_SUBJECT"],
+  api: [
+    "OIDC_ISSUER",
+    "OIDC_INTERNAL_ISSUER",
+    "OIDC_CLIENT_ID",
+    "OIDC_CLIENT_SECRET",
+    "KEYCLOAK_SERVER_URL",
+    "KEYCLOAK_REALM",
+    "KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME",
+    "KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD",
+    "DEMO_REVIEWER_SUBJECT",
+  ],
   web: ["API_ORGANIZATION_ID", "API_WORKSPACE_ID"],
   "keycloak-bootstrap": ["DEMO_REVIEWER_SUBJECT"],
 })) {
@@ -92,6 +102,11 @@ for (const [serviceName, expected] of Object.entries({
       throw new Error(`${serviceName} must receive ${key} for the local repository demo`);
     }
   }
+}
+
+const apiCommand = config.services?.api?.command?.join(" ") ?? "";
+if (!apiCommand.includes("python -m agreement_intelligence_api.identity.local_demo")) {
+  throw new Error("API startup must explicitly provision local demo identities");
 }
 NODE
 
