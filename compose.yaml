@@ -104,6 +104,7 @@ services:
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
       DEMO_REVIEWER_SUBJECT: ${DEMO_REVIEWER_SUBJECT:?required}
+      DEMO_REVIEWER_USERNAME: ${DEMO_REVIEWER_USERNAME:?required}
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:

@@ -45,7 +45,12 @@ def current_principal(
             display_name=claims.display_name,
             email=claims.email,
         )
-        ensure_local_demo_membership(identity, user=user, subject=claims.subject)
+        ensure_local_demo_membership(
+            identity,
+            user=user,
+            subject=claims.subject,
+            username=claims.username,
+        )
         session.commit()
         user_id = user.id
     except Exception:
@@ -60,6 +65,7 @@ def current_principal(
 class _VerifiedClaims:
     issuer: str
     subject: str
+    username: str | None
     display_name: str
     email: str | None
 
@@ -75,14 +81,29 @@ def _validated_claims(access_token: str) -> _VerifiedClaims | None:
     expected_issuer = environ.get("OIDC_ISSUER")
     expected_client_id = environ.get("OIDC_CLIENT_ID")
     claims = _introspect_access_token(access_token)
-    if not expected_issuer or not expected_client_id or claims is None:
+    if not expected_issuer or not expected_client_id:
         return None
+    if claims is not None and claims.get("active") is True:
+        return _verified_claims_from_introspection(
+            claims,
+            expected_issuer=expected_issuer,
+            expected_client_id=expected_client_id,
+        )
+    return _verified_claims_from_userinfo(
+        access_token,
+        expected_issuer=expected_issuer,
+        expected_client_id=expected_client_id,
+    )
+
+
+def _verified_claims_from_introspection(
+    claims: dict[str, Any], *, expected_issuer: str, expected_client_id: str
+) -> _VerifiedClaims | None:
     subject = claims.get("sub")
     issuer = claims.get("iss")
     client_id = claims.get("client_id")
     if (
-        claims.get("active") is not True
-        or not isinstance(subject, str)
+        not isinstance(subject, str)
         or not subject
         or issuer != expected_issuer
         or client_id != expected_client_id
@@ -99,9 +120,55 @@ def _validated_claims(access_token: str) -> _VerifiedClaims | None:
     if display_name is None:
         return None
     email = claims.get("email")
+    username = claims.get("preferred_username") or claims.get("username")
     return _VerifiedClaims(
         issuer=issuer,
         subject=subject,
+        username=username if isinstance(username, str) else None,
+        display_name=display_name,
+        email=email if isinstance(email, str) else None,
+    )
+
+
+def _verified_claims_from_userinfo(
+    access_token: str, *, expected_issuer: str, expected_client_id: str
+) -> _VerifiedClaims | None:
+    token_claims = _unverified_token_claims(access_token)
+    userinfo = _userinfo_claims(access_token)
+    if token_claims is None or userinfo is None:
+        return None
+    subject = userinfo.get("sub")
+    token_subject = token_claims.get("sub")
+    issuer = token_claims.get("iss")
+    client_id = token_claims.get("client_id") or token_claims.get("azp")
+    if (
+        not isinstance(subject, str)
+        or not subject
+        or token_subject != subject
+        or issuer != expected_issuer
+        or client_id != expected_client_id
+    ):
+        return None
+    display_name = next(
+        (
+            value
+            for value in (
+                userinfo.get("name"),
+                userinfo.get("preferred_username"),
+                userinfo.get("email"),
+            )
+            if isinstance(value, str) and value
+        ),
+        None,
+    )
+    if display_name is None:
+        return None
+    email = userinfo.get("email")
+    username = userinfo.get("preferred_username")
+    return _VerifiedClaims(
+        issuer=issuer,
+        subject=subject,
+        username=username if isinstance(username, str) else None,
         display_name=display_name,
         email=email if isinstance(email, str) else None,
     )
@@ -129,6 +196,37 @@ def _introspect_access_token(access_token: str) -> dict[str, Any] | None:
     except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _userinfo_claims(access_token: str) -> dict[str, Any] | None:
+    internal_issuer = environ.get("OIDC_INTERNAL_ISSUER")
+    if not internal_issuer:
+        return None
+    request = Request(
+        f"{internal_issuer.rstrip('/')}/protocol/openid-connect/userinfo",
+        headers={"Authorization": f"Bearer {access_token}"},
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=2) as response:  # noqa: S310 - configured OIDC endpoint
+            payload = json.load(response)
+    except (OSError, TimeoutError, ValueError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _unverified_token_claims(access_token: str) -> dict[str, Any] | None:
+    parts = access_token.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1]
+    padding = "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(f"{payload}{padding}".encode())
+        claims = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return claims if isinstance(claims, dict) else None
 
 
 def _authentication_required() -> NoReturn:

@@ -82,6 +82,10 @@ class IdentityService:
         self.session.flush()
         return workspace
 
+    def scope_organization(self, organization_id: UUID) -> None:
+        """Apply the current database tenant scope for scoped reads and writes."""
+        self._set_tenant_scope(organization_id)
+
     def grant_membership(
         self, *, organization_id: UUID, user_id: UUID, role_key: RoleKey
     ) -> Membership:
