@@ -43,6 +43,9 @@ describe("AgreementRepository", () => {
     expect(
       screen.getByRole("searchbox", { name: "Search agreements" }),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Back to dashboard" }),
+    ).toHaveAttribute("href", "/dashboard");
     expect(screen.getByLabelText("Agreement status")).toBeInTheDocument();
     expect(
       screen.getByRole("table", { name: "Agreement repository" }),
