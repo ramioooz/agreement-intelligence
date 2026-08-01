@@ -83,4 +83,5 @@ class PlaybookFindingRecord(Base):
     extraction_version: Mapped[str] = mapped_column(String(100))
     review_state: Mapped[str] = mapped_column(String(32), default="unreviewed")
     risk_payload: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    fallback_suggestions: Mapped[list[dict[str, object]]] = mapped_column(JSON, default=list)
     evaluation: Mapped[PlaybookEvaluationRecord] = relationship(back_populates="findings")

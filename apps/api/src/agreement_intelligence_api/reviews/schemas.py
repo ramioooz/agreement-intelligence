@@ -31,6 +31,20 @@ class RiskPayloadResponse(BaseModel):
     model_explanation: str | None
 
 
+class FallbackSuggestionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["playbook-fallback-suggestion.v1"]
+    rule_id: UUID
+    playbook_version_id: UUID
+    suggested_language: str | None
+    review_recommendation: str
+    citation_ids: list[str]
+    comparison_kind: Literal["clause_differs_from_approved_position"] | None = None
+    comparison: str | None
+    ai_generated: bool
+
+
 class PlaybookFindingResponse(BaseModel):
     id: UUID
     rule_id: UUID
@@ -43,6 +57,7 @@ class PlaybookFindingResponse(BaseModel):
     extraction_version: str
     review_state: str
     risk: RiskPayloadResponse
+    fallback_suggestions: list[FallbackSuggestionResponse]
 
 
 class PlaybookEvaluationResponse(BaseModel):

@@ -78,12 +78,26 @@ def _model_explanation(
         response: object = model_explainer(request)
     except Exception:
         return None
+    return grounded_model_text(
+        response,
+        text_key="rationale",
+        allowed_citation_ids=request.citation_ids,
+    )
+
+
+def grounded_model_text(
+    response: object,
+    *,
+    text_key: str,
+    allowed_citation_ids: list[str],
+) -> str | None:
+    """Return model text only when its complete citation payload is grounded."""
     try:
         if not isinstance(response, Mapping):
             return None
-        if set(response) != {"rationale", "citation_ids"}:
+        if set(response) != {text_key, "citation_ids"}:
             return None
-        rationale = response.get("rationale")
+        rationale = response.get(text_key)
         citation_ids = response.get("citation_ids")
         if not isinstance(rationale, str) or not rationale.strip():
             return None
@@ -91,7 +105,7 @@ def _model_explanation(
             isinstance(item, str) for item in citation_ids
         ):
             return None
-        if not citation_ids or not set(citation_ids).issubset(request.citation_ids):
+        if not citation_ids or not set(citation_ids).issubset(allowed_citation_ids):
             return None
         return rationale.strip()
     except Exception:

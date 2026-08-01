@@ -70,7 +70,8 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
                 playbook_version_id=version_id,
                 clause_type="limitation_of_liability",
                 policy_type="prohibited",
-                preferred_language=None,
+                preferred_language="unlimited liability",
+                fallback_language="Liability is capped at USD 100,000.",
                 severity="critical",
                 evaluation_config={"method": "deterministic"},
             )
@@ -101,6 +102,10 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
             "rationale": "The cited clause accepts unlimited liability.",
             "citation_ids": ["citation-liability"],
         },
+        fallback_model_comparator=lambda _: {
+            "comparison": "This must not be persisted.",
+            "citation_ids": ["citation-not-in-evidence"],
+        },
     )
     artifact = CompletedArtifact(job_id=job.id, key="analysis/manifest.json")
     sink.completed(
@@ -129,7 +134,7 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
     assert evaluation["analysis_version"] == "document-analysis.v1"
     assert evaluation["extraction_version"] == "clause-rules.v1"
     assert finding["rule_id"] == rule_id
-    assert finding["result"] == "needs_review"
+    assert finding["result"] == "non_compliant"
     assert finding["citation_ids"] == ["citation-liability"]
     assert finding["risk_payload"] == {
         "version": "playbook-risk.v1",
@@ -140,3 +145,18 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
         "citation_ids": ["citation-liability"],
         "model_explanation": "The cited clause accepts unlimited liability.",
     }
+    assert finding["fallback_suggestions"] == [
+        {
+            "version": "playbook-fallback-suggestion.v1",
+            "rule_id": str(rule_id),
+            "playbook_version_id": str(version_id),
+            "suggested_language": "Liability is capped at USD 100,000.",
+            "review_recommendation": (
+                "Review the cited clause against the approved fallback language."
+            ),
+            "citation_ids": ["citation-liability"],
+            "comparison_kind": None,
+            "comparison": None,
+            "ai_generated": False,
+        }
+    ]

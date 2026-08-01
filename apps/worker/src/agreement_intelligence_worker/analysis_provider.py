@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol, cast
 
 from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
+
+from agreement_intelligence_worker.fallback_suggestions import (
+    FallbackModelComparator,
+    FallbackSuggestionRequest,
+)
 
 MAX_BLOCKS = 100
 MAX_CHARACTERS_PER_BLOCK = 4_000
@@ -23,6 +29,11 @@ _ANALYSIS_INSTRUCTION = (
     "and legal summaries. "
     "Ground every substantive claim in supplied anchor IDs and only cite supplied anchor IDs. "
     "Do not invent facts."
+)
+_FALLBACK_COMPARISON_INSTRUCTION = (
+    "Compare the cited agreement clause with the supplied approved language. "
+    "Select only the supplied comparison kind when the cited clause differs from the approved "
+    "position. Do not draft, rewrite, or propose policy language. Use only supplied citation IDs."
 )
 
 
@@ -100,6 +111,46 @@ class HostedAnalysisProvider:
         )
 
 
+class HostedFallbackComparator:
+    """Optional worker-only comparison provider that cannot select policy wording."""
+
+    def __init__(self, *, client: Any, model: str) -> None:
+        self._client = client
+        self._model = model
+
+    def __call__(self, request: FallbackSuggestionRequest) -> Mapping[str, object]:
+        approved_language = _approved_language(request)
+        if approved_language is None or not request.cited_clause_text:
+            return {}
+        response = self._client.responses.create(
+            model=self._model,
+            input=[
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": _FALLBACK_COMPARISON_INSTRUCTION}],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": json.dumps(
+                                {
+                                    "citation_ids": request.citation_ids,
+                                    "cited_clause_text": request.cited_clause_text,
+                                    "approved_language": approved_language,
+                                }
+                            ),
+                        }
+                    ],
+                },
+            ],
+            text={"format": _fallback_comparison_response_format()},
+        )
+        payload = cast(object, json.loads(response.output_text))
+        return payload if isinstance(payload, dict) else {}
+
+
 def provider_from_environment() -> AnalysisProvider | None:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -108,6 +159,23 @@ def provider_from_environment() -> AnalysisProvider | None:
         client=OpenAI(api_key=api_key),
         model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
     )
+
+
+def fallback_comparator_from_environment() -> FallbackModelComparator | None:
+    api_key = os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        return None
+    return HostedFallbackComparator(
+        client=OpenAI(api_key=api_key),
+        model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
+    )
+
+
+def _approved_language(request: FallbackSuggestionRequest) -> str | None:
+    for language in (request.fallback_language, request.preferred_language):
+        if isinstance(language, str) and language.strip():
+            return language
+    return None
 
 
 def _bounded_blocks(blocks: list[tuple[str, str]]) -> list[dict[str, str]]:
@@ -172,6 +240,23 @@ def _response_format() -> dict[str, object]:
                 ),
             },
         },
+    }
+
+
+def _fallback_comparison_response_format() -> dict[str, object]:
+    return {
+        "type": "json_schema",
+        "name": "playbook_fallback_comparison",
+        "strict": True,
+        "schema": _object_schema(
+            {
+                "comparison_kind": {
+                    "type": "string",
+                    "enum": ["clause_differs_from_approved_position"],
+                },
+                "citation_ids": _string_array_schema(),
+            }
+        ),
     }
 
 

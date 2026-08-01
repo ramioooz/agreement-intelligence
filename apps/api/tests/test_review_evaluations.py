@@ -11,6 +11,7 @@ from agreement_intelligence_api.identity.models import Base, Organization, Works
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
+from agreement_intelligence_api.playbooks.models import PlaybookRuleRecord
 from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
     ProcessingJobRecord,
@@ -106,6 +107,7 @@ def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
                 "citation_ids": ["citation-liability"],
                 "model_explanation": None,
             },
+            "fallback_suggestions": [],
         }
     ]
     assert listed.status_code == 200
@@ -164,6 +166,205 @@ def test_prohibited_rule_without_policy_language_is_not_persisted_as_satisfied(
 
     assert submitted.status_code == 201
     assert submitted.json()["findings"][0]["result"] == "needs_review"
+
+
+def test_review_submission_persists_the_rule_selected_fallback_for_non_compliance(
+    session: Session, client_for_session: Callable[[UUID], TestClient]
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(
+        client,
+        organization,
+        workspace,
+        policy_type="prohibited",
+        preferred_language="unlimited liability",
+        fallback_language="Liability is capped at USD 100,000.",
+    )
+    _complete_analysis(session, agreement, organization, workspace)
+    app.state.document_storage = _Storage(
+        _analysis_manifest(source_text="The supplier accepts unlimited liability.")
+    )
+
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+        json={"playbook_version_id": playbook["id"]},
+    )
+
+    assert submitted.status_code == 201
+    finding = submitted.json()["findings"][0]
+    assert finding["result"] == "non_compliant"
+    assert finding["fallback_suggestions"] == [
+        {
+            "version": "playbook-fallback-suggestion.v1",
+            "rule_id": playbook["rules"][0]["id"],
+            "playbook_version_id": playbook["id"],
+            "suggested_language": "Liability is capped at USD 100,000.",
+            "review_recommendation": (
+                "Review the cited clause against the approved fallback language."
+            ),
+            "citation_ids": ["citation-liability"],
+            "comparison_kind": None,
+            "comparison": None,
+            "ai_generated": False,
+        }
+    ]
+
+
+@mark.parametrize(
+    "tamper_case",
+    [
+        "suggested_language",
+        "satisfied_result",
+        "needs_review_result",
+        "review_recommendation",
+        "ai_flag",
+        "policy_comparison_cap",
+        "policy_comparison_should",
+        "citation_ids",
+        "null_payload",
+        "object_payload",
+        "valid_bounded_comparison",
+    ],
+)
+def test_finding_read_discards_fallback_suggestions_that_do_not_match_authoritative_policy(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    tamper_case: str,
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(
+        client,
+        organization,
+        workspace,
+        policy_type="prohibited",
+        preferred_language="unlimited liability",
+        fallback_language="Liability is capped at USD 100,000.",
+    )
+    _complete_analysis(session, agreement, organization, workspace)
+    app.state.document_storage = _Storage(
+        _analysis_manifest(source_text="The supplier accepts unlimited liability.")
+    )
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+        json={"playbook_version_id": playbook["id"]},
+    ).json()
+    finding = session.get(PlaybookFindingRecord, UUID(submitted["findings"][0]["id"]))
+    assert finding is not None
+    suggestion: dict[str, object] = dict(submitted["findings"][0]["fallback_suggestions"][0])
+
+    if tamper_case == "suggested_language":
+        suggestion["suggested_language"] = "Accept unlimited liability."
+    elif tamper_case == "satisfied_result":
+        finding.result = "satisfied"
+    elif tamper_case == "needs_review_result":
+        finding.result = "needs_review"
+    elif tamper_case == "review_recommendation":
+        suggestion["review_recommendation"] = "Accept the clause as written."
+    elif tamper_case == "ai_flag":
+        suggestion["ai_generated"] = True
+    elif tamper_case == "policy_comparison_cap":
+        suggestion["comparison"] = "Liability is capped at USD 1,000,000."
+        suggestion["ai_generated"] = True
+    elif tamper_case == "policy_comparison_should":
+        suggestion["comparison"] = "The clause should impose a USD 1,000,000 liability cap."
+        suggestion["ai_generated"] = True
+    elif tamper_case == "citation_ids":
+        suggestion["citation_ids"] = ["citation-not-in-evidence"]
+    elif tamper_case == "null_payload":
+        finding.fallback_suggestions = cast(list[dict[str, object]], None)
+    elif tamper_case == "object_payload":
+        finding.fallback_suggestions = cast(list[dict[str, object]], {"suggestion": suggestion})
+    elif tamper_case == "valid_bounded_comparison":
+        suggestion["comparison_kind"] = "clause_differs_from_approved_position"
+        suggestion["comparison"] = "The cited clause differs from the approved position."
+        suggestion["ai_generated"] = True
+    else:
+        raise AssertionError(f"unexpected case: {tamper_case}")
+    if tamper_case not in {"null_payload", "object_payload"}:
+        finding.fallback_suggestions = [suggestion]
+    session.commit()
+
+    listed = client.get(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["findings"][0]["fallback_suggestions"] == (
+        [suggestion] if tamper_case == "valid_bounded_comparison" else []
+    )
+
+
+def test_finding_read_requires_the_canonical_review_only_suggestion_without_approved_language(
+    session: Session, client_for_session: Callable[[UUID], TestClient]
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(
+        client,
+        organization,
+        workspace,
+        policy_type="prohibited",
+        preferred_language="unlimited liability",
+    )
+    _complete_analysis(session, agreement, organization, workspace)
+    app.state.document_storage = _Storage(
+        _analysis_manifest(source_text="The supplier accepts unlimited liability.")
+    )
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+        json={"playbook_version_id": playbook["id"]},
+    ).json()
+    finding = session.get(PlaybookFindingRecord, UUID(submitted["findings"][0]["id"]))
+    assert finding is not None
+    rule = session.get(PlaybookRuleRecord, UUID(playbook["rules"][0]["id"]))
+    assert rule is not None
+    rule.preferred_language = None
+    rule.fallback_language = None
+    finding.result = "missing"
+    finding.fallback_suggestions = [
+        {
+            "version": "playbook-fallback-suggestion.v1",
+            "rule_id": playbook["rules"][0]["id"],
+            "playbook_version_id": playbook["id"],
+            "suggested_language": "Invented policy language.",
+            "review_recommendation": (
+                "No approved language is available; reviewer assessment is required."
+            ),
+            "citation_ids": ["citation-liability"],
+            "comparison": None,
+            "ai_generated": False,
+        }
+    ]
+    session.commit()
+
+    listed = client.get(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["findings"][0]["fallback_suggestions"] == []
 
 
 @mark.parametrize(
@@ -283,6 +484,7 @@ def _published_playbook(
     *,
     policy_type: str = "required",
     preferred_language: str | None = "liability is capped at fees paid",
+    fallback_language: str | None = None,
 ) -> dict[str, Any]:
     created = client.post(
         "/playbooks",
@@ -296,7 +498,7 @@ def _published_playbook(
                     "title": "Liability cap",
                     "policy_type": policy_type,
                     "preferred_language": preferred_language,
-                    "fallback_language": None,
+                    "fallback_language": fallback_language,
                     "severity": "high",
                     "legal_rationale": "Exposure must be capped.",
                     "reviewer_guidance": "Escalate uncapped liability.",
@@ -343,13 +545,15 @@ def _complete_analysis(
     session.commit()
 
 
-def _analysis_manifest() -> dict[str, object]:
+def _analysis_manifest(
+    *, source_text: str = "Liability is capped at fees paid in the prior 12 months."
+) -> dict[str, object]:
     return {
         "schema_version": "document-analysis.v1",
         "clauses": [
             {
                 "category": "limitation_of_liability",
-                "source_text": "Liability is capped at fees paid in the prior 12 months.",
+                "source_text": source_text,
                 "confidence": 0.91,
                 "citation_anchor_ids": ["citation-liability"],
                 "extraction_version": "clause-rules.v1",
