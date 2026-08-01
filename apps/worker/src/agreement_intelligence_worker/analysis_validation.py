@@ -170,7 +170,8 @@ def _risk(value: object, allowed_anchors: set[str]) -> Risk:
 
 def _summaries(value: object, allowed_anchors: set[str]) -> dict[str, Summary]:
     payload = _mapping(value, "summaries")
-    _bounded_collection(list(payload), MAX_SUMMARIES, "summaries")
+    if set(payload) != SUMMARY_TYPES:
+        raise ProviderOutputValidationError("Provider response is missing required summaries")
     summaries: dict[str, Summary] = {}
     for summary_type, summary in payload.items():
         if summary_type not in SUMMARY_TYPES:

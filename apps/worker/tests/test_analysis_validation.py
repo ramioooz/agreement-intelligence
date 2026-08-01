@@ -36,7 +36,11 @@ VALID_RESPONSE = ProviderAnalysis(
         "business": {
             "claim": "The client account may be terminated on 30 days' notice.",
             "citation_anchor_ids": ["citation-a"],
-        }
+        },
+        "legal": {
+            "claim": "The termination clause applies to either party.",
+            "citation_anchor_ids": ["citation-a"],
+        },
     },
     model="test-model",
     input_tokens=10,
@@ -112,7 +116,8 @@ def test_validator_rejects_oversized_content_before_artifact_creation() -> None:
                 "business": {
                     "claim": "x" * 4_001,
                     "citation_anchor_ids": ["citation-a"],
-                }
+                },
+                "legal": VALID_RESPONSE.summaries["legal"],
             },
         }
     )
@@ -130,4 +135,14 @@ def test_validator_rejects_an_unknown_agreement_family() -> None:
     )
 
     with pytest.raises(ProviderOutputValidationError, match="Unsupported agreement family"):
+        validate_provider_analysis(response, {"citation-a"})
+
+
+@pytest.mark.parametrize("summaries", [{}, {"business": VALID_RESPONSE.summaries["business"]}])
+def test_validator_rejects_omitted_or_empty_required_summaries(
+    summaries: dict[str, dict[str, object]],
+) -> None:
+    response = ProviderAnalysis(**{**VALID_RESPONSE.__dict__, "summaries": summaries})
+
+    with pytest.raises(ProviderOutputValidationError, match="required summaries"):
         validate_provider_analysis(response, {"citation-a"})
