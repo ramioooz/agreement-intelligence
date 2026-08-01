@@ -158,6 +158,32 @@ export function AgreementDetail({
               </p>
             </section>
           ) : null}
+          {analysis.clauses.length ? (
+            <section className="mt-5">
+              <h3 className="font-semibold">Extracted clauses</h3>
+              <ul className="mt-3 space-y-3">
+                {analysis.clauses.map((clause) => (
+                  <li
+                    className="rounded-lg border border-slate-200 p-3"
+                    key={clause.category}
+                  >
+                    <p className="font-medium capitalize">
+                      {clause.category.replaceAll("_", " ")}
+                    </p>
+                    <p className="mt-1 text-sm text-slate-700">
+                      {clause.source_text}
+                    </p>
+                    <a
+                      className="mt-2 inline-block text-sm font-semibold underline"
+                      href={`#evidence-${clause.citation_anchor_ids[0]}`}
+                    >
+                      View source evidence
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
           {analysis.diagnostics.map((diagnostic) => (
             <p
               className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900"

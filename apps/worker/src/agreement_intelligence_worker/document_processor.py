@@ -7,6 +7,7 @@ from typing import Any, Protocol, cast
 from botocore.exceptions import ClientError
 
 from agreement_intelligence_worker.classification import classify_document
+from agreement_intelligence_worker.clause_extraction import extract_clauses
 from agreement_intelligence_worker.document_understanding import ParsedDocument, parse_document
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
@@ -118,6 +119,9 @@ def _manifest(parsed: ParsedDocument, source: _SourceDocument) -> dict[str, obje
     classification = classify_document(
         "\n".join(block.text for page in parsed.pages for block in page.blocks)
     )
+    clauses = extract_clauses(
+        [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
+    )
     return {
         "schema_version": _SCHEMA_VERSION,
         "pipeline_version": _PIPELINE_VERSION,
@@ -130,6 +134,6 @@ def _manifest(parsed: ParsedDocument, source: _SourceDocument) -> dict[str, obje
         "diagnostics": [asdict(diagnostic) for diagnostic in parsed.diagnostics],
         "citations": [asdict(citation) for citation in parsed.citations],
         "classification": asdict(classification),
-        "clauses": [],
+        "clauses": clauses,
         "summaries": {},
     }
