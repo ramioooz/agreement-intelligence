@@ -10,6 +10,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    UniqueConstraint,
     Uuid,
     func,
 )
@@ -24,6 +25,9 @@ class LegalPlaybookRecord(Base):
         ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_legal_playbooks_scope_id"
         ),
         Index(
             "ix_legal_playbooks_scope_family", "organization_id", "workspace_id", "agreement_family"
@@ -50,14 +54,26 @@ class PlaybookVersionRecord(Base):
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "playbook_id"],
+            [
+                "legal_playbooks.organization_id",
+                "legal_playbooks.workspace_id",
+                "legal_playbooks.id",
+            ],
+            name="fk_playbook_versions_scope_playbook",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_playbook_versions_scope_id"
+        ),
+        UniqueConstraint("playbook_id", "version", name="uq_playbook_versions_playbook_version"),
         Index("ix_playbook_versions_scope_status", "organization_id", "workspace_id", "status"),
-        Index("uq_playbook_versions_playbook_version", "playbook_id", "version", unique=True),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
-    playbook_id: Mapped[UUID] = mapped_column(ForeignKey("legal_playbooks.id"), index=True)
+    playbook_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     version: Mapped[int] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(16), default="draft", index=True)
     created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
@@ -76,6 +92,15 @@ class PlaybookRuleRecord(Base):
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "playbook_version_id"],
+            [
+                "playbook_versions.organization_id",
+                "playbook_versions.workspace_id",
+                "playbook_versions.id",
+            ],
+            name="fk_playbook_rules_scope_version",
+        ),
         Index(
             "ix_playbook_rules_scope_version",
             "organization_id",
@@ -93,9 +118,7 @@ class PlaybookRuleRecord(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
-    playbook_version_id: Mapped[UUID] = mapped_column(
-        ForeignKey("playbook_versions.id"), index=True
-    )
+    playbook_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     clause_type: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(256), default="")
     policy_type: Mapped[str] = mapped_column(String(16), default="required")

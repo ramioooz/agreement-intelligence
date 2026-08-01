@@ -8,15 +8,20 @@ from agreement_intelligence_api.identity.models import Base, Organization, Works
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
+from agreement_intelligence_api.playbooks.models import PlaybookVersionRecord
 from fastapi.testclient import TestClient
-from pytest import fixture
-from sqlalchemy import create_engine
+from pytest import fixture, raises
+from sqlalchemy import create_engine, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 
 @fixture
 def session() -> Generator[Session]:
     engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False})
+    event.listen(
+        engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON")
+    )
     Base.metadata.create_all(engine)
     database_session = sessionmaker(bind=engine)()
     try:
@@ -210,3 +215,40 @@ def test_publication_rejects_duplicate_clause_types_and_missing_policy_content(
             "message": "preferred language is required for required rules",
         }
     }
+
+
+def test_version_cannot_reference_playbook_in_another_workspace(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    other_workspace = IdentityService(session).create_workspace(
+        organization_id=organization.id,
+        name="Treasury",
+        slug=f"treasury-{uuid4()}",
+    )
+    session.commit()
+    created = (
+        client_for_session(administrator_id)
+        .post(
+            "/playbooks",
+            params=_scope_query(organization, workspace),
+            json=_playbook_payload(),
+        )
+        .json()
+    )
+    session.add(
+        PlaybookVersionRecord(
+            organization_id=organization.id,
+            workspace_id=other_workspace.id,
+            playbook_id=UUID(created["playbook_id"]),
+            version=2,
+            status="draft",
+            created_by=administrator_id,
+        )
+    )
+
+    with raises(IntegrityError):
+        session.flush()
+
+    session.rollback()

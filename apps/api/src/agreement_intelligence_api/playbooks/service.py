@@ -6,6 +6,7 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
@@ -87,55 +88,77 @@ class PlaybookService:
         request: CreatePlaybookVersionRequest,
     ) -> PlaybookVersionResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        playbook = self._playbook_for_scope(playbook_id, organization_id, workspace_id)
-        source_version = None
-        if request.source_version is not None:
-            source_version = self._version_for_scope(
-                playbook_id, request.source_version, organization_id, workspace_id
-            )
-        next_version = (
-            self._session.scalar(
-                select(func.coalesce(func.max(PlaybookVersionRecord.version), 0) + 1).where(
-                    PlaybookVersionRecord.playbook_id == playbook_id
+        for attempt in range(2):
+            try:
+                self._identity.scope_organization(organization_id)
+                playbook = self._playbook_for_scope(
+                    playbook_id,
+                    organization_id,
+                    workspace_id,
+                    lock_for_update=True,
                 )
-            )
-            or 1
-        )
-        version = PlaybookVersionRecord(
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            playbook_id=playbook_id,
-            version=next_version,
-            status="draft",
-            created_by=principal.user_id,
-        )
-        self._session.add(version)
-        self._session.flush()
-        if source_version is not None:
-            for source_rule in source_version.rules:
-                self._session.add(
-                    PlaybookRuleRecord(
-                        organization_id=organization_id,
-                        workspace_id=workspace_id,
-                        playbook_version_id=version.id,
-                        clause_type=source_rule.clause_type,
-                        title=source_rule.title,
-                        policy_type=source_rule.policy_type,
-                        preferred_language=source_rule.preferred_language,
-                        fallback_language=source_rule.fallback_language,
-                        severity=source_rule.severity,
-                        legal_rationale=source_rule.legal_rationale,
-                        reviewer_guidance=source_rule.reviewer_guidance,
-                        evaluation_config=source_rule.evaluation_config,
+                source_version = None
+                if request.source_version is not None:
+                    source_version = self._version_for_scope(
+                        playbook_id, request.source_version, organization_id, workspace_id
                     )
+                next_version = (
+                    self._session.scalar(
+                        select(func.coalesce(func.max(PlaybookVersionRecord.version), 0) + 1).where(
+                            PlaybookVersionRecord.playbook_id == playbook_id
+                        )
+                    )
+                    or 1
                 )
-        self._session.flush()
-        self._audit(
-            playbook=playbook, version=version, actor_id=principal.user_id, action="draft_created"
-        )
-        response = self._response(version, playbook)
-        self._session.commit()
-        return response
+                version = PlaybookVersionRecord(
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    playbook_id=playbook_id,
+                    version=next_version,
+                    status="draft",
+                    created_by=principal.user_id,
+                )
+                self._session.add(version)
+                self._session.flush()
+                if source_version is not None:
+                    for source_rule in source_version.rules:
+                        self._session.add(
+                            PlaybookRuleRecord(
+                                organization_id=organization_id,
+                                workspace_id=workspace_id,
+                                playbook_version_id=version.id,
+                                clause_type=source_rule.clause_type,
+                                title=source_rule.title,
+                                policy_type=source_rule.policy_type,
+                                preferred_language=source_rule.preferred_language,
+                                fallback_language=source_rule.fallback_language,
+                                severity=source_rule.severity,
+                                legal_rationale=source_rule.legal_rationale,
+                                reviewer_guidance=source_rule.reviewer_guidance,
+                                evaluation_config=source_rule.evaluation_config,
+                            )
+                        )
+                self._session.flush()
+                self._audit(
+                    playbook=playbook,
+                    version=version,
+                    actor_id=principal.user_id,
+                    action="draft_created",
+                )
+                response = self._response(version, playbook)
+                self._session.commit()
+                return response
+            except IntegrityError as error:
+                self._session.rollback()
+                if attempt == 0 and _is_playbook_version_conflict(error):
+                    continue
+                if _is_playbook_version_conflict(error):
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail={"code": "playbook_version_conflict"},
+                    ) from error
+                raise
+        raise RuntimeError("playbook version creation retry loop exhausted")
 
     def add_rule(
         self,
@@ -340,14 +363,22 @@ class PlaybookService:
             hide_resource()
 
     def _playbook_for_scope(
-        self, playbook_id: UUID, organization_id: UUID, workspace_id: UUID
+        self,
+        playbook_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        *,
+        lock_for_update: bool = False,
     ) -> LegalPlaybookRecord:
-        playbook = self._session.scalar(
+        statement = (
             select(LegalPlaybookRecord)
             .where(LegalPlaybookRecord.id == playbook_id)
             .where(LegalPlaybookRecord.organization_id == organization_id)
             .where(LegalPlaybookRecord.workspace_id == workspace_id)
         )
+        if lock_for_update:
+            statement = statement.with_for_update()
+        playbook = self._session.scalar(statement)
         if playbook is None:
             hide_resource()
         return playbook
@@ -506,3 +537,10 @@ def _required_aware_utc(value: datetime | None) -> datetime:
     if value is None:
         raise RuntimeError("persisted timestamp is missing")
     return cast(datetime, _as_aware_utc(value))
+
+
+def _is_playbook_version_conflict(error: IntegrityError) -> bool:
+    constraint_name = getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+    return constraint_name == "uq_playbook_versions_playbook_version" or (
+        "playbook_versions.playbook_id, playbook_versions.version" in str(error.orig)
+    )

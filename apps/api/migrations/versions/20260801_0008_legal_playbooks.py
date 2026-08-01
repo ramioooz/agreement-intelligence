@@ -37,6 +37,9 @@ def upgrade() -> None:
             ["workspaces.organization_id", "workspaces.id"],
         ),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_legal_playbooks_scope_id"
+        ),
     )
     op.create_index(
         "ix_legal_playbooks_scope_family",
@@ -57,12 +60,23 @@ def upgrade() -> None:
         ),
         sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
         sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"]),
-        sa.ForeignKeyConstraint(["playbook_id"], ["legal_playbooks.id"]),
         sa.ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
         ),
+        sa.ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "playbook_id"],
+            [
+                "legal_playbooks.organization_id",
+                "legal_playbooks.workspace_id",
+                "legal_playbooks.id",
+            ],
+            name="fk_playbook_versions_scope_playbook",
+        ),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_playbook_versions_scope_id"
+        ),
         sa.UniqueConstraint("playbook_id", "version", name="uq_playbook_versions_playbook_version"),
     )
     op.create_index(
@@ -100,10 +114,18 @@ def upgrade() -> None:
             "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
         sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"]),
-        sa.ForeignKeyConstraint(["playbook_version_id"], ["playbook_versions.id"]),
         sa.ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
+        ),
+        sa.ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "playbook_version_id"],
+            [
+                "playbook_versions.organization_id",
+                "playbook_versions.workspace_id",
+                "playbook_versions.id",
+            ],
+            name="fk_playbook_rules_scope_version",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
