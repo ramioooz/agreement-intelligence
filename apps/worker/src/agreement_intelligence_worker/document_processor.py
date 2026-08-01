@@ -6,7 +6,7 @@ from typing import Any, Protocol, cast
 
 from botocore.exceptions import ClientError
 
-from agreement_intelligence_worker.analysis_provider import AnalysisProvider
+from agreement_intelligence_worker.analysis_provider import AnalysisProvider, ProviderTransientError
 from agreement_intelligence_worker.analysis_validation import (
     ProviderOutputValidationError,
     ValidatedAnalysis,
@@ -19,6 +19,7 @@ from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     PermanentProcessingError,
     ProcessingJob,
+    TransientProcessingError,
 )
 from agreement_intelligence_worker.summaries import generate_summaries
 
@@ -147,6 +148,8 @@ def _manifest(
 
     try:
         provider_analysis = analysis_provider.analyze(blocks)
+    except (ProviderTransientError, TimeoutError, ConnectionError) as error:
+        raise TransientProcessingError("Provider enrichment temporarily unavailable") from error
     except Exception:
         return _provider_fallback(manifest)
 

@@ -6,10 +6,21 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Protocol, cast
 
-from openai import OpenAI
+from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
 
 MAX_BLOCKS = 100
 MAX_CHARACTERS_PER_BLOCK = 4_000
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+_ANALYSIS_INSTRUCTION = (
+    "Analyze only the supplied agreement blocks. Return classification using families "
+    "client_agreement, "
+    "liquidity_provider_agreement, or unknown_needs_review; clause categories termination, "
+    "confidentiality, governing_law, liability, dispute_resolution, or other_needs_review; "
+    "and risk severities low, medium, high, or critical. Return clauses, risks, and business "
+    "and legal summaries. "
+    "Ground every substantive claim in supplied anchor IDs and only cite supplied anchor IDs. "
+    "Do not invent facts."
+)
 
 
 @dataclass(frozen=True)
@@ -28,6 +39,14 @@ class AnalysisProvider(Protocol):
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis: ...
 
 
+class ProviderTransientError(Exception):
+    """The provider could not be reached safely and processing should retry."""
+
+
+class ProviderPermanentError(Exception):
+    """The provider rejected the request and deterministic output remains usable."""
+
+
 class HostedAnalysisProvider:
     def __init__(self, *, client: Any, model: str) -> None:
         self._client = client
@@ -35,21 +54,34 @@ class HostedAnalysisProvider:
 
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
         started_at = perf_counter()
-        response = self._client.responses.create(
-            model=self._model,
-            input=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": json.dumps({"blocks": _bounded_blocks(blocks)}),
-                        }
-                    ],
-                }
-            ],
-            text={"format": _response_format()},
-        )
+        try:
+            response = self._client.responses.create(
+                model=self._model,
+                input=[
+                    {
+                        "role": "system",
+                        "content": [{"type": "input_text", "text": _ANALYSIS_INSTRUCTION}],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": json.dumps({"blocks": _bounded_blocks(blocks)}),
+                            }
+                        ],
+                    },
+                ],
+                text={"format": _response_format()},
+            )
+        except APIStatusError as error:
+            if error.status_code in _RETRYABLE_STATUS_CODES or error.status_code >= 500:
+                raise ProviderTransientError("Provider returned a retryable response") from error
+            raise ProviderPermanentError("Provider rejected the analysis request") from error
+        except (APIConnectionError, APIError) as error:
+            raise ProviderTransientError("Provider connection was unavailable") from error
+        except OpenAIError as error:
+            raise ProviderPermanentError("Provider rejected the analysis request") from error
         parsed = cast(object, json.loads(response.output_text))
         payload = _analysis_payload(parsed)
         usage = getattr(response, "usage", None)

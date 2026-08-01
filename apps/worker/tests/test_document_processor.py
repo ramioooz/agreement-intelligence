@@ -9,10 +9,10 @@ from uuid import uuid4
 import boto3
 from agreement_intelligence_worker.analysis_provider import ProviderAnalysis
 from agreement_intelligence_worker.document_processor import DocumentUnderstandingProcessor
-from agreement_intelligence_worker.processing import ProcessingJob
+from agreement_intelligence_worker.processing import ProcessingJob, TransientProcessingError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
-from pytest import MonkeyPatch
+from pytest import MonkeyPatch, raises
 
 
 @dataclass
@@ -42,6 +42,11 @@ class FailingProvider:
 class InvalidProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
         return _valid_provider_response("citation-not-from-this-document")
+
+
+class TimeoutProvider:
+    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+        raise TimeoutError("provider request timed out")
 
 
 def test_processor_writes_a_versioned_cited_document_analysis_manifest() -> None:
@@ -128,6 +133,16 @@ def test_processor_rejects_invalid_provider_output_before_publishing() -> None:
         "message": "Provider enrichment was unavailable",
         "page_numbers": [],
     }
+
+
+def test_processor_propagates_provider_timeout_for_job_retry() -> None:
+    storage, job = _processor_input()
+    processor = DocumentUnderstandingProcessor(storage, analysis_provider=TimeoutProvider())
+
+    with raises(TransientProcessingError, match="Provider enrichment temporarily unavailable"):
+        processor.process(job)
+
+    assert set(storage.objects) == {job.source_storage_key}
 
 
 def test_processing_runtime_injects_environment_provider_only_into_document_processor(

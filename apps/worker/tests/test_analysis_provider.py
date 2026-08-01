@@ -30,11 +30,16 @@ class RecordingClient:
         self.responses = self
         self.requested_anchor_ids: list[str] = []
         self.requested_text = ""
+        self.requested_instruction = ""
         self.requested_format: dict[str, object] = {}
 
     def create(self, **kwargs: Any) -> _Response:
-        input_item = kwargs["input"][0]
-        self.requested_text = input_item["content"][0]["text"]
+        for input_item in kwargs["input"]:
+            text = input_item["content"][0]["text"]
+            if input_item["role"] == "system":
+                self.requested_instruction = text
+            if input_item["role"] == "user":
+                self.requested_text = text
         self.requested_anchor_ids = [
             block["anchor_id"] for block in json.loads(self.requested_text)["blocks"]
         ]
@@ -74,6 +79,20 @@ def test_provider_requests_a_closed_strict_json_schema() -> None:
     assert response_format["type"] == "json_schema"
     assert response_format["strict"] is True
     _assert_object_schemas_are_closed(response_format["schema"])
+
+
+def test_provider_sends_bounded_instruction_for_cited_agreement_analysis() -> None:
+    client = RecordingClient(response=VALID_RESPONSE)
+    provider = HostedAnalysisProvider(client=client, model="gpt-5.4-mini")
+
+    provider.analyze([("citation-a", "Termination is permitted on notice.")])
+
+    assert len(client.requested_instruction) <= 1_000
+    assert "classification" in client.requested_instruction
+    assert "clauses" in client.requested_instruction
+    assert "risks" in client.requested_instruction
+    assert "summaries" in client.requested_instruction
+    assert "only cite supplied anchor IDs" in client.requested_instruction
 
 
 def _assert_object_schemas_are_closed(schema: object) -> None:
