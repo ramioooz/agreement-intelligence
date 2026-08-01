@@ -9,6 +9,7 @@ type AgreementDetailProps = {
   documentUrl?: string;
   processingJob?: ProcessingJob;
   retryAction?: () => void | Promise<void>;
+  startAnalysisAction?: () => void | Promise<void>;
   analysis?: DocumentAnalysis;
 };
 
@@ -21,6 +22,7 @@ export function AgreementDetail({
   documentUrl,
   processingJob,
   retryAction,
+  startAnalysisAction,
   analysis,
 }: AgreementDetailProps) {
   const file = agreement.files[0];
@@ -137,6 +139,16 @@ export function AgreementDetail({
                   type="submit"
                 >
                   Retry processing
+                </button>
+              </form>
+            ) : null}
+            {startAnalysisAction ? (
+              <form action={startAnalysisAction} className="mt-4">
+                <button
+                  className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                  type="submit"
+                >
+                  Start analysis
                 </button>
               </form>
             ) : null}
