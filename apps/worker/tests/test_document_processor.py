@@ -3,12 +3,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from io import BytesIO
+from typing import Any, cast
 from uuid import uuid4
 
+import boto3
+from agreement_intelligence_worker.analysis_provider import ProviderAnalysis
 from agreement_intelligence_worker.document_processor import DocumentUnderstandingProcessor
 from agreement_intelligence_worker.processing import ProcessingJob
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+from pytest import MonkeyPatch
 
 
 @dataclass
@@ -25,30 +29,31 @@ class InMemoryObjectStorage:
         return True
 
 
+class FakeProvider:
+    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+        return _valid_provider_response(blocks[0][0])
+
+
+class FailingProvider:
+    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+        raise RuntimeError("hosted provider unavailable")
+
+
+class InvalidProvider:
+    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+        return _valid_provider_response("citation-not-from-this-document")
+
+
 def test_processor_writes_a_versioned_cited_document_analysis_manifest() -> None:
-    organization_id = uuid4()
-    workspace_id = uuid4()
-    agreement_id = uuid4()
-    source_key = "tenants/example/workspaces/example/documents/source/original.pdf"
-    storage = InMemoryObjectStorage(objects={source_key: _pdf_with_text("Client Agreement")})
+    storage, job = _processor_input()
     processor = DocumentUnderstandingProcessor(storage)
-    job = ProcessingJob(
-        id=uuid4(),
-        agreement_id=agreement_id,
-        state="processing",
-        attempt_count=1,
-        organization_id=organization_id,
-        workspace_id=workspace_id,
-        source_storage_key=source_key,
-        source_checksum="a" * 64,
-        source_content_type="application/pdf",
-    )
 
     artifact = processor.process(job)
     manifest = json.loads(storage.objects[artifact.key])
 
     assert artifact.key == (
-        f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/{agreement_id}/"
+        f"tenants/{job.organization_id}/workspaces/{job.workspace_id}/"
+        f"agreements/{job.agreement_id}/"
         f"analysis/{'a' * 64}/document-analysis.v1.json"
     )
     assert manifest["schema_version"] == "document-analysis.v1"
@@ -56,6 +61,176 @@ def test_processor_writes_a_versioned_cited_document_analysis_manifest() -> None
     assert manifest["document"]["pages"][0]["blocks"][0]["text"] == "Client Agreement"
     assert manifest["citations"][0]["anchor_id"].startswith("citation-")
     assert manifest["diagnostics"] == []
+    assert manifest["risks"] == []
+    assert manifest["analysis_provenance"] == {
+        "mode": "deterministic",
+        "fallback_reason": "provider_not_configured",
+    }
+
+
+def test_processor_publishes_validated_provider_enrichment() -> None:
+    storage, job = _processor_input()
+    processor = DocumentUnderstandingProcessor(storage, analysis_provider=FakeProvider())
+
+    manifest = _process_manifest(processor, storage, job)
+
+    assert manifest["classification"]["version"] == "provider-hybrid.v1"
+    assert manifest["risks"][0]["severity"] == "high"
+    assert manifest["clauses"][0]["source_text"] == (
+        "Either party may terminate with 30 days' notice."
+    )
+    assert manifest["summaries"]["business"]["claims"][0]["text"] == (
+        "The client account may be terminated on 30 days' notice."
+    )
+    assert manifest["analysis_provenance"] == {
+        "mode": "hybrid",
+        "provider": "openai",
+        "model": "test-model",
+        "schema_version": "agreement-analysis.v1",
+        "prompt_version": "agreement-analysis.v1",
+        "latency_ms": 30,
+        "input_tokens": 10,
+        "output_tokens": 20,
+    }
+
+
+def test_processor_keeps_deterministic_output_when_provider_fails() -> None:
+    baseline_storage, baseline_job = _processor_input()
+    baseline = _process_manifest(
+        DocumentUnderstandingProcessor(baseline_storage), baseline_storage, baseline_job
+    )
+    storage, job = _processor_input()
+    processor = DocumentUnderstandingProcessor(storage, analysis_provider=FailingProvider())
+
+    manifest = _process_manifest(processor, storage, job)
+
+    assert manifest["classification"] == baseline["classification"]
+    assert manifest["clauses"] == baseline["clauses"]
+    assert manifest["summaries"] == baseline["summaries"]
+    assert manifest["risks"] == []
+    assert manifest["diagnostics"][-1]["code"] == "provider_fallback"
+    assert manifest["analysis_provenance"] == {
+        "mode": "deterministic",
+        "fallback_reason": "provider_fallback",
+    }
+
+
+def test_processor_rejects_invalid_provider_output_before_publishing() -> None:
+    storage, job = _processor_input()
+    processor = DocumentUnderstandingProcessor(storage, analysis_provider=InvalidProvider())
+
+    manifest = _process_manifest(processor, storage, job)
+
+    assert manifest["classification"]["version"] == "agreement-family-rules.v1"
+    assert manifest["risks"] == []
+    assert manifest["diagnostics"][-1] == {
+        "code": "provider_fallback",
+        "message": "Provider enrichment was unavailable",
+        "page_numbers": [],
+    }
+
+
+def test_processing_runtime_injects_environment_provider_only_into_document_processor(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from agreement_intelligence_worker import main as worker_main
+
+    configured_provider = FakeProvider()
+    captured: dict[str, object] = {}
+
+    class FakeDocumentProcessor:
+        def __init__(self, storage: object, *, analysis_provider: object | None = None) -> None:
+            captured["analysis_provider"] = analysis_provider
+
+        def process(self, job: ProcessingJob) -> Any:
+            raise AssertionError("runtime composition must not process a job")
+
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("SQS_PROCESSING_QUEUE", "https://sqs.example/processing")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///worker.db")
+    monkeypatch.setenv("S3_DOCUMENT_BUCKET", "documents")
+    monkeypatch.setattr(worker_main, "provider_from_environment", lambda: configured_provider)
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: object())
+    monkeypatch.setattr(worker_main, "processing_engine_from_url", lambda url: object())
+    monkeypatch.setattr(worker_main, "SQSProcessingQueue", lambda **kwargs: object())
+    monkeypatch.setattr(worker_main, "SQLAlchemyProcessingJobRepository", lambda engine: object())
+    monkeypatch.setattr(worker_main, "S3ObjectStorage", lambda **kwargs: object())
+    monkeypatch.setattr(worker_main, "DocumentUnderstandingProcessor", FakeDocumentProcessor)
+    monkeypatch.setattr(worker_main, "JobProcessor", lambda *args: object())
+    monkeypatch.setattr(worker_main, "SQSProcessingMessageReceiver", lambda **kwargs: object())
+
+    runtime = worker_main.processing_runtime_from_environment()
+
+    assert runtime is not None
+    assert captured["analysis_provider"] is configured_provider
+
+
+def _processor_input() -> tuple[InMemoryObjectStorage, ProcessingJob]:
+    source_key = "tenants/example/workspaces/example/documents/source/original.pdf"
+    storage = InMemoryObjectStorage(objects={source_key: _pdf_with_text("Client Agreement")})
+    return storage, ProcessingJob(
+        id=uuid4(),
+        agreement_id=uuid4(),
+        state="processing",
+        attempt_count=1,
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+        source_storage_key=source_key,
+        source_checksum="a" * 64,
+        source_content_type="application/pdf",
+    )
+
+
+def _process_manifest(
+    processor: DocumentUnderstandingProcessor,
+    storage: InMemoryObjectStorage,
+    job: ProcessingJob,
+) -> dict[str, Any]:
+    artifact = processor.process(job)
+    return cast(dict[str, Any], json.loads(storage.objects[artifact.key]))
+
+
+def _valid_provider_response(anchor_id: str) -> ProviderAnalysis:
+    return ProviderAnalysis(
+        classification={
+            "family": "client_agreement",
+            "confidence": 0.91,
+            "rationale": "The agreement governs a client account.",
+            "citation_anchor_ids": [anchor_id],
+        },
+        clauses=[
+            {
+                "category": "termination",
+                "normalized_fields": [{"name": "notice", "value": "30 days"}],
+                "source_excerpt": "Either party may terminate with 30 days' notice.",
+                "confidence": 0.88,
+                "citation_anchor_ids": [anchor_id],
+            }
+        ],
+        risks=[
+            {
+                "severity": "high",
+                "explanation": "Termination is available without cause.",
+                "affected_category": "termination",
+                "confidence": 0.82,
+                "citation_anchor_ids": [anchor_id],
+            }
+        ],
+        summaries={
+            "business": {
+                "claim": "The client account may be terminated on 30 days' notice.",
+                "citation_anchor_ids": [anchor_id],
+            },
+            "legal": {
+                "claim": "The termination clause applies to either party.",
+                "citation_anchor_ids": [anchor_id],
+            },
+        },
+        model="test-model",
+        input_tokens=10,
+        output_tokens=20,
+        latency_ms=30,
+    )
 
 
 def _pdf_with_text(text: str) -> bytes:

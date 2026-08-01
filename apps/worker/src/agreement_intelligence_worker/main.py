@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 import boto3
 
+from agreement_intelligence_worker.analysis_provider import provider_from_environment
 from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
     S3ObjectStorage,
@@ -74,7 +75,10 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
     processor = JobProcessor(
         repository,
         queue,
-        DocumentUnderstandingProcessor(S3ObjectStorage(client=document_client, bucket=bucket)),
+        DocumentUnderstandingProcessor(
+            S3ObjectStorage(client=document_client, bucket=bucket),
+            analysis_provider=provider_from_environment(),
+        ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
     return ProcessingRuntime(receiver=receiver, processor=processor)
