@@ -23,6 +23,7 @@ class WorkspaceResponse(BaseModel):
 
 class WorkspaceCapabilitiesResponse(BaseModel):
     agreements_delete: bool
+    playbooks_manage: bool
 
 
 def get_identity_service(session: SessionDependency) -> IdentityService:
@@ -76,5 +77,11 @@ def get_workspace_capabilities(
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.AGREEMENTS_DELETE,
-        )
+        ),
+        playbooks_manage=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.PLAYBOOKS_MANAGE,
+        ),
     )
