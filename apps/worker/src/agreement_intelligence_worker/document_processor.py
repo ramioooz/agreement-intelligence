@@ -9,6 +9,7 @@ from botocore.exceptions import ClientError
 from agreement_intelligence_worker.classification import classify_document
 from agreement_intelligence_worker.clause_extraction import extract_clauses
 from agreement_intelligence_worker.document_understanding import ParsedDocument, parse_document
+from agreement_intelligence_worker.summaries import generate_summaries
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     PermanentProcessingError,
@@ -116,8 +117,9 @@ def _artifact_key(job: ProcessingJob, checksum: str) -> str:
 
 
 def _manifest(parsed: ParsedDocument, source: _SourceDocument) -> dict[str, object]:
+    blocks = [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
     classification = classify_document(
-        "\n".join(block.text for page in parsed.pages for block in page.blocks)
+        "\n".join(text for _, text in blocks)
     )
     clauses = extract_clauses(
         [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
@@ -135,5 +137,5 @@ def _manifest(parsed: ParsedDocument, source: _SourceDocument) -> dict[str, obje
         "citations": [asdict(citation) for citation in parsed.citations],
         "classification": asdict(classification),
         "clauses": clauses,
-        "summaries": {},
+        "summaries": generate_summaries(blocks),
     }
