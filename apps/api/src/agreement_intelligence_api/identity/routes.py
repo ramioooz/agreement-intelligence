@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal, hide_resource
+from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
 
 router = APIRouter(prefix="/identity", tags=["identity"])
@@ -18,6 +19,10 @@ class WorkspaceResponse(BaseModel):
     id: UUID
     name: str
     slug: str
+
+
+class WorkspaceCapabilitiesResponse(BaseModel):
+    agreements_delete: bool
 
 
 def get_identity_service(session: SessionDependency) -> IdentityService:
@@ -46,3 +51,30 @@ def list_workspaces(
         WorkspaceResponse(id=workspace.id, name=workspace.name, slug=workspace.slug)
         for workspace in workspaces
     ]
+
+
+@router.get(
+    "/organizations/{organization_id}/workspaces/{workspace_id}/capabilities",
+    response_model=WorkspaceCapabilitiesResponse,
+)
+def get_workspace_capabilities(
+    organization_id: UUID,
+    workspace_id: UUID,
+    principal: PrincipalDependency,
+    identity: IdentityServiceDependency,
+) -> WorkspaceCapabilitiesResponse:
+    if not identity.can_access_workspace(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        permission=PermissionKey.AGREEMENTS_READ,
+    ):
+        hide_resource()
+    return WorkspaceCapabilitiesResponse(
+        agreements_delete=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.AGREEMENTS_DELETE,
+        )
+    )

@@ -7,6 +7,7 @@ import { AgreementUploadForm } from "@/components/agreement-upload-form";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
   listAgreements,
+  getWorkspaceCapabilities,
   type AgreementPage,
   type AgreementStatus,
   type AgreementScope,
@@ -16,20 +17,6 @@ function scopeFromEnvironment(): AgreementScope | null {
   const organizationId = process.env.API_ORGANIZATION_ID;
   const workspaceId = process.env.API_WORKSPACE_ID;
   return organizationId && workspaceId ? { organizationId, workspaceId } : null;
-}
-
-function isPlatformAdmin(accessToken: string | null | undefined): boolean {
-  if (!accessToken) return false;
-  try {
-    const payload = JSON.parse(
-      Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString(
-        "utf8",
-      ),
-    ) as { realm_access?: { roles?: string[] } };
-    return payload.realm_access?.roles?.includes("platform_admin") ?? false;
-  } catch {
-    return false;
-  }
 }
 
 async function loadAgreements(
@@ -49,6 +36,19 @@ async function loadAgreements(
     });
   } catch {
     return null;
+  }
+}
+
+async function canDeleteAgreements(
+  scope: AgreementScope,
+  token: string | null | undefined,
+): Promise<boolean> {
+  try {
+    return (
+      await getWorkspaceCapabilities({ scope, token: token ?? undefined })
+    ).agreements_delete;
+  } catch {
+    return false;
   }
 }
 
@@ -94,7 +94,7 @@ export default async function AgreementsPage({
           agreementType: params.type ?? "all",
         }}
         nextCursor={page.page.next_cursor}
-        canDelete={isPlatformAdmin(accessToken)}
+        canDelete={await canDeleteAgreements(scope, accessToken)}
       />
       <AgreementUploadForm />
     </main>

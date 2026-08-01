@@ -85,4 +85,16 @@ describe("AgreementRepository", () => {
       "Unable to load the agreement repository.",
     );
   });
+
+  it("shows permanent deletion only when the API grants the capability", () => {
+    const { rerender } = render(
+      <AgreementRepository agreements={[agreement]} />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Delete" }),
+    ).not.toBeInTheDocument();
+
+    rerender(<AgreementRepository agreements={[agreement]} canDelete />);
+    expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
 });

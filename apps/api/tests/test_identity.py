@@ -251,6 +251,62 @@ def test_principal_identity_does_not_depend_on_email() -> None:
     assert principal.user_id == UUID("00000000-0000-0000-0000-000000000001")
 
 
+def test_workspace_capabilities_are_resolved_from_application_authorization(
+    session: Session,
+) -> None:
+    identity = IdentityService(session)
+    identity.bootstrap_authorization_catalog()
+    administrator = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject="administrator-subject",
+        display_name="Platform Administrator",
+    )
+    organization = identity.create_organization(name="Acme Capital", slug="acme-capital")
+    workspace = identity.create_workspace(
+        organization_id=organization.id,
+        name="Derivatives",
+        slug="derivatives",
+    )
+    identity.grant_membership(
+        organization_id=organization.id,
+        user_id=administrator.id,
+        role_key=RoleKey.PLATFORM_ADMIN,
+    )
+    reviewer = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject="reviewer-subject",
+        display_name="Legal Reviewer",
+    )
+    reviewer_membership = identity.grant_membership(
+        organization_id=organization.id,
+        user_id=reviewer.id,
+        role_key=RoleKey.LEGAL_REVIEWER,
+    )
+    identity.grant_workspace_membership(
+        organization_id=organization.id,
+        membership_id=reviewer_membership.id,
+        workspace_id=workspace.id,
+    )
+
+    app.dependency_overrides[get_identity_service] = lambda: identity
+    app.dependency_overrides[current_principal] = lambda: Principal(user_id=administrator.id)
+    try:
+        response = TestClient(app).get(
+            f"/identity/organizations/{organization.id}/workspaces/{workspace.id}/capabilities"
+        )
+        app.dependency_overrides[current_principal] = lambda: Principal(user_id=reviewer.id)
+        reviewer_response = TestClient(app).get(
+            f"/identity/organizations/{organization.id}/workspaces/{workspace.id}/capabilities"
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert response.json() == {"agreements_delete": True}
+    assert reviewer_response.status_code == 200
+    assert reviewer_response.json() == {"agreements_delete": False}
+
+
 def test_initial_migration_creates_identity_tenant_tables(tmp_path: Path) -> None:
     database_path = tmp_path / "identity.db"
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
