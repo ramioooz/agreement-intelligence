@@ -7,6 +7,7 @@ from typing import Literal, NoReturn, cast
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
+from pydantic import ValidationError
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -28,6 +29,7 @@ from agreement_intelligence_api.reviews.schemas import (
     FindingResult,
     PlaybookEvaluationResponse,
     PlaybookFindingResponse,
+    RiskPayloadResponse,
     SubmitPlaybookEvaluationRequest,
 )
 
@@ -102,6 +104,7 @@ class PlaybookEvaluationService:
                     citation_ids=citations,
                     extraction_version=clause_extraction_version,
                     review_state="unreviewed",
+                    risk_payload=_risk_payload(rule, result, confidence, citations),
                 )
             )
         self._session.flush()
@@ -207,6 +210,7 @@ class PlaybookEvaluationService:
                     playbook_version_id=playbook_version_id,
                     extraction_version=finding.extraction_version,
                     review_state=finding.review_state,
+                    risk=_risk_response(finding),
                 )
                 for finding in record.findings
             ],
@@ -269,6 +273,63 @@ def _evaluate(
     else:
         result = FindingResult.SATISFIED if matches else FindingResult.NEEDS_REVIEW
     return rule, result, confidence, citations, "deterministic", extraction_version
+
+
+def _risk_payload(
+    rule: PlaybookRuleRecord,
+    result: FindingResult,
+    confidence: float,
+    citation_ids: list[str],
+) -> dict[str, object]:
+    rationale = (
+        rule.legal_rationale.strip() or "The deterministic finding requires reviewer assessment."
+    )
+    return {
+        "version": "playbook-risk.v1",
+        "severity": rule.severity,
+        "risk_rationale": rationale,
+        "risk_confidence": min(1.0, max(0.0, confidence)),
+        "review_status": (
+            "review_required"
+            if result
+            in {FindingResult.MISSING, FindingResult.NON_COMPLIANT, FindingResult.NEEDS_REVIEW}
+            else "complete"
+        ),
+        "citation_ids": citation_ids,
+        "model_explanation": None,
+    }
+
+
+def _risk_response(finding: PlaybookFindingRecord) -> RiskPayloadResponse:
+    fallback = _fallback_risk_payload(finding)
+    try:
+        risk = RiskPayloadResponse.model_validate(finding.risk_payload)
+    except ValidationError:
+        return fallback
+    if (
+        risk.severity != fallback.severity
+        or risk.risk_confidence != fallback.risk_confidence
+        or risk.review_status != fallback.review_status
+        or risk.citation_ids != fallback.citation_ids
+    ):
+        return fallback
+    return risk
+
+
+def _fallback_risk_payload(finding: PlaybookFindingRecord) -> RiskPayloadResponse:
+    return RiskPayloadResponse(
+        version="playbook-risk.v1",
+        severity=finding.severity,
+        risk_rationale="The deterministic finding requires reviewer assessment.",
+        risk_confidence=min(1.0, max(0.0, finding.confidence)),
+        review_status=(
+            "review_required"
+            if finding.result in {"missing", "non_compliant", "needs_review"}
+            else "complete"
+        ),
+        citation_ids=finding.citation_ids,
+        model_explanation=None,
+    )
 
 
 def _analysis_document(content: bytes) -> Mapping[str, object] | None:

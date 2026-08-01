@@ -19,6 +19,18 @@ class SubmitPlaybookEvaluationRequest(BaseModel):
     playbook_version_id: UUID
 
 
+class RiskPayloadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["playbook-risk.v1"]
+    severity: str
+    risk_rationale: str
+    risk_confidence: float
+    review_status: str
+    citation_ids: list[str]
+    model_explanation: str | None
+
+
 class PlaybookFindingResponse(BaseModel):
     id: UUID
     rule_id: UUID
@@ -30,6 +42,7 @@ class PlaybookFindingResponse(BaseModel):
     playbook_version_id: UUID
     extraction_version: str
     review_state: str
+    risk: RiskPayloadResponse
 
 
 class PlaybookEvaluationResponse(BaseModel):

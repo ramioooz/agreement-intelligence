@@ -15,8 +15,9 @@ from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
     ProcessingJobRecord,
 )
+from agreement_intelligence_api.reviews.models import PlaybookFindingRecord
 from fastapi.testclient import TestClient
-from pytest import fixture
+from pytest import fixture, mark
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -96,6 +97,15 @@ def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
             "playbook_version_id": playbook["id"],
             "extraction_version": "clause-rules.v1",
             "review_state": "unreviewed",
+            "risk": {
+                "version": "playbook-risk.v1",
+                "severity": "high",
+                "risk_rationale": "Exposure must be capped.",
+                "risk_confidence": 0.91,
+                "review_status": "complete",
+                "citation_ids": ["citation-liability"],
+                "model_explanation": None,
+            },
         }
     ]
     assert listed.status_code == 200
@@ -154,6 +164,64 @@ def test_prohibited_rule_without_policy_language_is_not_persisted_as_satisfied(
 
     assert submitted.status_code == 201
     assert submitted.json()["findings"][0]["result"] == "needs_review"
+
+
+@mark.parametrize(
+    "stored_risk_payload",
+    [
+        {},
+        {
+            "version": "unknown-risk.v99",
+            "severity": "low",
+            "risk_rationale": "Invented policy rationale.",
+            "risk_confidence": 0.1,
+            "review_status": "review_required",
+            "citation_ids": ["citation-not-in-evidence"],
+            "model_explanation": "Invented explanation.",
+            "unexpected": "field",
+        },
+    ],
+)
+def test_finding_reads_fall_back_when_persisted_risk_is_legacy_or_contradictory(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    stored_risk_payload: dict[str, object],
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(client, organization, workspace)
+    _complete_analysis(session, agreement, organization, workspace)
+    app.state.document_storage = _Storage(_analysis_manifest())
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+        json={"playbook_version_id": playbook["id"]},
+    ).json()
+    finding = session.get(PlaybookFindingRecord, UUID(submitted["findings"][0]["id"]))
+    assert finding is not None
+    finding.risk_payload = stored_risk_payload
+    session.commit()
+
+    listed = client.get(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert listed.status_code == 200
+    assert listed.json()[0]["findings"][0]["risk"] == {
+        "version": "playbook-risk.v1",
+        "severity": "high",
+        "risk_rationale": "The deterministic finding requires reviewer assessment.",
+        "risk_confidence": 0.91,
+        "review_status": "complete",
+        "citation_ids": ["citation-liability"],
+        "model_explanation": None,
+    }
 
 
 class _Storage:
