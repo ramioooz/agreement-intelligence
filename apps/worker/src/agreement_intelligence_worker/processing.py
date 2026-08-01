@@ -20,6 +20,7 @@ from sqlalchemy import (
     create_engine,
     func,
     select,
+    text,
     update,
 )
 
@@ -29,6 +30,14 @@ _SENSITIVE_MESSAGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 processing_metadata = MetaData()
+agreements = Table(
+    "agreements",
+    processing_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("processing_state", String(32), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
 processing_jobs = Table(
     "processing_jobs",
     processing_metadata,
@@ -300,8 +309,14 @@ class SQLAlchemyProcessingJobRepository:
                             updated_at=now,
                         )
                     )
+                _update_agreement_processing_state(
+                    connection, job, state="completed", updated_at=now
+                )
                 return None
             if job["state"] == "processing":
+                _update_agreement_processing_state(
+                    connection, job, state="processing", updated_at=now
+                )
                 return ProcessingJob(
                     id=job_id,
                     agreement_id=cast(UUID, job["agreement_id"]),
@@ -331,6 +346,7 @@ class SQLAlchemyProcessingJobRepository:
                     updated_at=now,
                 )
             )
+            _update_agreement_processing_state(connection, job, state="processing", updated_at=now)
             return ProcessingJob(
                 id=job_id,
                 agreement_id=cast(UUID, job["agreement_id"]),
@@ -381,12 +397,14 @@ class SQLAlchemyProcessingJobRepository:
                     updated_at=now,
                 )
             )
+            _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
 
     def requeue(
         self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime
     ) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
+            job = _job_for_update(connection, job_id)
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -398,10 +416,12 @@ class SQLAlchemyProcessingJobRepository:
                     updated_at=now,
                 )
             )
+            _update_agreement_processing_state(connection, job, state="queued", updated_at=now)
 
     def fail(self, job_id: UUID, *, category: str, message: str) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
+            job = _job_for_update(connection, job_id)
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -413,6 +433,7 @@ class SQLAlchemyProcessingJobRepository:
                     updated_at=now,
                 )
             )
+            _update_agreement_processing_state(connection, job, state="failed", updated_at=now)
 
 
 def create_processing_tables(engine: Engine) -> None:
@@ -425,6 +446,36 @@ def processing_engine_from_url(database_url: str) -> Engine:
 
 def _is_fifo_queue(queue_url: str) -> bool:
     return queue_url.rsplit("/", 1)[-1].endswith(".fifo")
+
+
+def _job_for_update(connection: Any, job_id: UUID) -> Any:
+    return (
+        connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+        .mappings()
+        .one()
+    )
+
+
+def _update_agreement_processing_state(
+    connection: Any,
+    job: Any,
+    *,
+    state: JobState,
+    updated_at: datetime,
+) -> None:
+    if connection.dialect.name == "postgresql":
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(job["organization_id"])},
+        )
+    connection.execute(
+        update(agreements)
+        .where(
+            agreements.c.id == job["agreement_id"],
+            agreements.c.organization_id == job["organization_id"],
+        )
+        .values(processing_state=state, updated_at=updated_at)
+    )
 
 
 async def run_processing_loop(
