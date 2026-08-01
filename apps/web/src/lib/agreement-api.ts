@@ -63,6 +63,13 @@ export type DocumentAnalysis = {
     confidence: number;
     extraction_version: string;
   }>;
+  summaries: Record<
+    string,
+    {
+      version: string;
+      claims: Array<{ text: string; citation_anchor_ids: string[] }>;
+    }
+  >;
   document: {
     pages: Array<{
       number: number;

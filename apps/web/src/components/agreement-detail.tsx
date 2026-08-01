@@ -184,6 +184,20 @@ export function AgreementDetail({
               </ul>
             </section>
           ) : null}
+          {Object.entries(analysis.summaries).map(([audience, summary]) => (
+            <section className="mt-5" key={audience}>
+              <h3 className="font-semibold capitalize">{audience} summary</h3>
+              {summary.claims.map((claim) => (
+                <a
+                  className="mt-2 block text-sm text-slate-700 underline"
+                  href={`#evidence-${claim.citation_anchor_ids[0]}`}
+                  key={claim.citation_anchor_ids[0]}
+                >
+                  {claim.text}
+                </a>
+              ))}
+            </section>
+          ))}
           {analysis.diagnostics.map((diagnostic) => (
             <p
               className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900"
