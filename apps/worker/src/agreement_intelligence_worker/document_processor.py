@@ -36,6 +36,14 @@ class ObjectStorage(Protocol):
     def put_immutable(self, key: str, content: bytes, *, content_type: str) -> bool: ...
 
 
+class PlaybookEvaluationSink(Protocol):
+    """Persists evaluations for a selected published same-family playbook."""
+
+    def evaluate_completed_analysis(
+        self, job: ProcessingJob, manifest: dict[str, object]
+    ) -> None: ...
+
+
 class S3ObjectStorage:
     def __init__(self, *, client: Any, bucket: str) -> None:
         self._client = client
@@ -77,9 +85,11 @@ class DocumentUnderstandingProcessor:
         storage: ObjectStorage,
         *,
         analysis_provider: AnalysisProvider | None = None,
+        evaluation_sink: PlaybookEvaluationSink | None = None,
     ) -> None:
         self._storage = storage
         self._analysis_provider = analysis_provider
+        self._evaluation_sink = evaluation_sink
 
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         source = _source_from(job)
@@ -101,6 +111,8 @@ class DocumentUnderstandingProcessor:
             json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode(),
             content_type="application/json",
         )
+        if self._evaluation_sink is not None:
+            self._evaluation_sink.evaluate_completed_analysis(job, manifest)
         return CompletedArtifact(job_id=job.id, key=artifact_key)
 
 

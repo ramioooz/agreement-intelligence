@@ -99,6 +99,25 @@ def test_processor_publishes_validated_provider_enrichment() -> None:
     }
 
 
+def test_processor_notifies_selected_playbook_evaluation_only_after_analysis_is_persisted() -> None:
+    storage, job = _processor_input()
+    observed: dict[str, object] = {}
+
+    class EvaluationSink:
+        def evaluate_completed_analysis(
+            self, received_job: ProcessingJob, manifest: dict[str, object]
+        ) -> None:
+            observed["job"] = received_job
+            observed["manifest"] = manifest
+            observed["artifact_count"] = len(storage.objects)
+
+    DocumentUnderstandingProcessor(storage, evaluation_sink=EvaluationSink()).process(job)
+
+    assert observed["job"] == job
+    assert cast(dict[str, object], observed["manifest"])["schema_version"] == "document-analysis.v1"
+    assert observed["artifact_count"] == 2
+
+
 def test_processor_keeps_deterministic_output_when_provider_fails() -> None:
     baseline_storage, baseline_job = _processor_input()
     baseline = _process_manifest(
