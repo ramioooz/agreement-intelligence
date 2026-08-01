@@ -146,6 +146,18 @@ export function AgreementDetail({
       {analysis ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="text-xl font-semibold">Document understanding</h2>
+          {analysis.classification ? (
+            <section className="mt-4 rounded-lg bg-slate-50 p-4">
+              <h3 className="font-semibold">Agreement family</h3>
+              <p className="mt-1 capitalize">
+                {analysis.classification.family.replaceAll("_", " ")}
+              </p>
+              <p className="mt-1 text-sm text-slate-600">
+                {analysis.classification.rationale} · Confidence{" "}
+                {analysis.classification.confidence}
+              </p>
+            </section>
+          ) : null}
           {analysis.diagnostics.map((diagnostic) => (
             <p
               className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900"
