@@ -122,4 +122,13 @@ def queue_publisher_from_environment() -> ProcessingQueuePublisher:
         endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
         region_name=region,
     )
-    return SQSProcessingQueuePublisher(client=client, queue_url=queue_url)
+    return SQSProcessingQueuePublisher(
+        client=client,
+        queue_url=_resolve_queue_url(client, queue_url),
+    )
+
+
+def _resolve_queue_url(client: Any, configured_queue: str) -> str:
+    if "://" in configured_queue:
+        return configured_queue
+    return str(client.get_queue_url(QueueName=configured_queue)["QueueUrl"])

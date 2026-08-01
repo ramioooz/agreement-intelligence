@@ -61,6 +61,8 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
         region_name=region,
     )
+    if "://" not in queue_url:
+        queue_url = str(client.get_queue_url(QueueName=queue_url)["QueueUrl"])
     engine = processing_engine_from_url(database_url)
     queue = SQSProcessingQueue(client=client, queue_url=queue_url)
     repository = SQLAlchemyProcessingJobRepository(engine)

@@ -14,6 +14,7 @@ from agreement_intelligence_api.main import app
 from agreement_intelligence_api.processing.queue import (
     ProcessingOutboxDispatcher,
     SQSProcessingQueuePublisher,
+    _resolve_queue_url,
 )
 from agreement_intelligence_api.processing.routes import get_queue_publisher
 from agreement_intelligence_api.processing.schemas import (
@@ -52,6 +53,22 @@ class ClientFactory:
     def __call__(self, user_id: UUID) -> TestClient:
         app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
         return TestClient(app)
+
+
+def test_queue_name_is_resolved_to_an_sqs_queue_url() -> None:
+    class QueueClient:
+        def get_queue_url(self, *, QueueName: str) -> dict[str, str]:
+            assert QueueName == "agreement-intelligence-agreement-processing"
+            return {
+                "QueueUrl": (
+                    "http://sqs.us-east-1.localhost.localstack.cloud:4566/000000000000/"
+                    "agreement-intelligence-agreement-processing"
+                )
+            }
+
+    assert _resolve_queue_url(
+        QueueClient(), "agreement-intelligence-agreement-processing"
+    ).endswith("/agreement-intelligence-agreement-processing")
 
 
 @fixture
