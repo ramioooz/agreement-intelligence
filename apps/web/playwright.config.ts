@@ -5,12 +5,15 @@ export default defineConfig({
   timeout: 45_000,
   expect: { timeout: 10_000 },
   reporter: "list",
+  outputDir: "test-results",
   use: {
     baseURL:
       process.env.PLAYWRIGHT_BASE_URL ??
       process.env.WEB_PUBLIC_ORIGIN ??
       "http://127.0.0.1:3000",
-    trace: "retain-on-failure",
+    screenshot: "off",
+    trace: "off",
+    video: "off",
   },
   projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
 });

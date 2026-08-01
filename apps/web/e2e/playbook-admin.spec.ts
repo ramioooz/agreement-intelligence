@@ -1,5 +1,13 @@
 import { expect, test } from "@playwright/test";
 
+const adminPassword = process.env.DEMO_ADMIN_PASSWORD;
+
+if (!adminPassword) {
+  throw new Error(
+    "DEMO_ADMIN_PASSWORD must be set to run the playbook administration E2E test.",
+  );
+}
+
 test("a platform administrator publishes an immutable client-agreement playbook", async ({
   page,
 }) => {
@@ -8,9 +16,7 @@ test("a platform administrator publishes an immutable client-agreement playbook"
   await page
     .getByLabel("Username or email")
     .fill(process.env.DEMO_ADMIN_USERNAME ?? "platform.admin");
-  await page
-    .getByRole("textbox", { name: "Password" })
-    .fill(process.env.DEMO_ADMIN_PASSWORD ?? "");
+  await page.getByRole("textbox", { name: "Password" }).fill(adminPassword);
   await page.getByRole("button", { name: "Sign In" }).click();
   await page.getByRole("link", { name: "Playbooks" }).click();
 

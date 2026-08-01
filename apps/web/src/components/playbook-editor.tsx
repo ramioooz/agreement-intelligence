@@ -277,6 +277,46 @@ function PublishedRule({ rule }: { rule: PlaybookRule }) {
       <p className="mt-1 text-sm text-slate-600">
         {rule.clause_type} · {rule.policy_type} · {rule.severity}
       </p>
+      <dl className="mt-4 grid gap-3 text-sm">
+        <div>
+          <dt className="font-medium text-slate-500">Preferred language</dt>
+          <dd className="mt-1 whitespace-pre-wrap">
+            {rule.preferred_language || "Not specified"}
+          </dd>
+        </div>
+        {rule.fallback_language ? (
+          <div>
+            <dt className="font-medium text-slate-500">
+              Approved fallback language
+            </dt>
+            <dd className="mt-1 whitespace-pre-wrap">
+              {rule.fallback_language}
+            </dd>
+          </div>
+        ) : null}
+        <div>
+          <dt className="font-medium text-slate-500">Legal rationale</dt>
+          <dd className="mt-1 whitespace-pre-wrap">{rule.legal_rationale}</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-slate-500">Reviewer guidance</dt>
+          <dd className="mt-1 whitespace-pre-wrap">{rule.reviewer_guidance}</dd>
+        </div>
+        <div>
+          <dt className="font-medium text-slate-500">
+            Evaluation configuration
+          </dt>
+          <dd className="mt-1">
+            {rule.evaluation_config.method === "semantic"
+              ? "Semantic assessment"
+              : "Deterministic"}
+            {" · "}
+            {rule.evaluation_config.semantic_assessment_permitted
+              ? "Permitted"
+              : "Not permitted"}
+          </dd>
+        </div>
+      </dl>
     </article>
   );
 }
