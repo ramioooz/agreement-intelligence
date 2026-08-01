@@ -164,7 +164,7 @@ def test_processor_propagates_provider_timeout_for_job_retry() -> None:
     assert set(storage.objects) == {job.source_storage_key}
 
 
-def test_processing_runtime_injects_environment_provider_only_into_document_processor(
+def test_processing_runtime_injects_provider_and_playbook_evaluation_sink_into_document_processor(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from agreement_intelligence_worker import main as worker_main
@@ -173,8 +173,15 @@ def test_processing_runtime_injects_environment_provider_only_into_document_proc
     captured: dict[str, object] = {}
 
     class FakeDocumentProcessor:
-        def __init__(self, storage: object, *, analysis_provider: object | None = None) -> None:
+        def __init__(
+            self,
+            storage: object,
+            *,
+            analysis_provider: object | None = None,
+            evaluation_sink: object | None = None,
+        ) -> None:
             captured["analysis_provider"] = analysis_provider
+            captured["evaluation_sink"] = evaluation_sink
 
         def process(self, job: ProcessingJob) -> Any:
             raise AssertionError("runtime composition must not process a job")
@@ -189,6 +196,10 @@ def test_processing_runtime_injects_environment_provider_only_into_document_proc
     monkeypatch.setattr(worker_main, "SQSProcessingQueue", lambda **kwargs: object())
     monkeypatch.setattr(worker_main, "SQLAlchemyProcessingJobRepository", lambda engine: object())
     monkeypatch.setattr(worker_main, "S3ObjectStorage", lambda **kwargs: object())
+    configured_sink = object()
+    monkeypatch.setattr(
+        worker_main, "SQLAlchemyPlaybookEvaluationSink", lambda engine: configured_sink
+    )
     monkeypatch.setattr(worker_main, "DocumentUnderstandingProcessor", FakeDocumentProcessor)
     monkeypatch.setattr(worker_main, "JobProcessor", lambda *args: object())
     monkeypatch.setattr(worker_main, "SQSProcessingMessageReceiver", lambda **kwargs: object())
@@ -197,6 +208,7 @@ def test_processing_runtime_injects_environment_provider_only_into_document_proc
 
     assert runtime is not None
     assert captured["analysis_provider"] is configured_provider
+    assert captured["evaluation_sink"] is configured_sink
 
 
 def _processor_input() -> tuple[InMemoryObjectStorage, ProcessingJob]:

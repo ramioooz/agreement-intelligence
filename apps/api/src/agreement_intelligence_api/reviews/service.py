@@ -254,6 +254,15 @@ def _evaluate(
         )
     source_text = _string(clause.get("source_text"), "").casefold()
     expected = (rule.preferred_language or "").strip().casefold()
+    if not expected:
+        return (
+            rule,
+            FindingResult.NEEDS_REVIEW,
+            confidence,
+            citations,
+            "deterministic",
+            extraction_version,
+        )
     matches = bool(expected) and expected in source_text
     if rule.policy_type == "prohibited":
         result = FindingResult.NON_COMPLIANT if matches else FindingResult.SATISFIED

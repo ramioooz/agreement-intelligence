@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("analysis_version", sa.String(length=100), nullable=False),
         sa.Column("extraction_version", sa.String(length=100), nullable=False),
         sa.Column("state", sa.String(length=32), nullable=False),
-        sa.Column("requested_by", sa.Uuid(), nullable=False),
+        sa.Column("requested_by", sa.Uuid(), nullable=True),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

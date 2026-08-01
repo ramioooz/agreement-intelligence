@@ -32,7 +32,7 @@ class PlaybookEvaluationRecord(Base):
     analysis_version: Mapped[str] = mapped_column(String(100))
     extraction_version: Mapped[str] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(32), default="completed")
-    requested_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    requested_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     findings: Mapped[list["PlaybookFindingRecord"]] = relationship(
         back_populates="evaluation", cascade="all, delete-orphan"

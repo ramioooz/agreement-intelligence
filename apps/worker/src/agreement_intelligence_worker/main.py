@@ -12,6 +12,7 @@ from agreement_intelligence_worker.document_processor import (
 )
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
+from agreement_intelligence_worker.playbook_evaluation import SQLAlchemyPlaybookEvaluationSink
 from agreement_intelligence_worker.processing import (
     JobProcessor,
     SQLAlchemyProcessingJobRepository,
@@ -78,6 +79,7 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         DocumentUnderstandingProcessor(
             S3ObjectStorage(client=document_client, bucket=bucket),
             analysis_provider=provider_from_environment(),
+            evaluation_sink=SQLAlchemyPlaybookEvaluationSink(engine),
         ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)

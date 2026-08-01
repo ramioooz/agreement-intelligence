@@ -29,4 +29,10 @@
 ## Concerns
 
 - Semantic assessment is deliberately an injected, explicitly configured extension point; no model provider is wired for it in this story, so all current persisted API findings use deterministic evaluation.
-- The worker callback is optional so the processor remains usable in existing deployments; production composition of a selected-playbook persistence sink should be enabled when review-run dispatch is introduced. The API submission path already evaluates only completed immutable analyses.
+
+## Review Fix Round 1
+
+- Corrected both API and worker deterministic paths so a prohibited rule with no configured policy text is persisted as `needs_review`, never `satisfied`.
+- Corrected semantic assessment to receive the same selected highest-confidence candidate whose citation, confidence, and extraction provenance are persisted.
+- Added and composed `SQLAlchemyPlaybookEvaluationSink` in the production worker runtime. It sets PostgreSQL tenant scope, selects a published same-family playbook in the job's organization/workspace, evaluates the immutable manifest, and persists scoped evaluations/findings.
+- Focused regression evidence: `17 passed` across the API/worker review, sink, and document-processor tests. A fresh full `make check` then passed with `143 passed, 1 skipped` Python tests, 28 web tests, static checks, contract scripts, and both package builds.

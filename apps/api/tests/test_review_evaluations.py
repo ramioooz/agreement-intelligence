@@ -126,6 +126,36 @@ def test_review_submission_rejects_a_different_agreement_family(
     assert submitted.json()["detail"]["code"] == "playbook_family_mismatch"
 
 
+def test_prohibited_rule_without_policy_language_is_not_persisted_as_satisfied(
+    session: Session, client_for_session: Callable[[UUID], TestClient]
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(
+        client,
+        organization,
+        workspace,
+        policy_type="prohibited",
+        preferred_language=None,
+    )
+    _complete_analysis(session, agreement, organization, workspace)
+    app.state.document_storage = _Storage(_analysis_manifest())
+
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+        json={"playbook_version_id": playbook["id"]},
+    )
+
+    assert submitted.status_code == 201
+    assert submitted.json()["findings"][0]["result"] == "needs_review"
+
+
 class _Storage:
     def __init__(self, manifest: dict[str, object]) -> None:
         self._manifest = manifest
@@ -179,7 +209,12 @@ def _agreement_payload(*, agreement_type: str = "client_agreement") -> dict[str,
 
 
 def _published_playbook(
-    client: TestClient, organization: Organization, workspace: Workspace
+    client: TestClient,
+    organization: Organization,
+    workspace: Workspace,
+    *,
+    policy_type: str = "required",
+    preferred_language: str | None = "liability is capped at fees paid",
 ) -> dict[str, Any]:
     created = client.post(
         "/playbooks",
@@ -191,8 +226,8 @@ def _published_playbook(
                 {
                     "clause_type": "limitation_of_liability",
                     "title": "Liability cap",
-                    "policy_type": "required",
-                    "preferred_language": "liability is capped at fees paid",
+                    "policy_type": policy_type,
+                    "preferred_language": preferred_language,
                     "fallback_language": None,
                     "severity": "high",
                     "legal_rationale": "Exposure must be capped.",

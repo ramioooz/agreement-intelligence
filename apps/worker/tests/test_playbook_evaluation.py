@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from agreement_intelligence_worker.playbook_evaluation import (
     FindingResult,
     PlaybookRule,
@@ -66,6 +68,67 @@ def test_prohibited_language_in_grounded_clause_is_non_compliant() -> None:
 
     assert findings[0].result is FindingResult.NON_COMPLIANT
     assert findings[0].severity == "critical"
+
+
+def test_prohibited_rule_without_policy_language_requires_human_review() -> None:
+    findings = evaluate_playbook(
+        [
+            PlaybookRule(
+                id="prohibited-unspecified",
+                clause_type="limitation_of_liability",
+                policy_type="prohibited",
+                preferred_language=None,
+                severity="critical",
+            )
+        ],
+        _analysis(_clause("limitation_of_liability", "The supplier accepts unlimited liability.")),
+    )
+
+    assert findings[0].result is FindingResult.NEEDS_REVIEW
+
+
+def test_semantic_assessment_receives_the_persisted_highest_confidence_candidate() -> None:
+    observed: dict[str, object] = {}
+
+    def semantic_assessor(rule: PlaybookRule, clause: Mapping[str, object]) -> FindingResult:
+        observed["rule"] = rule
+        observed["citation_ids"] = clause["citation_anchor_ids"]
+        return FindingResult.NEEDS_REVIEW
+
+    findings = evaluate_playbook(
+        [
+            PlaybookRule(
+                id="semantic-liability",
+                clause_type="limitation_of_liability",
+                policy_type="required",
+                preferred_language="liability is capped at fees paid",
+                severity="high",
+                evaluation_method="semantic",
+                semantic_assessment_permitted=True,
+            )
+        ],
+        _analysis(
+            {
+                **_clause(
+                    "limitation_of_liability", "An unclear liability position.", confidence=0.81
+                ),
+                "citation_anchor_ids": ["citation-low"],
+            },
+            {
+                **_clause(
+                    "limitation_of_liability",
+                    "Another unclear liability position.",
+                    confidence=0.95,
+                ),
+                "citation_anchor_ids": ["citation-high"],
+            },
+        ),
+        semantic_assessor=semantic_assessor,
+    )
+
+    assert findings[0].method == "semantic"
+    assert findings[0].citation_ids == ["citation-high"]
+    assert observed["citation_ids"] == ["citation-high"]
 
 
 def test_low_confidence_clause_requires_human_review_even_when_text_matches() -> None:
