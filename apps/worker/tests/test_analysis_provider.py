@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from importlib import import_module
 from typing import Any
 
 from _pytest.monkeypatch import MonkeyPatch
@@ -93,6 +94,63 @@ def test_provider_sends_bounded_instruction_for_cited_agreement_analysis() -> No
     assert "risks" in client.requested_instruction
     assert "summaries" in client.requested_instruction
     assert "only cite supplied anchor IDs" in client.requested_instruction
+
+
+def test_fallback_comparator_only_requests_a_cited_comparison_of_approved_language() -> None:
+    provider_module = import_module("agreement_intelligence_worker.analysis_provider")
+    comparator_type = getattr(provider_module, "HostedFallbackComparator", None)
+    assert comparator_type is not None, "fallback comparator provider is missing"
+    request_module = import_module("agreement_intelligence_worker.fallback_suggestions")
+    client = _ComparisonRecordingClient(
+        json.dumps(
+            {
+                "comparison_kind": "clause_differs_from_approved_position",
+                "citation_ids": ["citation-liability"],
+            }
+        )
+    )
+
+    response = comparator_type(client=client, model="gpt-5.4-mini")(
+        request_module.FallbackSuggestionRequest(
+            rule_id="rule-liability",
+            playbook_version_id="version-4",
+            finding_result="non_compliant",
+            citation_ids=["citation-liability"],
+            cited_clause_text="The supplier accepts unlimited liability.",
+            preferred_language="Liability is capped at fees paid.",
+            fallback_language="Liability is capped at USD 100,000.",
+        )
+    )
+
+    assert response == {
+        "comparison_kind": "clause_differs_from_approved_position",
+        "citation_ids": ["citation-liability"],
+    }
+    assert (
+        "do not draft, rewrite, or propose policy language" in client.requested_instruction.lower()
+    )
+    assert json.loads(client.requested_text) == {
+        "citation_ids": ["citation-liability"],
+        "cited_clause_text": "The supplier accepts unlimited liability.",
+        "approved_language": "Liability is capped at USD 100,000.",
+    }
+
+
+class _ComparisonRecordingClient:
+    def __init__(self, response: str) -> None:
+        self.response = _Response(response)
+        self.responses = self
+        self.requested_text = ""
+        self.requested_instruction = ""
+
+    def create(self, **kwargs: Any) -> _Response:
+        for input_item in kwargs["input"]:
+            text = input_item["content"][0]["text"]
+            if input_item["role"] == "system":
+                self.requested_instruction = text
+            if input_item["role"] == "user":
+                self.requested_text = text
+        return self.response
 
 
 def _assert_object_schemas_are_closed(schema: object) -> None:

@@ -70,6 +70,31 @@ def test_prohibited_language_in_grounded_clause_is_non_compliant() -> None:
     assert findings[0].severity == "critical"
 
 
+def test_satisfied_findings_do_not_receive_fallback_suggestions() -> None:
+    findings = evaluate_playbook(
+        [
+            PlaybookRule(
+                id="required-liability",
+                clause_type="limitation_of_liability",
+                policy_type="required",
+                preferred_language="liability is capped at fees paid",
+                fallback_language="Liability is capped at USD 100,000.",
+                severity="high",
+            )
+        ],
+        _analysis(
+            _clause(
+                "limitation_of_liability",
+                "Liability is capped at fees paid in the prior 12 months.",
+            )
+        ),
+        playbook_version_id="version-4",
+    )
+
+    assert findings[0].result is FindingResult.SATISFIED
+    assert findings[0].fallback_suggestions == []
+
+
 def test_prohibited_rule_without_policy_language_requires_human_review() -> None:
     findings = evaluate_playbook(
         [

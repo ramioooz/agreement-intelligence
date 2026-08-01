@@ -39,6 +39,7 @@ name = "agreement-intelligence-api"
 version = "0.1.0"
 source = { editable = "apps/api" }
 dependencies = [
+    { name = "agreement-intelligence-worker" },
     { name = "alembic" },
     { name = "boto3" },
     { name = "fastapi" },
@@ -51,6 +52,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agreement-intelligence-worker", editable = "apps/worker" },
     { name = "alembic", specifier = "==1.16.4" },
     { name = "boto3", specifier = "==1.43.60" },
     { name = "fastapi", specifier = "==0.140.0" },

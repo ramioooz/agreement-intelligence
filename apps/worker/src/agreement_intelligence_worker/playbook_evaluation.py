@@ -23,6 +23,12 @@ from sqlalchemy import (
     text,
 )
 
+from agreement_intelligence_worker.fallback_suggestions import (
+    FallbackModelComparator,
+    FallbackSuggestion,
+    FallbackSuggestionRequest,
+    suggest_fallback,
+)
 from agreement_intelligence_worker.risk_explanation import (
     RiskExplanationRequest,
     RiskModelExplainer,
@@ -70,6 +76,7 @@ playbook_rules = Table(
     Column("clause_type", String(128), nullable=False),
     Column("policy_type", String(16), nullable=False),
     Column("preferred_language", String(), nullable=True),
+    Column("fallback_language", String(), nullable=True),
     Column("severity", String(16), nullable=False),
     Column("legal_rationale", String(), nullable=False, server_default=""),
     Column("evaluation_config", JSON, nullable=False),
@@ -105,6 +112,7 @@ playbook_findings = Table(
     Column("extraction_version", String(100), nullable=False),
     Column("review_state", String(32), nullable=False),
     Column("risk_payload", JSON, nullable=False),
+    Column("fallback_suggestions", JSON, nullable=False),
 )
 
 
@@ -122,6 +130,7 @@ class PlaybookRule:
     policy_type: PolicyType
     preferred_language: str | None
     severity: str
+    fallback_language: str | None = None
     legal_rationale: str = ""
     evaluation_method: EvaluationMethod = "deterministic"
     semantic_assessment_permitted: bool = False
@@ -137,6 +146,7 @@ class EvaluatedFinding:
     citation_ids: list[str]
     extraction_version: str
     risk: RiskPayload
+    fallback_suggestions: list[FallbackSuggestion]
 
 
 SemanticAssessor = Callable[[PlaybookRule, Mapping[str, object]], FindingResult]
@@ -148,6 +158,8 @@ def evaluate_playbook(
     *,
     semantic_assessor: SemanticAssessor | None = None,
     risk_model_explainer: RiskModelExplainer | None = None,
+    fallback_model_comparator: FallbackModelComparator | None = None,
+    playbook_version_id: str | None = None,
 ) -> list[EvaluatedFinding]:
     """Evaluate extracted clauses deterministically before optional semantic assessment.
 
@@ -178,6 +190,7 @@ def evaluate_playbook(
                     citation_ids=finding.citation_ids,
                     extraction_version=finding.extraction_version,
                     risk=finding.risk,
+                    fallback_suggestions=[],
                 )
         findings.append(
             _with_risk_explanation(
@@ -185,6 +198,8 @@ def evaluate_playbook(
                 finding,
                 selected_clause,
                 risk_model_explainer if finding.method == "deterministic" else None,
+                fallback_model_comparator if finding.method == "deterministic" else None,
+                playbook_version_id,
             )
         )
     return findings
@@ -255,6 +270,7 @@ def _finding(
         citation_ids=citation_ids,
         extraction_version=extraction_version,
         risk=_risk_payload(rule, result, confidence, citation_ids, None),
+        fallback_suggestions=[],
     )
 
 
@@ -263,8 +279,26 @@ def _with_risk_explanation(
     finding: EvaluatedFinding,
     clause: Mapping[str, object] | None,
     model_explainer: RiskModelExplainer | None,
+    fallback_model_comparator: FallbackModelComparator | None,
+    playbook_version_id: str | None,
 ) -> EvaluatedFinding:
     source_text = _string(clause.get("source_text"), "") if clause is not None else None
+    suggestion = (
+        suggest_fallback(
+            FallbackSuggestionRequest(
+                rule_id=rule.id,
+                playbook_version_id=playbook_version_id,
+                finding_result=finding.result.value,
+                citation_ids=finding.citation_ids,
+                cited_clause_text=source_text,
+                preferred_language=rule.preferred_language,
+                fallback_language=rule.fallback_language,
+            ),
+            model_comparator=fallback_model_comparator,
+        )
+        if playbook_version_id is not None
+        else None
+    )
     return replace(
         finding,
         risk=_risk_payload(
@@ -275,6 +309,7 @@ def _with_risk_explanation(
             source_text,
             model_explainer,
         ),
+        fallback_suggestions=[suggestion] if suggestion is not None else [],
     )
 
 
@@ -335,10 +370,12 @@ class SQLAlchemyPlaybookEvaluationSink:
         storage: object,
         *,
         risk_model_explainer: RiskModelExplainer | None = None,
+        fallback_model_comparator: FallbackModelComparator | None = None,
     ) -> None:
         self._engine = engine
         self._storage = storage
         self._risk_model_explainer = risk_model_explainer
+        self._fallback_model_comparator = fallback_model_comparator
 
     def completed(self, job: object, artifact: object) -> None:
         from agreement_intelligence_worker.processing import ProcessingJob
@@ -420,6 +457,7 @@ class SQLAlchemyPlaybookEvaluationSink:
                     policy_type=_policy_type(row["policy_type"]),
                     preferred_language=_optional_string(row["preferred_language"]),
                     severity=str(row["severity"]),
+                    fallback_language=_optional_string(row["fallback_language"]),
                     legal_rationale=_string(row["legal_rationale"], ""),
                     evaluation_method=_evaluation_method(row["evaluation_config"]),
                     semantic_assessment_permitted=_semantic_permitted(row["evaluation_config"]),
@@ -430,6 +468,8 @@ class SQLAlchemyPlaybookEvaluationSink:
                 rules,
                 manifest,
                 risk_model_explainer=self._risk_model_explainer,
+                fallback_model_comparator=self._fallback_model_comparator,
+                playbook_version_id=str(version["id"]),
             )
             extraction_version = next(
                 (
@@ -473,6 +513,10 @@ class SQLAlchemyPlaybookEvaluationSink:
                         "extraction_version": finding.extraction_version,
                         "review_state": "unreviewed",
                         "risk_payload": _risk_payload_value(finding.risk),
+                        "fallback_suggestions": [
+                            _fallback_suggestion_value(suggestion)
+                            for suggestion in finding.fallback_suggestions
+                        ],
                     }
                     for finding in findings
                 ],
@@ -506,4 +550,18 @@ def _risk_payload_value(payload: RiskPayload) -> dict[str, object]:
         "review_status": payload.review_status,
         "citation_ids": payload.citation_ids,
         "model_explanation": payload.model_explanation,
+    }
+
+
+def _fallback_suggestion_value(suggestion: FallbackSuggestion) -> dict[str, object]:
+    return {
+        "version": suggestion.version,
+        "rule_id": suggestion.rule_id,
+        "playbook_version_id": suggestion.playbook_version_id,
+        "suggested_language": suggestion.suggested_language,
+        "review_recommendation": suggestion.review_recommendation,
+        "citation_ids": suggestion.citation_ids,
+        "comparison_kind": suggestion.comparison_kind,
+        "comparison": suggestion.comparison,
+        "ai_generated": suggestion.ai_generated,
     }

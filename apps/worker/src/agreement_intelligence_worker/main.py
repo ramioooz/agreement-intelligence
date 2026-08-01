@@ -5,7 +5,10 @@ from dataclasses import dataclass
 
 import boto3
 
-from agreement_intelligence_worker.analysis_provider import provider_from_environment
+from agreement_intelligence_worker.analysis_provider import (
+    fallback_comparator_from_environment,
+    provider_from_environment,
+)
 from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
     S3ObjectStorage,
@@ -81,7 +84,11 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
             storage,
             analysis_provider=provider_from_environment(),
         ),
-        completion_handler=SQLAlchemyPlaybookEvaluationSink(engine, storage),
+        completion_handler=SQLAlchemyPlaybookEvaluationSink(
+            engine,
+            storage,
+            fallback_model_comparator=fallback_comparator_from_environment(),
+        ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
     return ProcessingRuntime(receiver=receiver, processor=processor)

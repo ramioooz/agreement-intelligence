@@ -6,6 +6,13 @@ from datetime import UTC, datetime
 from typing import Literal, NoReturn, cast
 from uuid import UUID, uuid4
 
+from agreement_intelligence_worker.fallback_suggestions import (
+    FallbackSuggestion,
+    FallbackSuggestionRequest,
+    bounded_comparison_kind,
+    render_comparison,
+    suggest_fallback,
+)
 from fastapi import HTTPException, status
 from pydantic import ValidationError
 from sqlalchemy import desc, select
@@ -26,6 +33,7 @@ from agreement_intelligence_api.reviews.models import (
     PlaybookFindingRecord,
 )
 from agreement_intelligence_api.reviews.schemas import (
+    FallbackSuggestionResponse,
     FindingResult,
     PlaybookEvaluationResponse,
     PlaybookFindingResponse,
@@ -105,10 +113,17 @@ class PlaybookEvaluationService:
                     extraction_version=clause_extraction_version,
                     review_state="unreviewed",
                     risk_payload=_risk_payload(rule, result, confidence, citations),
+                    fallback_suggestions=_fallback_suggestion_payloads(
+                        rule, result, citations, version.id
+                    ),
                 )
             )
         self._session.flush()
-        response = self._response(evaluation, version.id)
+        response = self._response(
+            evaluation,
+            version.id,
+            {rule.id: rule for rule in version.rules},
+        )
         self._session.commit()
         return response
 
@@ -122,15 +137,34 @@ class PlaybookEvaluationService:
     ) -> list[PlaybookEvaluationResponse]:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
         self._agreement(agreement_id, organization_id, workspace_id)
-        records = self._session.scalars(
-            select(PlaybookEvaluationRecord)
-            .options(selectinload(PlaybookEvaluationRecord.findings))
-            .where(PlaybookEvaluationRecord.organization_id == organization_id)
-            .where(PlaybookEvaluationRecord.workspace_id == workspace_id)
-            .where(PlaybookEvaluationRecord.agreement_id == agreement_id)
-            .order_by(desc(PlaybookEvaluationRecord.created_at), PlaybookEvaluationRecord.id)
+        records = list(
+            self._session.scalars(
+                select(PlaybookEvaluationRecord)
+                .options(selectinload(PlaybookEvaluationRecord.findings))
+                .where(PlaybookEvaluationRecord.organization_id == organization_id)
+                .where(PlaybookEvaluationRecord.workspace_id == workspace_id)
+                .where(PlaybookEvaluationRecord.agreement_id == agreement_id)
+                .order_by(desc(PlaybookEvaluationRecord.created_at), PlaybookEvaluationRecord.id)
+            )
         )
-        return [self._response(record, record.playbook_version_id) for record in records]
+        version_ids = {record.playbook_version_id for record in records}
+        rules_by_version: dict[UUID, dict[UUID, PlaybookRuleRecord]] = {}
+        if version_ids:
+            for rule in self._session.scalars(
+                select(PlaybookRuleRecord)
+                .where(PlaybookRuleRecord.organization_id == organization_id)
+                .where(PlaybookRuleRecord.workspace_id == workspace_id)
+                .where(PlaybookRuleRecord.playbook_version_id.in_(version_ids))
+            ):
+                rules_by_version.setdefault(rule.playbook_version_id, {})[rule.id] = rule
+        return [
+            self._response(
+                record,
+                record.playbook_version_id,
+                rules_by_version.get(record.playbook_version_id, {}),
+            )
+            for record in records
+        ]
 
     def _authorize(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
@@ -189,7 +223,9 @@ class PlaybookEvaluationService:
 
     @staticmethod
     def _response(
-        record: PlaybookEvaluationRecord, playbook_version_id: UUID
+        record: PlaybookEvaluationRecord,
+        playbook_version_id: UUID,
+        rules_by_id: Mapping[UUID, PlaybookRuleRecord],
     ) -> PlaybookEvaluationResponse:
         return PlaybookEvaluationResponse(
             id=record.id,
@@ -211,6 +247,11 @@ class PlaybookEvaluationService:
                     extraction_version=finding.extraction_version,
                     review_state=finding.review_state,
                     risk=_risk_response(finding),
+                    fallback_suggestions=_fallback_suggestion_responses(
+                        finding,
+                        playbook_version_id,
+                        rules_by_id.get(finding.rule_id),
+                    ),
                 )
                 for finding in record.findings
             ],
@@ -300,6 +341,40 @@ def _risk_payload(
     }
 
 
+def _fallback_suggestion_payloads(
+    rule: PlaybookRuleRecord,
+    result: FindingResult,
+    citation_ids: list[str],
+    playbook_version_id: UUID,
+) -> list[dict[str, object]]:
+    suggestion = suggest_fallback(
+        FallbackSuggestionRequest(
+            rule_id=str(rule.id),
+            playbook_version_id=str(playbook_version_id),
+            finding_result=result.value,
+            citation_ids=citation_ids,
+            cited_clause_text=None,
+            preferred_language=rule.preferred_language,
+            fallback_language=rule.fallback_language,
+        )
+    )
+    return [_fallback_suggestion_payload(suggestion)] if suggestion is not None else []
+
+
+def _fallback_suggestion_payload(suggestion: FallbackSuggestion) -> dict[str, object]:
+    return {
+        "version": suggestion.version,
+        "rule_id": suggestion.rule_id,
+        "playbook_version_id": suggestion.playbook_version_id,
+        "suggested_language": suggestion.suggested_language,
+        "review_recommendation": suggestion.review_recommendation,
+        "citation_ids": suggestion.citation_ids,
+        "comparison_kind": suggestion.comparison_kind,
+        "comparison": suggestion.comparison,
+        "ai_generated": suggestion.ai_generated,
+    }
+
+
 def _risk_response(finding: PlaybookFindingRecord) -> RiskPayloadResponse:
     fallback = _fallback_risk_payload(finding)
     try:
@@ -330,6 +405,63 @@ def _fallback_risk_payload(finding: PlaybookFindingRecord) -> RiskPayloadRespons
         citation_ids=finding.citation_ids,
         model_explanation=None,
     )
+
+
+def _fallback_suggestion_responses(
+    finding: PlaybookFindingRecord,
+    playbook_version_id: UUID,
+    rule: PlaybookRuleRecord | None,
+) -> list[FallbackSuggestionResponse]:
+    stored: object = finding.fallback_suggestions
+    if rule is None or not isinstance(stored, list) or len(stored) != 1:
+        return []
+    try:
+        result = FindingResult(finding.result)
+    except ValueError:
+        return []
+    expected = suggest_fallback(
+        FallbackSuggestionRequest(
+            rule_id=str(rule.id),
+            playbook_version_id=str(playbook_version_id),
+            finding_result=result.value,
+            citation_ids=finding.citation_ids,
+            cited_clause_text=None,
+            preferred_language=rule.preferred_language,
+            fallback_language=rule.fallback_language,
+        )
+    )
+    if expected is None:
+        return []
+    try:
+        suggestion = FallbackSuggestionResponse.model_validate(stored[0])
+    except ValidationError:
+        return []
+    if (
+        suggestion.rule_id != finding.rule_id
+        or suggestion.playbook_version_id != playbook_version_id
+        or suggestion.suggested_language != expected.suggested_language
+        or suggestion.review_recommendation != expected.review_recommendation
+        or suggestion.citation_ids != expected.citation_ids
+        or suggestion.ai_generated != (suggestion.comparison_kind is not None)
+        or suggestion.comparison != render_comparison(suggestion.comparison_kind)
+    ):
+        return []
+    request = FallbackSuggestionRequest(
+        rule_id=str(rule.id),
+        playbook_version_id=str(playbook_version_id),
+        finding_result=result.value,
+        citation_ids=finding.citation_ids,
+        cited_clause_text=None,
+        preferred_language=rule.preferred_language,
+        fallback_language=rule.fallback_language,
+    )
+    if (
+        suggestion.comparison_kind is not None
+        and bounded_comparison_kind(request, suggestion.comparison_kind, suggestion.citation_ids)
+        is None
+    ):
+        return []
+    return [suggestion]
 
 
 def _analysis_document(content: bytes) -> Mapping[str, object] | None:

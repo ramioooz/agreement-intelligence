@@ -151,6 +151,7 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
     from agreement_intelligence_worker import main as worker_main
 
     configured_provider = FakeProvider()
+    configured_comparator = object()
     captured: dict[str, object] = {}
 
     class FakeDocumentProcessor:
@@ -170,6 +171,12 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:///worker.db")
     monkeypatch.setenv("S3_DOCUMENT_BUCKET", "documents")
     monkeypatch.setattr(worker_main, "provider_from_environment", lambda: configured_provider)
+    monkeypatch.setattr(
+        worker_main,
+        "fallback_comparator_from_environment",
+        lambda: configured_comparator,
+        raising=False,
+    )
     monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: object())
     monkeypatch.setattr(worker_main, "processing_engine_from_url", lambda url: object())
     monkeypatch.setattr(worker_main, "SQSProcessingQueue", lambda **kwargs: object())
@@ -177,7 +184,9 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
     monkeypatch.setattr(worker_main, "S3ObjectStorage", lambda **kwargs: object())
     configured_sink = object()
     monkeypatch.setattr(
-        worker_main, "SQLAlchemyPlaybookEvaluationSink", lambda engine, storage: configured_sink
+        worker_main,
+        "SQLAlchemyPlaybookEvaluationSink",
+        lambda engine, storage, **kwargs: captured.update(kwargs) or configured_sink,
     )
     monkeypatch.setattr(worker_main, "DocumentUnderstandingProcessor", FakeDocumentProcessor)
     monkeypatch.setattr(
@@ -191,6 +200,7 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
 
     assert runtime is not None
     assert captured["analysis_provider"] is configured_provider
+    assert captured["fallback_model_comparator"] is configured_comparator
     assert captured["completion_handler"] is configured_sink
 
 
