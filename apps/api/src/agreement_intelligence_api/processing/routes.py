@@ -148,3 +148,26 @@ def retry_processing_job(
         agreement_id=agreement_id,
         job_id=job_id,
     )
+
+
+@router.post(
+    "/{agreement_id}/processing-jobs/{job_id}/requeue",
+    response_model=ProcessingJobResponse,
+    status_code=202,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+def requeue_processing_job(
+    agreement_id: UUID,
+    job_id: UUID,
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    organization_id: UUID,
+    workspace_id: UUID,
+) -> ProcessingJobResponse:
+    return service.requeue(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+        job_id=job_id,
+    )

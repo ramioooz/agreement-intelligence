@@ -367,8 +367,10 @@ class SQLAlchemyProcessingJobRepository:
             job = (
                 connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
                 .mappings()
-                .one()
+                .one_or_none()
             )
+            if job is None:
+                return
             existing_artifact = connection.execute(
                 select(processing_artifacts.c.id).where(
                     processing_artifacts.c.job_id == job_id,
@@ -405,6 +407,8 @@ class SQLAlchemyProcessingJobRepository:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             job = _job_for_update(connection, job_id)
+            if job is None:
+                return
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -422,6 +426,8 @@ class SQLAlchemyProcessingJobRepository:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             job = _job_for_update(connection, job_id)
+            if job is None:
+                return
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -448,11 +454,11 @@ def _is_fifo_queue(queue_url: str) -> bool:
     return queue_url.rsplit("/", 1)[-1].endswith(".fifo")
 
 
-def _job_for_update(connection: Any, job_id: UUID) -> Any:
+def _job_for_update(connection: Any, job_id: UUID) -> Any | None:
     return (
         connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
         .mappings()
-        .one()
+        .one_or_none()
     )
 
 

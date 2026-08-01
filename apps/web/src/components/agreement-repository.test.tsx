@@ -1,7 +1,11 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgreementRepository } from "@/components/agreement-repository";
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: vi.fn() }),
+}));
 import type { AgreementSummary } from "@/lib/agreement-api";
 
 const agreement: AgreementSummary = {

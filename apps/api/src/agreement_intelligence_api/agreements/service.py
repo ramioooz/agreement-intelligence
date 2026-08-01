@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -195,6 +198,52 @@ class AgreementService:
         replaced = self._repository.replace(restored)
         self._identity.session.commit()
         return replaced
+
+    def permanently_delete(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        agreement_id: UUID,
+    ) -> AgreementResponse:
+        self._authorize(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.AGREEMENTS_DELETE,
+        )
+        agreement = self.get(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agreement_id=agreement_id,
+        )
+        self._repository.permanently_delete(agreement, actor_id=principal.user_id)
+        self._identity.session.commit()
+        return agreement
+
+    def deletion_object_keys(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        agreement_id: UUID,
+    ) -> tuple[AgreementResponse, Sequence[str]]:
+        self._authorize(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.AGREEMENTS_DELETE,
+        )
+        agreement = self.get(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agreement_id=agreement_id,
+        )
+        return agreement, self._repository.deletion_object_keys(agreement)
 
     def _authorize(
         self,

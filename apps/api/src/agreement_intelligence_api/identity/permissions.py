@@ -17,6 +17,7 @@ class PermissionKey(StrEnum):
     AGREEMENTS_CREATE = "agreements:create"
     AGREEMENTS_READ = "agreements:read"
     AGREEMENTS_UPDATE = "agreements:update"
+    AGREEMENTS_DELETE = "agreements:delete"
     REVIEWS_ASSIGN = "reviews:assign"
     REVIEWS_DECIDE = "reviews:decide"
     REVIEWS_APPROVE = "reviews:approve"

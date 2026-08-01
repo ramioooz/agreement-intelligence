@@ -20,6 +20,8 @@ class DocumentStorage(Protocol):
 
     def read(self, key: str) -> StoredDocument | None: ...
 
+    def delete(self, key: str) -> None: ...
+
 
 class ReadableBody(Protocol):
     def read(self) -> bytes: ...
@@ -77,6 +79,9 @@ class S3DocumentStorage:
             content=body.read(),
             content_type=cast(str, result.get("ContentType", "application/octet-stream")),
         )
+
+    def delete(self, key: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
 def storage_from_environment() -> S3DocumentStorage:

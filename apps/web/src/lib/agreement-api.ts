@@ -290,6 +290,25 @@ export async function createAgreement({
   );
 }
 
+export async function deleteAgreement({
+  baseUrl = defaultBaseUrl,
+  scope,
+  agreementId,
+  token,
+  fetcher = fetch,
+}: GetAgreementOptions): Promise<void> {
+  const response = await fetcher(
+    endpoint(baseUrl, `/agreements/${agreementId}`, scopedParams(scope)),
+    { method: "DELETE", headers: authorizationHeader(token) },
+  );
+  if (!response.ok) {
+    throw new ApiRequestError(
+      "The agreement could not be deleted.",
+      response.status,
+    );
+  }
+}
+
 export function documentDownloadPath({
   scope,
   objectKey,

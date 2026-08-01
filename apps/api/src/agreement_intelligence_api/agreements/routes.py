@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -17,6 +17,7 @@ from agreement_intelligence_api.agreements.service import AgreementNotFoundError
 from agreement_intelligence_api.analysis.service import load_analysis
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.documents.routes import get_document_service
+from agreement_intelligence_api.documents.service import UploadScope
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.processing.models import (
@@ -146,6 +147,34 @@ def get_document_analysis(
     if analysis is None:
         raise AgreementNotFoundError
     return analysis
+
+
+@router.delete("/{agreement_id}", status_code=204, responses={404: {"model": ErrorResponse}})
+def delete_agreement(
+    agreement_id: UUID,
+    principal: PrincipalDependency,
+    service: AgreementServiceDependency,
+    request: Request,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> Response:
+    agreement, object_keys = service.deletion_object_keys(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+    )
+    get_document_service(request).delete(
+        UploadScope(tenant_id=agreement.organization_id, workspace_id=agreement.workspace_id),
+        object_keys=object_keys,
+    )
+    service.permanently_delete(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+    )
+    return Response(status_code=204)
 
 
 @router.post(

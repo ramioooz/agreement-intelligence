@@ -35,3 +35,19 @@ class AgreementRecord(Base):
         DateTime(timezone=True),
         server_default=func.now(),
     )
+
+
+class AgreementDeletionAuditEventRecord(Base):
+    __tablename__ = "agreement_deletion_audit_events"
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    agreement_type: Mapped[str] = mapped_column(String(100))
+    file_checksums: Mapped[list[str]] = mapped_column(JSON, default=list)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

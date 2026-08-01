@@ -9,6 +9,7 @@ type AgreementDetailProps = {
   documentUrl?: string;
   processingJob?: ProcessingJob;
   retryAction?: () => void | Promise<void>;
+  requeueAction?: () => void | Promise<void>;
   startAnalysisAction?: () => void | Promise<void>;
   analysis?: DocumentAnalysis;
 };
@@ -33,6 +34,7 @@ export function AgreementDetail({
   documentUrl,
   processingJob,
   retryAction,
+  requeueAction,
   startAnalysisAction,
   analysis,
 }: AgreementDetailProps) {
@@ -152,6 +154,16 @@ export function AgreementDetail({
                   type="submit"
                 >
                   Retry processing
+                </button>
+              </form>
+            ) : null}
+            {processingJob?.state === "queued" && requeueAction ? (
+              <form action={requeueAction} className="mt-4">
+                <button
+                  className="rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+                  type="submit"
+                >
+                  Requeue analysis
                 </button>
               </form>
             ) : null}

@@ -18,6 +18,20 @@ function scopeFromEnvironment(): AgreementScope | null {
   return organizationId && workspaceId ? { organizationId, workspaceId } : null;
 }
 
+function isPlatformAdmin(accessToken: string | null | undefined): boolean {
+  if (!accessToken) return false;
+  try {
+    const payload = JSON.parse(
+      Buffer.from(accessToken.split(".")[1] ?? "", "base64url").toString(
+        "utf8",
+      ),
+    ) as { realm_access?: { roles?: string[] } };
+    return payload.realm_access?.roles?.includes("platform_admin") ?? false;
+  } catch {
+    return false;
+  }
+}
+
 async function loadAgreements(
   scope: AgreementScope,
   options: {
@@ -49,6 +63,7 @@ export default async function AgreementsPage({
   }>;
 }) {
   if (!(await auth())?.user) redirect("/sign-in");
+  const accessToken = await getKeycloakAccessToken(await headers());
   const params = await searchParams;
   const scope = scopeFromEnvironment();
   if (!scope)
@@ -79,6 +94,7 @@ export default async function AgreementsPage({
           agreementType: params.type ?? "all",
         }}
         nextCursor={page.page.next_cursor}
+        canDelete={isPlatformAdmin(accessToken)}
       />
       <AgreementUploadForm />
     </main>

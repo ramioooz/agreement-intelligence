@@ -15,6 +15,7 @@ import {
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
   getProcessingJob,
+  requeueProcessingJob,
   retryProcessingJob,
   submitProcessingJob,
   type ProcessingJob,
@@ -115,6 +116,18 @@ export default async function AgreementDetailPage({
     revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
   }
 
+  async function requeueAction() {
+    "use server";
+    if (!jobId) return;
+    await requeueProcessingJob({
+      scope: retryScope,
+      agreementId: retryAgreementId,
+      jobId,
+      token: await getKeycloakAccessToken(await headers()),
+    });
+    revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
       <AgreementDetail
@@ -127,6 +140,9 @@ export default async function AgreementDetailPage({
         processingJob={processingJob}
         analysis={analysis}
         retryAction={processingJob?.retry_permitted ? retryAction : undefined}
+        requeueAction={
+          processingJob?.state === "queued" ? requeueAction : undefined
+        }
         startAnalysisAction={
           !processingJob && file ? startAnalysisAction : undefined
         }

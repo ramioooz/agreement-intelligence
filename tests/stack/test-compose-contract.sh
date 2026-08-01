@@ -83,6 +83,7 @@ for (const expectedState of ["available", "running"]) {
 
 for (const [serviceName, expected] of Object.entries({
   api: [
+    "SQS_PROCESSING_QUEUE",
     "OIDC_ISSUER",
     "OIDC_INTERNAL_ISSUER",
     "OIDC_CLIENT_ID",
@@ -94,6 +95,7 @@ for (const [serviceName, expected] of Object.entries({
     "DEMO_REVIEWER_SUBJECT",
   ],
   web: ["API_ORGANIZATION_ID", "API_WORKSPACE_ID"],
+  worker: ["SQS_PROCESSING_QUEUE"],
   "keycloak-bootstrap": ["DEMO_REVIEWER_SUBJECT"],
 })) {
   const environment = config.services?.[serviceName]?.environment ?? {};

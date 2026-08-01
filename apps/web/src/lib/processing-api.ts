@@ -52,6 +52,10 @@ function retryEndpoint(options: Parameters<typeof jobEndpoint>[0]): string {
   return jobEndpoint(options).replace("?", "/retry?");
 }
 
+function requeueEndpoint(options: Parameters<typeof jobEndpoint>[0]): string {
+  return jobEndpoint(options).replace("?", "/requeue?");
+}
+
 function processingCollectionEndpoint({
   scope,
   agreementId,
@@ -136,6 +140,30 @@ export async function retryProcessingJob({
   if (!response.ok) {
     throw new ApiRequestError(
       "Processing retry could not be completed.",
+      response.status,
+    );
+  }
+  return response.json() as Promise<ProcessingJob>;
+}
+
+export async function requeueProcessingJob({
+  baseUrl = defaultBaseUrl,
+  token,
+  scope,
+  agreementId,
+  jobId,
+  fetcher = fetch,
+}: ProcessingOptions): Promise<ProcessingJob> {
+  const response = await fetcher(
+    requeueEndpoint({ baseUrl, scope, agreementId, jobId }),
+    {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    },
+  );
+  if (!response.ok) {
+    throw new ApiRequestError(
+      "Processing requeue could not be completed.",
       response.status,
     );
   }
