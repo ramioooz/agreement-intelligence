@@ -100,6 +100,59 @@ def test_duplicate_delivery_does_not_duplicate_completed_artifacts() -> None:
     assert queue.retries == []
 
 
+def test_completing_a_job_updates_the_parent_agreement_state(tmp_path: Path) -> None:
+    from agreement_intelligence_worker.processing import agreements, processing_jobs
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'processing.db'}")
+    create_processing_tables(engine)
+    job_id = uuid4()
+    agreement_id = uuid4()
+    organization_id = uuid4()
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                processing_state="queued",
+                updated_at=now,
+            )
+        )
+        connection.execute(
+            processing_jobs.insert().values(
+                id=job_id,
+                organization_id=organization_id,
+                workspace_id=uuid4(),
+                agreement_id=agreement_id,
+                idempotency_key="processing-v1",
+                profile="baseline",
+                state="processing",
+                attempt_count=1,
+                failure_category=None,
+                failure_message=None,
+                next_retry_at=None,
+                queued_at=now,
+                processing_started_at=now,
+                completed_at=None,
+                failed_at=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    SQLAlchemyProcessingJobRepository(engine).complete(
+        job_id,
+        CompletedArtifact(job_id=job_id, key=f"checkpoints/{job_id}/result.json"),
+    )
+
+    with engine.connect() as connection:
+        state = connection.execute(
+            select(agreements.c.processing_state).where(agreements.c.id == agreement_id),
+        ).scalar_one()
+
+    assert state == "completed"
+
+
 def test_processing_loop_consumes_and_acknowledges_fake_messages() -> None:
     class OneMessageReceiver:
         def __init__(self, job_id: UUID) -> None:
