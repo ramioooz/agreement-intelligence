@@ -56,6 +56,13 @@ export type DocumentAnalysis = {
     version: string;
     evidence_terms: string[];
   } | null;
+  clauses: Array<{
+    category: string;
+    source_text: string;
+    citation_anchor_ids: string[];
+    confidence: number;
+    extraction_version: string;
+  }>;
   document: {
     pages: Array<{
       number: number;
