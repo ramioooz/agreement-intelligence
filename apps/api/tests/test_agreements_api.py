@@ -1,5 +1,7 @@
 from collections.abc import Callable, Generator
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 from agreement_intelligence_api.db import get_session
@@ -8,6 +10,10 @@ from agreement_intelligence_api.identity.models import Base, Organization, Works
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
+from agreement_intelligence_api.processing.models import (
+    ProcessingArtifactRecord,
+    ProcessingJobRecord,
+)
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
@@ -58,7 +64,7 @@ def client_for_session(session: Session) -> Generator[Callable[[UUID], TestClien
         app.dependency_overrides.clear()
 
 
-def _agreement_payload(title: str, agreement_type: str = "client") -> dict[str, object]:
+def _agreement_payload(title: str, agreement_type: str = "client") -> dict[str, Any]:
     return {
         "title": title,
         "agreement_type": agreement_type,
@@ -117,6 +123,29 @@ def _create_business_user_scope(session: Session) -> tuple[UUID, Organization, W
     return user.id, organization, workspace
 
 
+def _create_platform_admin(
+    session: Session, organization: Organization, workspace: Workspace
+) -> UUID:
+    identity = IdentityService(session)
+    user = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject=f"admin-{uuid4()}",
+        display_name="Platform Admin",
+    )
+    membership = identity.grant_membership(
+        organization_id=organization.id,
+        user_id=user.id,
+        role_key=RoleKey.PLATFORM_ADMIN,
+    )
+    identity.grant_workspace_membership(
+        organization_id=organization.id,
+        membership_id=membership.id,
+        workspace_id=workspace.id,
+    )
+    session.commit()
+    return user.id
+
+
 def test_create_agreement_persists_repository_metadata(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],
@@ -164,6 +193,95 @@ def test_create_agreement_persists_repository_metadata(
 
     assert detail.status_code == 200
     assert detail.json() == created
+
+
+def test_platform_admin_can_permanently_delete_an_agreement(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    user_id, organization, workspace = _create_business_user_scope(session)
+    payload = _agreement_payload("Disposable agreement")
+    payload["files"][0]["storage_key"] = (
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/abc/original.pdf"
+    )
+    agreement = client_for_session(user_id).post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=payload,
+    )
+    agreement_id = UUID(agreement.json()["id"])
+    artifact_key = (
+        f"tenants/{organization.id}/workspaces/{workspace.id}/agreements/{agreement_id}/"
+        "analysis/abc/analysis.json"
+    )
+    job_id = uuid4()
+    now = datetime.now(UTC)
+    session.add(
+        ProcessingJobRecord(
+            id=job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            idempotency_key="delete-test",
+            profile="baseline",
+            source_storage_key=payload["files"][0]["storage_key"],
+            source_checksum="sha256:abc123",
+            source_content_type="application/pdf",
+            state="completed",
+            attempt_count=1,
+            queued_at=now,
+            processing_started_at=now,
+            completed_at=now,
+        )
+    )
+    session.add(
+        ProcessingArtifactRecord(
+            job_id=job_id,
+            agreement_id=agreement_id,
+            artifact_key=artifact_key,
+        )
+    )
+    session.commit()
+    admin_id = _create_platform_admin(session, organization, workspace)
+    client = client_for_session(admin_id)
+    deleted_keys: list[str] = []
+
+    class Storage:
+        def put_immutable(self, *args: object, **kwargs: object) -> bool:
+            return True
+
+        def read(self, key: str) -> None:
+            return None
+
+        def delete(self, key: str) -> None:
+            deleted_keys.append(key)
+
+    app.state.document_storage = Storage()
+
+    deleted = client.delete(
+        f"/agreements/{agreement_id}",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert deleted.status_code == 204
+    assert (
+        client.get(
+            f"/agreements/{agreement_id}",
+            params=_scope_query(organization, workspace),
+        ).status_code
+        == 404
+    )
+    assert deleted_keys == [
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/abc/original.pdf",
+        artifact_key,
+    ]
+    from agreement_intelligence_api.agreements.models import AgreementDeletionAuditEventRecord
+
+    audit = session.query(AgreementDeletionAuditEventRecord).one()
+    assert audit.agreement_id == agreement_id
+    assert audit.actor_id == admin_id
+    assert audit.file_checksums == ["sha256:abc123"]
+    del app.state.document_storage
 
 
 def test_list_scopes_results_filters_and_uses_cursor_pagination(

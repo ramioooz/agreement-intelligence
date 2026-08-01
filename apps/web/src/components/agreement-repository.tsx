@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useState } from "react";
 
 import type { AgreementStatus, AgreementSummary } from "@/lib/agreement-api";
 
@@ -13,6 +17,7 @@ type AgreementRepositoryProps = {
   nextCursor?: string | null;
   filters?: RepositoryFilters;
   state?: "loading" | "error";
+  canDelete?: boolean;
 };
 
 const statuses: Array<AgreementStatus | "all"> = [
@@ -39,7 +44,38 @@ export function AgreementRepository({
   nextCursor = null,
   filters = { query: "", status: "all", agreementType: "all" },
   state,
+  canDelete = false,
 }: AgreementRepositoryProps) {
+  const router = useRouter();
+  const [deletingId, setDeletingId] = useState<string>();
+  const [deleteError, setDeleteError] = useState<string>();
+
+  async function deleteAgreement(id: string, title: string) {
+    if (
+      !window.confirm(`Permanently delete “${title}”? This cannot be undone.`)
+    )
+      return;
+    setDeleteError(undefined);
+    setDeletingId(id);
+    try {
+      const response = await fetch(`/api/agreements/${id}`, {
+        method: "DELETE",
+      });
+      if (response.ok) {
+        router.refresh();
+      } else {
+        setDeleteError(
+          "Unable to permanently delete the agreement. Please try again.",
+        );
+      }
+    } catch {
+      setDeleteError(
+        "Unable to permanently delete the agreement. Please try again.",
+      );
+    } finally {
+      setDeletingId(undefined);
+    }
+  }
   if (state === "loading") {
     return (
       <p
@@ -152,6 +188,7 @@ export function AgreementRepository({
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Processing</th>
                 <th className="px-4 py-3">Updated</th>
+                {canDelete ? <th className="px-4 py-3">Actions</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -183,6 +220,20 @@ export function AgreementRepository({
                   <td className="px-4 py-3">
                     {new Date(agreement.updated_at).toLocaleDateString()}
                   </td>
+                  {canDelete ? (
+                    <td className="px-4 py-3">
+                      <button
+                        className="rounded-full border border-rose-300 px-3 py-1.5 font-semibold text-rose-800 disabled:opacity-60"
+                        disabled={deletingId === agreement.id}
+                        onClick={() =>
+                          void deleteAgreement(agreement.id, agreement.title)
+                        }
+                        type="button"
+                      >
+                        {deletingId === agreement.id ? "Deleting…" : "Delete"}
+                      </button>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>
@@ -201,6 +252,14 @@ export function AgreementRepository({
           <span className="text-sm text-slate-500">End of repository</span>
         )}
       </nav>
+      {deleteError ? (
+        <p
+          className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-900"
+          role="alert"
+        >
+          {deleteError}
+        </p>
+      ) : null}
     </section>
   );
 }

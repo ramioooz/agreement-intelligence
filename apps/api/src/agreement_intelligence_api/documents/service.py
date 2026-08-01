@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from dataclasses import dataclass
 from uuid import UUID, uuid5
 
@@ -82,9 +83,20 @@ class DocumentService:
             raise DocumentNotFoundError
         return document
 
+    def delete(self, scope: UploadScope, *, object_keys: Sequence[str]) -> None:
+        for object_key in object_keys:
+            if not object_key.startswith(self._deletable_prefixes(scope)):
+                raise DocumentAccessDeniedError
+            self._storage.delete(object_key)
+
     @staticmethod
     def _prefix(scope: UploadScope) -> str:
         return f"tenants/{scope.tenant_id}/workspaces/{scope.workspace_id}/documents/"
+
+    @staticmethod
+    def _deletable_prefixes(scope: UploadScope) -> tuple[str, str]:
+        base_prefix = f"tenants/{scope.tenant_id}/workspaces/{scope.workspace_id}/"
+        return (f"{base_prefix}documents/", f"{base_prefix}agreements/")
 
     def _key(self, scope: UploadScope, document: ValidatedDocument) -> str:
         return f"{self._prefix(scope)}{document.sha256}/original.{document.extension}"

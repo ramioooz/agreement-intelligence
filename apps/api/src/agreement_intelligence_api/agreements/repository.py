@@ -1,11 +1,19 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.orm import Session
 
-from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.agreements.models import (
+    AgreementDeletionAuditEventRecord,
+    AgreementRecord,
+)
 from agreement_intelligence_api.agreements.schemas import AgreementResponse
+from agreement_intelligence_api.processing.models import (
+    ProcessingArtifactRecord,
+    ProcessingJobRecord,
+    ProcessingOutboxRecord,
+)
 
 
 class SQLAlchemyAgreementRepository:
@@ -81,6 +89,60 @@ class SQLAlchemyAgreementRepository:
         record.updated_at = agreement.updated_at
         self._session.flush()
         return self._to_response(record)
+
+    def deletion_object_keys(self, agreement: AgreementResponse) -> list[str]:
+        artifact_keys = list(
+            self._session.scalars(
+                select(ProcessingArtifactRecord.artifact_key).where(
+                    ProcessingArtifactRecord.agreement_id == agreement.id
+                )
+            )
+        )
+        referenced_source_keys = {
+            source_file.get("storage_key")
+            for record in self._session.scalars(
+                select(AgreementRecord.files)
+                .where(AgreementRecord.organization_id == agreement.organization_id)
+                .where(AgreementRecord.workspace_id == agreement.workspace_id)
+                .where(AgreementRecord.id != agreement.id)
+            )
+            for source_file in record
+            if isinstance(source_file, dict) and isinstance(source_file.get("storage_key"), str)
+        }
+        source_keys = [
+            file.storage_key
+            for file in agreement.files
+            if file.storage_key not in referenced_source_keys
+        ]
+        return [*source_keys, *artifact_keys]
+
+    def permanently_delete(self, agreement: AgreementResponse, *, actor_id: UUID) -> None:
+        self._session.add(
+            AgreementDeletionAuditEventRecord(
+                organization_id=agreement.organization_id,
+                workspace_id=agreement.workspace_id,
+                agreement_id=agreement.id,
+                title=agreement.title,
+                agreement_type=agreement.agreement_type,
+                file_checksums=[file.checksum for file in agreement.files],
+                actor_id=actor_id,
+            )
+        )
+        self._session.execute(
+            delete(ProcessingOutboxRecord).where(
+                ProcessingOutboxRecord.agreement_id == agreement.id
+            )
+        )
+        self._session.execute(
+            delete(ProcessingArtifactRecord).where(
+                ProcessingArtifactRecord.agreement_id == agreement.id
+            )
+        )
+        self._session.execute(
+            delete(ProcessingJobRecord).where(ProcessingJobRecord.agreement_id == agreement.id)
+        )
+        self._session.execute(delete(AgreementRecord).where(AgreementRecord.id == agreement.id))
+        self._session.flush()
 
     @staticmethod
     def _to_response(record: AgreementRecord) -> AgreementResponse:

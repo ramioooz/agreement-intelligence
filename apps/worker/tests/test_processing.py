@@ -153,6 +153,17 @@ def test_completing_a_job_updates_the_parent_agreement_state(tmp_path: Path) -> 
     assert state == "completed"
 
 
+def test_completing_a_deleted_job_is_a_safe_no_op(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'processing.db'}")
+    create_processing_tables(engine)
+    job_id = uuid4()
+
+    SQLAlchemyProcessingJobRepository(engine).complete(
+        job_id,
+        CompletedArtifact(job_id=job_id, key=f"checkpoints/{job_id}/result.json"),
+    )
+
+
 def test_processing_loop_consumes_and_acknowledges_fake_messages() -> None:
     class OneMessageReceiver:
         def __init__(self, job_id: UUID) -> None:

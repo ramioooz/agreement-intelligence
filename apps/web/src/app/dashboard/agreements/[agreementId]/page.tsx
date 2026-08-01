@@ -140,7 +140,9 @@ export default async function AgreementDetailPage({
         processingJob={processingJob}
         analysis={analysis}
         retryAction={processingJob?.retry_permitted ? retryAction : undefined}
-        requeueAction={processingJob?.state === "queued" ? requeueAction : undefined}
+        requeueAction={
+          processingJob?.state === "queued" ? requeueAction : undefined
+        }
         startAnalysisAction={
           !processingJob && file ? startAnalysisAction : undefined
         }
