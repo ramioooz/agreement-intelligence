@@ -23,6 +23,7 @@ def upgrade() -> None:
         sa.Column("organization_id", sa.Uuid(), nullable=False),
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
         sa.Column("agreement_id", sa.Uuid(), nullable=False),
+        sa.Column("processing_job_id", sa.Uuid(), nullable=True),
         sa.Column("playbook_version_id", sa.Uuid(), nullable=False),
         sa.Column("analysis_version", sa.String(length=100), nullable=False),
         sa.Column("extraction_version", sa.String(length=100), nullable=False),
@@ -35,6 +36,7 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.ForeignKeyConstraint(["agreement_id"], ["agreements.id"]),
+        sa.ForeignKeyConstraint(["processing_job_id"], ["processing_jobs.id"]),
         sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"]),
         sa.ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
@@ -42,6 +44,9 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(["playbook_version_id"], ["playbook_versions.id"]),
         sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "processing_job_id", "playbook_version_id", name="uq_playbook_evaluations_job_version"
+        ),
     )
     op.create_index(
         "ix_playbook_evaluations_scope_agreement",

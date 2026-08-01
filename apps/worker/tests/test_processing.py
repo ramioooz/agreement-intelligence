@@ -45,6 +45,11 @@ class InMemoryRepository:
         self.artifacts.append(artifact)
         self.job = replace(self.job, state="completed", completed_at=datetime.now(UTC))
 
+    def completed_artifact(self, job_id: UUID) -> tuple[ProcessingJob, CompletedArtifact] | None:
+        if self.job.id != job_id or self.job.state != "completed" or not self.artifacts:
+            return None
+        return self.job, self.artifacts[-1]
+
     def requeue(
         self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime
     ) -> None:
@@ -101,7 +106,7 @@ def test_duplicate_delivery_does_not_duplicate_completed_artifacts() -> None:
     assert queue.retries == []
 
 
-def test_evaluation_runs_only_after_durable_completion_and_not_on_redelivery() -> None:
+def test_evaluation_recovery_runs_only_after_durable_completion() -> None:
     repository = InMemoryRepository(job=_job(), artifacts=[])
     queue = InMemoryQueue(retries=[])
     observed: list[tuple[str, UUID, str]] = []
@@ -121,7 +126,8 @@ def test_evaluation_runs_only_after_durable_completion_and_not_on_redelivery() -
     worker.handle(repository.job.id)
 
     assert observed == [
-        ("completed", repository.job.id, f"checkpoints/{repository.job.id}/placeholder.json")
+        ("completed", repository.job.id, f"checkpoints/{repository.job.id}/placeholder.json"),
+        ("completed", repository.job.id, f"checkpoints/{repository.job.id}/placeholder.json"),
     ]
 
 
@@ -148,6 +154,34 @@ def test_completion_failure_does_not_run_evaluation_handler() -> None:
         worker.handle(repository.job.id)
 
     assert observed == []
+
+
+def test_transient_completion_handler_failure_recovers_on_redelivery() -> None:
+    repository = InMemoryRepository(job=_job(), artifacts=[])
+    attempts: list[str] = []
+
+    class FlakyEvaluationHandler:
+        def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+            attempts.append(artifact.key)
+            if len(attempts) == 1:
+                raise RuntimeError("evaluation database temporarily unavailable")
+
+    worker = JobProcessor(
+        repository,
+        InMemoryQueue(retries=[]),
+        PlaceholderProcessor(),
+        completion_handler=FlakyEvaluationHandler(),
+    )
+
+    with raises(RuntimeError, match="temporarily unavailable"):
+        worker.handle(repository.job.id)
+    worker.handle(repository.job.id)
+
+    assert repository.job.state == "completed"
+    assert attempts == [
+        f"checkpoints/{repository.job.id}/placeholder.json",
+        f"checkpoints/{repository.job.id}/placeholder.json",
+    ]
 
 
 def test_completing_a_job_updates_the_parent_agreement_state(tmp_path: Path) -> None:

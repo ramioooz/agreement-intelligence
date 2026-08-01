@@ -43,3 +43,10 @@
 - Wired the production runtime with the shared object storage and post-completion SQLAlchemy handler; document parsing no longer writes review data directly.
 - Added lifecycle regressions proving evaluation observes `completed` state, is skipped on redelivery, and is not called when durable completion raises. This prevents completion failures from leaving review findings behind.
 - Focused regression evidence: `18 passed`; a fresh `make check` then passed with `144 passed, 1 skipped` Python tests, 28 web tests, static checks, contract scripts, and both package builds.
+
+## Review Fix Round 3
+
+- Added completed-artifact recovery to `JobProcessor`: redelivery of a durable completed job invokes the post-completion handler with the persisted artifact instead of silently acknowledging it.
+- Added `processing_job_id` and a unique job/version constraint to evaluation persistence. The worker sink checks that idempotency key before writing, so recovery cannot duplicate findings.
+- Added regressions for transient handler failure followed by redelivery success, repeated completed-artifact recovery after durable completion, and idempotent sink re-entry.
+- Focused regression evidence: `3 passed`; a fresh `make check` then passed with `145 passed, 1 skipped` Python tests, 28 web tests, static checks, contract scripts, and both package builds.

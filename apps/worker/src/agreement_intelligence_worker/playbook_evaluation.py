@@ -73,6 +73,7 @@ playbook_evaluations = Table(
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("agreement_id", Uuid(as_uuid=True), nullable=False),
+    Column("processing_job_id", Uuid(as_uuid=True), nullable=True),
     Column("playbook_version_id", Uuid(as_uuid=True), nullable=False),
     Column("analysis_version", String(100), nullable=False),
     Column("extraction_version", String(100), nullable=False),
@@ -326,6 +327,14 @@ class SQLAlchemyPlaybookEvaluationSink:
             )
             if version is None:
                 return
+            existing = connection.execute(
+                select(playbook_evaluations.c.id)
+                .where(playbook_evaluations.c.processing_job_id == job.id)
+                .where(playbook_evaluations.c.playbook_version_id == version["id"])
+                .limit(1)
+            ).one_or_none()
+            if existing is not None:
+                return
             rule_rows = list(
                 connection.execute(
                     select(playbook_rules)
@@ -363,6 +372,7 @@ class SQLAlchemyPlaybookEvaluationSink:
                     organization_id=job.organization_id,
                     workspace_id=job.workspace_id,
                     agreement_id=job.agreement_id,
+                    processing_job_id=job.id,
                     playbook_version_id=version["id"],
                     analysis_version=_string(manifest.get("schema_version"), "unknown"),
                     extraction_version=extraction_version,

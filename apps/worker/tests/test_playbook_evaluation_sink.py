@@ -94,10 +94,13 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
             assert key == "analysis/manifest.json"
             return json.dumps(manifest).encode()
 
-    SQLAlchemyPlaybookEvaluationSink(engine, Storage()).completed(
+    sink = SQLAlchemyPlaybookEvaluationSink(engine, Storage())
+    artifact = CompletedArtifact(job_id=job.id, key="analysis/manifest.json")
+    sink.completed(
         job,
-        CompletedArtifact(job_id=job.id, key="analysis/manifest.json"),
+        artifact,
     )
+    sink.completed(job, artifact)
 
     with engine.connect() as connection:
         evaluation = (
@@ -114,6 +117,7 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
     assert evaluation["organization_id"] == organization_id
     assert evaluation["workspace_id"] == workspace_id
     assert evaluation["agreement_id"] == agreement_id
+    assert evaluation["processing_job_id"] == job.id
     assert evaluation["playbook_version_id"] == version_id
     assert evaluation["analysis_version"] == "document-analysis.v1"
     assert evaluation["extraction_version"] == "clause-rules.v1"

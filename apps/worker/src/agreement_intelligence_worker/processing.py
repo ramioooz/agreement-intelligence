@@ -186,6 +186,7 @@ class JobProcessor:
     def handle(self, job_id: UUID) -> None:
         job = self._repository.claim(job_id)
         if job is None:
+            self._recover_completed_evaluation(job_id)
             return
         try:
             artifact = self._processor.process(job)
@@ -199,6 +200,18 @@ class JobProcessor:
             self._repository.complete(job.id, artifact)
             if self._completion_handler is not None:
                 self._completion_handler.completed(job, artifact)
+
+    def _recover_completed_evaluation(self, job_id: UUID) -> None:
+        if self._completion_handler is None:
+            return
+        completed_artifact = getattr(self._repository, "completed_artifact", None)
+        if not callable(completed_artifact):
+            return
+        recovered = completed_artifact(job_id)
+        if recovered is None:
+            return
+        job, artifact = recovered
+        self._completion_handler.completed(job, artifact)
 
     def _handle_transient_failure(self, job: ProcessingJob, message: str) -> None:
         safe_message = _safe_summary(message)
@@ -408,6 +421,44 @@ class SQLAlchemyProcessingJobRepository:
                 )
             )
             _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
+
+    def completed_artifact(self, job_id: UUID) -> tuple[ProcessingJob, CompletedArtifact] | None:
+        with self._engine.connect() as connection:
+            job = (
+                connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+                .mappings()
+                .one_or_none()
+            )
+            if job is None or job["state"] != "completed":
+                return None
+            artifact = (
+                connection.execute(
+                    select(processing_artifacts.c.artifact_key)
+                    .where(processing_artifacts.c.job_id == job_id)
+                    .order_by(processing_artifacts.c.created_at.desc())
+                    .limit(1)
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if artifact is None:
+                return None
+            return (
+                ProcessingJob(
+                    id=job_id,
+                    agreement_id=cast(UUID, job["agreement_id"]),
+                    state="completed",
+                    attempt_count=int(job["attempt_count"]),
+                    organization_id=cast(UUID, job["organization_id"]),
+                    workspace_id=cast(UUID, job["workspace_id"]),
+                    profile=cast(str, job["profile"]),
+                    source_storage_key=cast(str | None, job["source_storage_key"]),
+                    source_checksum=cast(str | None, job["source_checksum"]),
+                    source_content_type=cast(str | None, job["source_content_type"]),
+                    completed_at=cast(datetime | None, job["completed_at"]),
+                ),
+                CompletedArtifact(job_id=job_id, key=cast(str, artifact["artifact_key"])),
+            )
 
     def requeue(
         self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime

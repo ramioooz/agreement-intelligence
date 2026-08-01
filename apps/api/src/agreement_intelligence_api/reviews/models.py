@@ -1,7 +1,17 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, ForeignKeyConstraint, Index, String, Uuid, func
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agreement_intelligence_api.identity.models import Base
@@ -20,12 +30,18 @@ class PlaybookEvaluationRecord(Base):
             "workspace_id",
             "agreement_id",
         ),
+        UniqueConstraint(
+            "processing_job_id", "playbook_version_id", name="uq_playbook_evaluations_job_version"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
+    processing_job_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("processing_jobs.id"), index=True, nullable=True
+    )
     playbook_version_id: Mapped[UUID] = mapped_column(
         ForeignKey("playbook_versions.id"), index=True
     )
