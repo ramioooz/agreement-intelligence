@@ -147,7 +147,10 @@ export function AgreementDetail({
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="text-xl font-semibold">Document understanding</h2>
           {analysis.diagnostics.map((diagnostic) => (
-            <p className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900" key={diagnostic.code}>
+            <p
+              className="mt-3 rounded-lg bg-amber-50 p-3 text-sm text-amber-900"
+              key={diagnostic.code}
+            >
               {diagnostic.code === "ocr_required"
                 ? "OCR is required before these scanned pages can be reviewed."
                 : diagnostic.message}
@@ -157,7 +160,11 @@ export function AgreementDetail({
             <section className="mt-5" key={page.number}>
               <h3 className="font-semibold">Extracted page {page.number}</h3>
               {page.blocks.map((block) => (
-                <p className="mt-2 text-sm text-slate-700" id={`evidence-${block.anchor_id}`} key={block.anchor_id}>
+                <p
+                  className="mt-2 text-sm text-slate-700"
+                  id={`evidence-${block.anchor_id}`}
+                  key={block.anchor_id}
+                >
                   {block.text}
                 </p>
               ))}

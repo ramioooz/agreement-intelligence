@@ -206,7 +206,11 @@ export async function getDocumentAnalysis({
 }: GetAgreementOptions): Promise<DocumentAnalysis> {
   return decode<DocumentAnalysis>(
     await fetcher(
-      endpoint(baseUrl, `/agreements/${agreementId}/analysis`, scopedParams(scope)),
+      endpoint(
+        baseUrl,
+        `/agreements/${agreementId}/analysis`,
+        scopedParams(scope),
+      ),
       { cache: "no-store", headers: authorizationHeader(token) },
     ),
   );
