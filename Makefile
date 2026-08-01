@@ -130,4 +130,4 @@ check:
 	$(MAKE) build
 
 provider-smoke:
-	uv run python -m agreement_intelligence_worker.provider_smoke
+	uv run --env-file "$(STACK_ENV_FILE)" python -m agreement_intelligence_worker.provider_smoke

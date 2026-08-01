@@ -138,7 +138,8 @@ make setup
 Document enrichment works without a hosted provider, using the deterministic
 analysis baseline. To opt in to the hybrid interpretation layer locally, add
 `OPENAI_API_KEY` (and optionally `OPENAI_MODEL`) only to the ignored `.env`
-file; never commit it. `make provider-smoke` is deliberately excluded from CI:
+file; never commit it. `make provider-smoke` reads the same selected environment
+file as the stack (`STACK_ENV_FILE=.env` by default). It is deliberately excluded from CI:
 it makes one bounded provider request and prints only the configured model,
 latency, usage metadata, and validation status.
 
