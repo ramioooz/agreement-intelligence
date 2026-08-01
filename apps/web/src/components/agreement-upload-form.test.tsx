@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AgreementUploadForm } from "@/components/agreement-upload-form";
 
+const { refresh } = vi.hoisted(() => ({ refresh: vi.fn() }));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh }),
+}));
+
 describe("AgreementUploadForm", () => {
   it("submits the selected agreement file through the same-origin upload route", async () => {
     const fetcher = vi
@@ -33,5 +39,6 @@ describe("AgreementUploadForm", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(screen.getByRole("status")).toHaveTextContent("Agreement uploaded.");
+    expect(refresh).toHaveBeenCalledOnce();
   });
 });

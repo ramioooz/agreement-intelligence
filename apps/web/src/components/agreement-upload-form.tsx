@@ -1,27 +1,34 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
 
 type AgreementUploadFormProps = { fetcher?: typeof fetch };
 
 export function AgreementUploadForm({
   fetcher = fetch,
 }: AgreementUploadFormProps) {
+  const router = useRouter();
   const [message, setMessage] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
 
   async function upload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const form = event.currentTarget;
     setSubmitting(true);
     setMessage(undefined);
     const response = await fetcher("/api/agreements/upload", {
       method: "POST",
-      body: new FormData(event.currentTarget),
+      body: new FormData(form),
     });
+    if (response.ok) {
+      form.reset();
+      router.refresh();
+      setMessage("Agreement uploaded.");
+    } else {
+      setMessage("Unable to upload the agreement.");
+    }
     setSubmitting(false);
-    setMessage(
-      response.ok ? "Agreement uploaded." : "Unable to upload the agreement.",
-    );
   }
 
   return (

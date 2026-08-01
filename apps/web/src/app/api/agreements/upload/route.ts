@@ -6,7 +6,6 @@ import {
   type AgreementScope,
 } from "@/lib/agreement-api";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
-import { submitProcessingJob } from "@/lib/processing-api";
 
 function scopeFromEnvironment(): AgreementScope | null {
   const organizationId = process.env.API_ORGANIZATION_ID;
@@ -59,16 +58,7 @@ export async function POST(request: NextRequest) {
         audit_metadata: { source: "repository-upload" },
       },
     });
-    const job = await submitProcessingJob({
-      scope,
-      token,
-      agreementId: agreement.id,
-      idempotencyKey: crypto.randomUUID(),
-    });
-    return Response.json(
-      { id: agreement.id, processingJobId: job.id },
-      { status: 201 },
-    );
+    return Response.json({ id: agreement.id }, { status: 201 });
   } catch {
     return Response.json(
       { message: "The agreement could not be uploaded." },
