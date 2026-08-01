@@ -17,6 +17,17 @@ function date(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : "Not recorded";
 }
 
+const riskSeverityOrder = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+} as const;
+
+function riskLabel(severity: keyof typeof riskSeverityOrder): string {
+  return `${severity[0].toUpperCase()}${severity.slice(1)} risk`;
+}
+
 export function AgreementDetail({
   agreement,
   documentUrl,
@@ -158,6 +169,20 @@ export function AgreementDetail({
       {analysis ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="text-xl font-semibold">Document understanding</h2>
+          <section className="mt-4 rounded-lg bg-slate-50 p-4">
+            <h3 className="font-semibold">Analysis provenance</h3>
+            <p className="mt-1 text-sm text-slate-700">
+              {analysis.analysis_provenance.mode === "hybrid"
+                ? `Hybrid analysis${analysis.analysis_provenance.model ? ` using ${analysis.analysis_provenance.model}` : ""}.`
+                : "Deterministic analysis."}
+            </p>
+            {analysis.analysis_provenance.fallback_reason ? (
+              <p className="mt-2 text-sm text-amber-900">
+                Provider enrichment was unavailable, so deterministic results
+                are shown.
+              </p>
+            ) : null}
+          </section>
           {analysis.classification ? (
             <section className="mt-4 rounded-lg bg-slate-50 p-4">
               <h3 className="font-semibold">Agreement family</h3>
@@ -168,6 +193,36 @@ export function AgreementDetail({
                 {analysis.classification.rationale} · Confidence{" "}
                 {analysis.classification.confidence}
               </p>
+            </section>
+          ) : null}
+          {analysis.risks.length ? (
+            <section className="mt-5">
+              <h3 className="font-semibold">Risks requiring review</h3>
+              <ul className="mt-3 space-y-3">
+                {[...analysis.risks]
+                  .sort(
+                    (left, right) =>
+                      riskSeverityOrder[left.severity] -
+                      riskSeverityOrder[right.severity],
+                  )
+                  .map((risk) => (
+                    <li
+                      className="rounded-lg border border-rose-200 bg-rose-50 p-3"
+                      key={`${risk.severity}-${risk.citation_anchor_ids[0]}`}
+                    >
+                      <p className="font-medium">{riskLabel(risk.severity)}</p>
+                      <p className="mt-1 text-sm text-slate-700">
+                        {risk.explanation}
+                      </p>
+                      <a
+                        className="mt-2 inline-block text-sm font-semibold underline"
+                        href={`#evidence-${risk.citation_anchor_ids[0]}`}
+                      >
+                        View source evidence
+                      </a>
+                    </li>
+                  ))}
+              </ul>
             </section>
           ) : null}
           {analysis.clauses.length ? (
