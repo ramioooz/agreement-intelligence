@@ -92,13 +92,74 @@ def _response_format() -> dict[str, object]:
             "additionalProperties": False,
             "required": ["classification", "clauses", "risks", "summaries"],
             "properties": {
-                "classification": {"type": "object", "additionalProperties": True},
-                "clauses": {"type": "array", "items": {"type": "object"}},
-                "risks": {"type": "array", "items": {"type": "object"}},
-                "summaries": {"type": "object", "additionalProperties": {"type": "object"}},
+                "classification": _object_schema(
+                    {
+                        "family": {"type": "string"},
+                        "confidence": {"type": "number"},
+                        "rationale": {"type": "string"},
+                        "citation_anchor_ids": _string_array_schema(),
+                    }
+                ),
+                "clauses": {
+                    "type": "array",
+                    "items": _object_schema(
+                        {
+                            "category": {"type": "string"},
+                            "normalized_fields": {
+                                "type": "array",
+                                "items": _object_schema(
+                                    {"name": {"type": "string"}, "value": {"type": "string"}}
+                                ),
+                            },
+                            "source_excerpt": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "citation_anchor_ids": _string_array_schema(),
+                        }
+                    ),
+                },
+                "risks": {
+                    "type": "array",
+                    "items": _object_schema(
+                        {
+                            "severity": {"type": "string"},
+                            "explanation": {"type": "string"},
+                            "affected_category": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "citation_anchor_ids": _string_array_schema(),
+                        }
+                    ),
+                },
+                "summaries": _object_schema(
+                    {
+                        "business": _summary_schema(),
+                        "legal": _summary_schema(),
+                    }
+                ),
             },
         },
     }
+
+
+def _object_schema(properties: dict[str, object]) -> dict[str, object]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": list(properties),
+        "properties": properties,
+    }
+
+
+def _string_array_schema() -> dict[str, object]:
+    return {"type": "array", "items": {"type": "string"}}
+
+
+def _summary_schema() -> dict[str, object]:
+    return _object_schema(
+        {
+            "claim": {"type": "string"},
+            "citation_anchor_ids": _string_array_schema(),
+        }
+    )
 
 
 def _analysis_payload(payload: object) -> dict[str, Any]:

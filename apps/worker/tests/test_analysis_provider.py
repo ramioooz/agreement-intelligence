@@ -11,7 +11,12 @@ from agreement_intelligence_worker.analysis_provider import (
 
 VALID_RESPONSE = json.dumps(
     {
-        "classification": {"family": "unknown_needs_review"},
+        "classification": {
+            "family": "unknown_needs_review",
+            "confidence": 0.0,
+            "rationale": "Insufficient agreement-family evidence.",
+            "citation_anchor_ids": ["citation-a"],
+        },
         "clauses": [],
         "risks": [],
         "summaries": {},
@@ -25,6 +30,7 @@ class RecordingClient:
         self.responses = self
         self.requested_anchor_ids: list[str] = []
         self.requested_text = ""
+        self.requested_format: dict[str, object] = {}
 
     def create(self, **kwargs: Any) -> _Response:
         input_item = kwargs["input"][0]
@@ -32,6 +38,7 @@ class RecordingClient:
         self.requested_anchor_ids = [
             block["anchor_id"] for block in json.loads(self.requested_text)["blocks"]
         ]
+        self.requested_format = kwargs["text"]["format"]
         return self.response
 
 
@@ -55,3 +62,28 @@ def test_provider_receives_only_anchor_ids_and_extracted_blocks() -> None:
 
     assert client.requested_anchor_ids == ["citation-a"]
     assert "Termination is permitted" in client.requested_text
+
+
+def test_provider_requests_a_closed_strict_json_schema() -> None:
+    client = RecordingClient(response=VALID_RESPONSE)
+    provider = HostedAnalysisProvider(client=client, model="gpt-5.4-mini")
+
+    provider.analyze([("citation-a", "Termination is permitted on notice.")])
+
+    response_format = client.requested_format
+    assert response_format["type"] == "json_schema"
+    assert response_format["strict"] is True
+    _assert_object_schemas_are_closed(response_format["schema"])
+
+
+def _assert_object_schemas_are_closed(schema: object) -> None:
+    if not isinstance(schema, dict):
+        return
+    if schema.get("type") == "object":
+        assert schema.get("additionalProperties") is False
+    for value in schema.values():
+        if isinstance(value, dict):
+            _assert_object_schemas_are_closed(value)
+        elif isinstance(value, list):
+            for item in value:
+                _assert_object_schemas_are_closed(item)
