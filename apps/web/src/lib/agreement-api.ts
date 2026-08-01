@@ -46,6 +46,16 @@ export type DocumentAnalysis = {
   schema_version: string;
   pipeline_version: string;
   diagnostics: Array<{ code: string; message: string; page_numbers: number[] }>;
+  classification: {
+    family:
+      | "client_agreement"
+      | "liquidity_provider_agreement"
+      | "unknown_needs_review";
+    confidence: number;
+    rationale: string;
+    version: string;
+    evidence_terms: string[];
+  } | null;
   document: {
     pages: Array<{
       number: number;
