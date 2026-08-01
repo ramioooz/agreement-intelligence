@@ -68,9 +68,25 @@ class PlaybookEvaluationService:
             self._invalid("published_playbook_required")
         if version.playbook.agreement_family != agreement.agreement_type:
             self._invalid("playbook_family_mismatch")
-        artifact_key = self._completed_artifact(agreement_id, organization_id, workspace_id)
-        if artifact_key is None:
+        artifact = self._completed_artifact(agreement_id, organization_id, workspace_id)
+        if artifact is None:
             self._invalid("completed_analysis_required", conflict=True)
+        processing_job_id, artifact_key = artifact
+        existing = self._session.scalar(
+            select(PlaybookEvaluationRecord)
+            .options(selectinload(PlaybookEvaluationRecord.findings))
+            .where(PlaybookEvaluationRecord.organization_id == organization_id)
+            .where(PlaybookEvaluationRecord.workspace_id == workspace_id)
+            .where(PlaybookEvaluationRecord.agreement_id == agreement_id)
+            .where(PlaybookEvaluationRecord.processing_job_id == processing_job_id)
+            .where(PlaybookEvaluationRecord.playbook_version_id == version.id)
+        )
+        if existing is not None:
+            return self._response(
+                existing,
+                version.id,
+                {rule.id: rule for rule in version.rules},
+            )
         stored = self._storage.read(artifact_key)
         if stored is None:
             self._invalid("completed_analysis_required", conflict=True)
@@ -88,6 +104,7 @@ class PlaybookEvaluationService:
             organization_id=organization_id,
             workspace_id=workspace_id,
             agreement_id=agreement_id,
+            processing_job_id=processing_job_id,
             playbook_version_id=version.id,
             analysis_version=analysis_version,
             extraction_version=extraction_version,
@@ -209,9 +226,9 @@ class PlaybookEvaluationService:
 
     def _completed_artifact(
         self, agreement_id: UUID, organization_id: UUID, workspace_id: UUID
-    ) -> str | None:
-        return self._session.scalar(
-            select(ProcessingArtifactRecord.artifact_key)
+    ) -> tuple[UUID, str] | None:
+        row = self._session.execute(
+            select(ProcessingJobRecord.id, ProcessingArtifactRecord.artifact_key)
             .join(ProcessingJobRecord, ProcessingArtifactRecord.job_id == ProcessingJobRecord.id)
             .where(ProcessingArtifactRecord.agreement_id == agreement_id)
             .where(ProcessingJobRecord.organization_id == organization_id)
@@ -219,7 +236,8 @@ class PlaybookEvaluationService:
             .where(ProcessingJobRecord.state == "completed")
             .order_by(desc(ProcessingArtifactRecord.created_at))
             .limit(1)
-        )
+        ).first()
+        return (row[0], row[1]) if row is not None else None
 
     @staticmethod
     def _response(
@@ -230,6 +248,7 @@ class PlaybookEvaluationService:
         return PlaybookEvaluationResponse(
             id=record.id,
             agreement_id=record.agreement_id,
+            processing_job_id=record.processing_job_id,
             playbook_version_id=playbook_version_id,
             analysis_version=record.analysis_version,
             extraction_version=record.extraction_version,
@@ -238,6 +257,21 @@ class PlaybookEvaluationService:
                 PlaybookFindingResponse(
                     id=finding.id,
                     rule_id=finding.rule_id,
+                    rule_title=(
+                        rules_by_id[finding.rule_id].title
+                        if finding.rule_id in rules_by_id
+                        else str(finding.rule_id)
+                    ),
+                    clause_type=(
+                        rules_by_id[finding.rule_id].clause_type
+                        if finding.rule_id in rules_by_id
+                        else "unknown"
+                    ),
+                    reviewer_guidance=(
+                        rules_by_id[finding.rule_id].reviewer_guidance
+                        if finding.rule_id in rules_by_id
+                        else ""
+                    ),
                     result=FindingResult(finding.result),
                     severity=finding.severity,
                     confidence=finding.confidence,

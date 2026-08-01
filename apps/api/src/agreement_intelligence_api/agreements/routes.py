@@ -127,6 +127,7 @@ def get_document_analysis(
     session: SessionDependency,
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
+    processing_job_id: UUID | None = None,
 ) -> dict[str, object]:
     service.get(
         principal,
@@ -134,14 +135,19 @@ def get_document_analysis(
         workspace_id=workspace_id,
         agreement_id=agreement_id,
     )
-    artifact_key = session.scalar(
+    artifact_query = (
         select(ProcessingArtifactRecord.artifact_key)
         .join(ProcessingJobRecord, ProcessingArtifactRecord.job_id == ProcessingJobRecord.id)
         .where(ProcessingArtifactRecord.agreement_id == agreement_id)
+        .where(ProcessingJobRecord.organization_id == organization_id)
+        .where(ProcessingJobRecord.workspace_id == workspace_id)
         .where(ProcessingJobRecord.state == "completed")
         .order_by(desc(ProcessingArtifactRecord.created_at))
         .limit(1)
     )
+    if processing_job_id is not None:
+        artifact_query = artifact_query.where(ProcessingJobRecord.id == processing_job_id)
+    artifact_key = session.scalar(artifact_query)
     storage = get_document_service(request)._storage
     analysis = load_analysis(storage, artifact_key)
     if analysis is None:

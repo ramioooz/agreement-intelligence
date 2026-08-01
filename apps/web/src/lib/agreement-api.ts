@@ -136,6 +136,10 @@ type GetAgreementOptions = ClientOptions & {
   agreementId: string;
 };
 
+type GetDocumentAnalysisOptions = GetAgreementOptions & {
+  processingJobId?: string;
+};
+
 type UploadDocumentOptions = ClientOptions & {
   scope: AgreementScope;
   file: File;
@@ -260,16 +264,15 @@ export async function getDocumentAnalysis({
   baseUrl = defaultBaseUrl,
   scope,
   agreementId,
+  processingJobId,
   token,
   fetcher = fetch,
-}: GetAgreementOptions): Promise<DocumentAnalysis> {
+}: GetDocumentAnalysisOptions): Promise<DocumentAnalysis> {
+  const params = scopedParams(scope);
+  if (processingJobId) params.set("processing_job_id", processingJobId);
   return decode<DocumentAnalysis>(
     await fetcher(
-      endpoint(
-        baseUrl,
-        `/agreements/${agreementId}/analysis`,
-        scopedParams(scope),
-      ),
+      endpoint(baseUrl, `/agreements/${agreementId}/analysis`, params),
       { cache: "no-store", headers: authorizationHeader(token) },
     ),
   );

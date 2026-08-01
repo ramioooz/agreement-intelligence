@@ -48,6 +48,9 @@ class FallbackSuggestionResponse(BaseModel):
 class PlaybookFindingResponse(BaseModel):
     id: UUID
     rule_id: UUID
+    rule_title: str
+    clause_type: str
+    reviewer_guidance: str
     result: FindingResult
     severity: str
     confidence: float
@@ -63,6 +66,7 @@ class PlaybookFindingResponse(BaseModel):
 class PlaybookEvaluationResponse(BaseModel):
     id: UUID
     agreement_id: UUID
+    processing_job_id: UUID | None
     playbook_version_id: UUID
     analysis_version: str
     extraction_version: str

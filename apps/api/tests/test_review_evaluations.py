@@ -17,6 +17,8 @@ from agreement_intelligence_api.processing.models import (
     ProcessingJobRecord,
 )
 from agreement_intelligence_api.reviews.models import PlaybookFindingRecord
+from agreement_intelligence_api.reviews.schemas import SubmitPlaybookEvaluationRequest
+from agreement_intelligence_api.reviews.service import PlaybookEvaluationService
 from fastapi.testclient import TestClient
 from pytest import fixture, mark
 from sqlalchemy import create_engine, event
@@ -67,7 +69,7 @@ def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
         json=_agreement_payload(),
     ).json()
     playbook = _published_playbook(client, organization, workspace)
-    _complete_analysis(session, agreement, organization, workspace)
+    processing_job_id = _complete_analysis(session, agreement, organization, workspace)
     app.state.document_storage = _Storage(_analysis_manifest())
 
     submitted = client.post(
@@ -84,12 +86,16 @@ def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
     payload = submitted.json()
     assert payload["state"] == "completed"
     assert payload["playbook_version_id"] == playbook["id"]
+    assert payload["processing_job_id"] == str(processing_job_id)
     assert payload["analysis_version"] == "document-analysis.v1"
     assert payload["extraction_version"] == "clause-rules.v1"
     assert payload["findings"] == [
         {
             "id": payload["findings"][0]["id"],
             "rule_id": playbook["rules"][0]["id"],
+            "rule_title": "Liability cap",
+            "clause_type": "limitation_of_liability",
+            "reviewer_guidance": "Escalate uncapped liability.",
             "result": "satisfied",
             "severity": "high",
             "confidence": 0.91,
@@ -112,6 +118,96 @@ def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
     ]
     assert listed.status_code == 200
     assert listed.json() == [payload]
+
+
+def test_evaluation_analysis_can_be_loaded_from_its_exact_processing_job(
+    session: Session, client_for_session: Callable[[UUID], TestClient]
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(client, organization, workspace)
+    evaluated_job_id = _complete_analysis(
+        session,
+        agreement,
+        organization,
+        workspace,
+        artifact_key="analysis/evaluated.json",
+    )
+    evaluated_manifest = _analysis_manifest(source_text="Evaluated liability clause.")
+    app.state.document_storage = _KeyedStorage({"analysis/evaluated.json": evaluated_manifest})
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/playbook-evaluations",
+        params=_scope_query(organization, workspace),
+        json={"playbook_version_id": playbook["id"]},
+    )
+    _complete_analysis(
+        session,
+        agreement,
+        organization,
+        workspace,
+        artifact_key="analysis/newer.json",
+    )
+    app.state.document_storage = _KeyedStorage(
+        {
+            "analysis/evaluated.json": evaluated_manifest,
+            "analysis/newer.json": _analysis_manifest(source_text="Newer unrelated clause."),
+        }
+    )
+
+    analysis = client.get(
+        f"/agreements/{agreement['id']}/analysis",
+        params={
+            **_scope_query(organization, workspace),
+            "processing_job_id": str(evaluated_job_id),
+        },
+    )
+
+    assert submitted.status_code == 201
+    assert submitted.json()["processing_job_id"] == str(evaluated_job_id)
+    assert analysis.status_code == 200
+    assert analysis.json()["clauses"][0]["source_text"] == "Evaluated liability clause."
+
+
+def test_repeated_submission_returns_the_existing_job_bound_evaluation(
+    session: Session, client_for_session: Callable[[UUID], TestClient]
+) -> None:
+    reviewer_id, organization, workspace = _create_scope(session)
+    client = client_for_session(reviewer_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json=_agreement_payload(),
+    ).json()
+    playbook = _published_playbook(client, organization, workspace)
+    processing_job_id = _complete_analysis(session, agreement, organization, workspace)
+    app.state.document_storage = _Storage(_analysis_manifest())
+    service = PlaybookEvaluationService(
+        session, IdentityService(session), _Storage(_analysis_manifest())
+    )
+    request = SubmitPlaybookEvaluationRequest(playbook_version_id=UUID(playbook["id"]))
+
+    first = service.submit(
+        Principal(user_id=reviewer_id),
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=UUID(agreement["id"]),
+        request=request,
+    )
+    repeated = service.submit(
+        Principal(user_id=reviewer_id),
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=UUID(agreement["id"]),
+        request=request,
+    )
+
+    assert repeated.id == first.id
+    assert repeated.processing_job_id == processing_job_id
 
 
 def test_review_submission_rejects_a_different_agreement_family(
@@ -438,6 +534,29 @@ class _Storage:
             content=json.dumps(self._manifest).encode(), content_type="application/json"
         )
 
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        return True
+
+    def delete(self, key: str) -> None:
+        return None
+
+
+class _KeyedStorage:
+    def __init__(self, manifests: dict[str, dict[str, object]]) -> None:
+        self._manifests = manifests
+
+    def read(self, key: str) -> Any:
+        import json
+
+        from agreement_intelligence_api.documents.storage import StoredDocument
+
+        manifest = self._manifests.get(key)
+        if manifest is None:
+            return None
+        return StoredDocument(
+            content=json.dumps(manifest).encode(), content_type="application/json"
+        )
+
 
 def _create_scope(session: Session) -> tuple[UUID, Organization, Workspace]:
     identity = IdentityService(session)
@@ -519,8 +638,13 @@ def _published_playbook(
 
 
 def _complete_analysis(
-    session: Session, agreement: dict[str, Any], organization: Organization, workspace: Workspace
-) -> None:
+    session: Session,
+    agreement: dict[str, Any],
+    organization: Organization,
+    workspace: Workspace,
+    *,
+    artifact_key: str = "analysis/manifest.json",
+) -> UUID:
     now = datetime.now(UTC)
     job = ProcessingJobRecord(
         id=uuid4(),
@@ -539,10 +663,14 @@ def _complete_analysis(
     session.flush()
     session.add(
         ProcessingArtifactRecord(
-            job_id=job.id, agreement_id=job.agreement_id, artifact_key="analysis/manifest.json"
+            job_id=job.id,
+            agreement_id=job.agreement_id,
+            artifact_key=artifact_key,
+            created_at=now,
         )
     )
     session.commit()
+    return job.id
 
 
 def _analysis_manifest(
