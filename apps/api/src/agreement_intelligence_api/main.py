@@ -17,6 +17,7 @@ from agreement_intelligence_api.middleware import (
     CorrelationIdMiddleware,
     DocumentUploadBodyLimitMiddleware,
 )
+from agreement_intelligence_api.playbooks.routes import router as playbooks_router
 from agreement_intelligence_api.processing.routes import (
     idempotency_conflict_handler,
     retry_not_permitted_handler,
@@ -44,3 +45,4 @@ app.include_router(identity_router)
 app.include_router(agreements_router)
 app.include_router(documents_router)
 app.include_router(processing_router)
+app.include_router(playbooks_router)

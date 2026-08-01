@@ -41,7 +41,6 @@ ROLE_PERMISSIONS: dict[RoleKey, frozenset[PermissionKey]] = {
     RoleKey.LEGAL_ADMIN: frozenset(
         {
             PermissionKey.WORKSPACES_READ,
-            PermissionKey.PLAYBOOKS_MANAGE,
             PermissionKey.REVIEWS_ASSIGN,
             PermissionKey.REVIEWS_APPROVE,
             PermissionKey.AGREEMENTS_READ,
