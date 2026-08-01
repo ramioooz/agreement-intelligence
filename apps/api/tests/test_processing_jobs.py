@@ -176,6 +176,47 @@ def test_submission_is_idempotent_and_conflicting_payload_is_rejected(
     assert [job.id for job in client_for_session.published_jobs.jobs] == [UUID(first.json()["id"])]
 
 
+def test_submission_snapshots_the_immutable_source_file(
+    session: Session,
+    client_for_session: ClientFactory,
+) -> None:
+    from agreement_intelligence_api.processing.models import ProcessingJobRecord
+
+    user_id, organization, workspace = _create_business_user_scope(session)
+    client = client_for_session(user_id)
+    agreement = client.post(
+        "/agreements",
+        params=_scope_query(organization, workspace),
+        json={
+            **_agreement_payload(),
+            "files": [
+                {
+                    "file_name": "client-agreement.pdf",
+                    "content_type": "application/pdf",
+                    "storage_key": "tenants/acme/documents/source.pdf",
+                    "checksum": "a" * 64,
+                    "byte_size": 1024,
+                    "version_number": 1,
+                }
+            ],
+        },
+    )
+    assert agreement.status_code == 201
+
+    submitted = client.post(
+        f"/agreements/{agreement.json()['id']}/processing-jobs",
+        params=_scope_query(organization, workspace),
+        headers={"Idempotency-Key": "source-snapshot-v1"},
+        json={"profile": "baseline"},
+    )
+
+    job = session.get(ProcessingJobRecord, UUID(submitted.json()["id"]))
+    assert job is not None
+    assert job.source_storage_key == "tenants/acme/documents/source.pdf"
+    assert job.source_checksum == "a" * 64
+    assert job.source_content_type == "application/pdf"
+
+
 def test_failed_job_status_exposes_permitted_retry_and_retry_requeues_it(
     session: Session,
     client_for_session: ClientFactory,

@@ -5,11 +5,14 @@ from dataclasses import dataclass
 
 import boto3
 
+from agreement_intelligence_worker.document_processor import (
+    DocumentUnderstandingProcessor,
+    S3ObjectStorage,
+)
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
 from agreement_intelligence_worker.processing import (
     JobProcessor,
-    PlaceholderAgreementProcessor,
     SQLAlchemyProcessingJobRepository,
     SQSProcessingMessageReceiver,
     SQSProcessingQueue,
@@ -47,8 +50,12 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         return None
     region = os.environ.get("AWS_REGION")
     database_url = os.environ.get("DATABASE_URL")
-    if not region or not database_url:
-        raise RuntimeError("AWS_REGION and DATABASE_URL are required for processing worker runtime")
+    bucket = os.environ.get("S3_DOCUMENT_BUCKET")
+    if not region or not database_url or not bucket:
+        raise RuntimeError(
+            "AWS_REGION, DATABASE_URL, and S3_DOCUMENT_BUCKET are required "
+            "for processing worker runtime"
+        )
     client = boto3.client(
         "sqs",
         endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
@@ -57,7 +64,16 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
     engine = processing_engine_from_url(database_url)
     queue = SQSProcessingQueue(client=client, queue_url=queue_url)
     repository = SQLAlchemyProcessingJobRepository(engine)
-    processor = JobProcessor(repository, queue, PlaceholderAgreementProcessor())
+    document_client = boto3.client(
+        "s3",
+        endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
+        region_name=region,
+    )
+    processor = JobProcessor(
+        repository,
+        queue,
+        DocumentUnderstandingProcessor(S3ObjectStorage(client=document_client, bucket=bucket)),
+    )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
     return ProcessingRuntime(receiver=receiver, processor=processor)
 
