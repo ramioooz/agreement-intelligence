@@ -1,5 +1,6 @@
 import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
+import { revalidatePath } from "next/cache";
 
 import { auth } from "@/auth";
 import { AgreementDetail } from "@/components/agreement-detail";
@@ -15,6 +16,7 @@ import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
   getProcessingJob,
   retryProcessingJob,
+  submitProcessingJob,
   type ProcessingJob,
 } from "@/lib/processing-api";
 
@@ -102,6 +104,17 @@ export default async function AgreementDetailPage({
     });
   }
 
+  async function startAnalysisAction() {
+    "use server";
+    await submitProcessingJob({
+      scope: retryScope,
+      agreementId: retryAgreementId,
+      idempotencyKey: crypto.randomUUID(),
+      token: await getKeycloakAccessToken(await headers()),
+    });
+    revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
       <AgreementDetail
@@ -114,6 +127,9 @@ export default async function AgreementDetailPage({
         processingJob={processingJob}
         analysis={analysis}
         retryAction={processingJob?.retry_permitted ? retryAction : undefined}
+        startAnalysisAction={
+          !processingJob && file ? startAnalysisAction : undefined
+        }
       />
     </main>
   );

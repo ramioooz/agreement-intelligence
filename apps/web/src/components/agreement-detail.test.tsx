@@ -104,4 +104,14 @@ describe("AgreementDetail", () => {
       "/api/documents/download?object_key=tenant%2Fdocument.pdf",
     );
   });
+
+  it("offers a start-analysis action for an uploaded agreement without a job", () => {
+    render(
+      <AgreementDetail agreement={agreement} startAnalysisAction={() => {}} />,
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Start analysis" }),
+    ).toBeInTheDocument();
+  });
 });
