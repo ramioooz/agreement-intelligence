@@ -302,9 +302,12 @@ def test_workspace_capabilities_are_resolved_from_application_authorization(
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json() == {"agreements_delete": True}
+    assert response.json() == {"agreements_delete": True, "playbooks_manage": True}
     assert reviewer_response.status_code == 200
-    assert reviewer_response.json() == {"agreements_delete": False}
+    assert reviewer_response.json() == {
+        "agreements_delete": False,
+        "playbooks_manage": False,
+    }
 
 
 def test_initial_migration_creates_identity_tenant_tables(tmp_path: Path) -> None:

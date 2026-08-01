@@ -44,6 +44,7 @@ export type AgreementPage = {
 
 export type WorkspaceCapabilities = {
   agreements_delete: boolean;
+  playbooks_manage: boolean;
 };
 
 export type DocumentAnalysis = {

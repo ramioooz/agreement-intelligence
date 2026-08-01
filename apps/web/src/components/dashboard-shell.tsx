@@ -31,7 +31,8 @@ const navigationItems: Array<{
   },
   {
     label: "Playbooks",
-    summary: "Manage clause positions after playbook administration is built.",
+    summary: "Manage versioned policy rules for agreement-family review.",
+    href: "/dashboard/playbooks",
   },
   {
     label: "Administration",

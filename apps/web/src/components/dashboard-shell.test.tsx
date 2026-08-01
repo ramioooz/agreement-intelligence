@@ -35,7 +35,11 @@ describe("DashboardShell", () => {
       "href",
       "/dashboard/agreements",
     );
-    expect(screen.getAllByText("Coming soon")).toHaveLength(4);
+    expect(screen.getByRole("link", { name: "Playbooks" })).toHaveAttribute(
+      "href",
+      "/dashboard/playbooks",
+    );
+    expect(screen.getAllByText("Coming soon")).toHaveLength(3);
     expect(
       screen.getByRole("button", { name: "Sign out" }),
     ).toBeInTheDocument();
