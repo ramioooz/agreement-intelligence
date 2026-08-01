@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { ProcessingStatusRefresher } from "@/components/processing-status-refresher";
 import type { AgreementSummary } from "@/lib/agreement-api";
 import type { DocumentAnalysis } from "@/lib/agreement-api";
 import type { ProcessingJob } from "@/lib/processing-api";
@@ -64,6 +65,10 @@ export function AgreementDetail({
 
   return (
     <section className="space-y-8">
+      {processingJob?.state === "queued" ||
+      processingJob?.state === "processing" ? (
+        <ProcessingStatusRefresher state={processingJob.state} />
+      ) : null}
       <Link
         className="text-sm font-semibold underline-offset-4 hover:underline"
         href="/dashboard/agreements"
