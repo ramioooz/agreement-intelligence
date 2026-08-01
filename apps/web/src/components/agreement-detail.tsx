@@ -38,6 +38,8 @@ export function AgreementDetail({
 }: AgreementDetailProps) {
   const file = agreement.files[0];
   const isPdf = file?.content_type === "application/pdf";
+  const analysisRisks = analysis?.risks ?? [];
+  const analysisProvenance = analysis?.analysis_provenance;
   const timeline = [
     ["Created", agreement.created_at],
     ["Queued", processingJob?.queued_at],
@@ -169,20 +171,22 @@ export function AgreementDetail({
       {analysis ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="text-xl font-semibold">Document understanding</h2>
-          <section className="mt-4 rounded-lg bg-slate-50 p-4">
-            <h3 className="font-semibold">Analysis provenance</h3>
-            <p className="mt-1 text-sm text-slate-700">
-              {analysis.analysis_provenance.mode === "hybrid"
-                ? `Hybrid analysis${analysis.analysis_provenance.model ? ` using ${analysis.analysis_provenance.model}` : ""}.`
-                : "Deterministic analysis."}
-            </p>
-            {analysis.analysis_provenance.fallback_reason ? (
-              <p className="mt-2 text-sm text-amber-900">
-                Provider enrichment was unavailable, so deterministic results
-                are shown.
+          {analysisProvenance ? (
+            <section className="mt-4 rounded-lg bg-slate-50 p-4">
+              <h3 className="font-semibold">Analysis provenance</h3>
+              <p className="mt-1 text-sm text-slate-700">
+                {analysisProvenance.mode === "hybrid"
+                  ? `Hybrid analysis${analysisProvenance.model ? ` using ${analysisProvenance.model}` : ""}.`
+                  : "Deterministic analysis."}
               </p>
-            ) : null}
-          </section>
+              {analysisProvenance.fallback_reason ? (
+                <p className="mt-2 text-sm text-amber-900">
+                  Provider enrichment was unavailable, so deterministic results
+                  are shown.
+                </p>
+              ) : null}
+            </section>
+          ) : null}
           {analysis.classification ? (
             <section className="mt-4 rounded-lg bg-slate-50 p-4">
               <h3 className="font-semibold">Agreement family</h3>
@@ -195,11 +199,11 @@ export function AgreementDetail({
               </p>
             </section>
           ) : null}
-          {analysis.risks.length ? (
+          {analysisRisks.length ? (
             <section className="mt-5">
               <h3 className="font-semibold">Risks requiring review</h3>
               <ul className="mt-3 space-y-3">
-                {[...analysis.risks]
+                {[...analysisRisks]
                   .sort(
                     (left, right) =>
                       riskSeverityOrder[left.severity] -

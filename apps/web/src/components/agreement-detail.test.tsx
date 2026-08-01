@@ -160,4 +160,19 @@ describe("AgreementDetail", () => {
     ).toHaveAttribute("href", "#evidence-citation-a");
     expect(screen.getByText(/gpt-5.4-mini/)).toBeInTheDocument();
   });
+
+  it("renders a legacy analysis artifact without hybrid fields", () => {
+    const {
+      risks: _risks,
+      analysis_provenance: _provenance,
+      ...legacyAnalysis
+    } = analysisWithRisk;
+
+    render(<AgreementDetail agreement={agreement} analysis={legacyAnalysis} />);
+
+    expect(
+      screen.getByRole("heading", { name: "Document understanding" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analysis provenance")).not.toBeInTheDocument();
+  });
 });
