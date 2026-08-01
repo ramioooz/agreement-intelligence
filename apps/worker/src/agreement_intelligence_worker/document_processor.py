@@ -14,6 +14,7 @@ from agreement_intelligence_worker.processing import (
     PermanentProcessingError,
     ProcessingJob,
 )
+from agreement_intelligence_worker.summaries import generate_summaries
 
 _SCHEMA_VERSION = "document-analysis.v1"
 _PIPELINE_VERSION = "sprint-2.v1"
@@ -116,9 +117,8 @@ def _artifact_key(job: ProcessingJob, checksum: str) -> str:
 
 
 def _manifest(parsed: ParsedDocument, source: _SourceDocument) -> dict[str, object]:
-    classification = classify_document(
-        "\n".join(block.text for page in parsed.pages for block in page.blocks)
-    )
+    blocks = [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
+    classification = classify_document("\n".join(text for _, text in blocks))
     clauses = extract_clauses(
         [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
     )
@@ -135,5 +135,5 @@ def _manifest(parsed: ParsedDocument, source: _SourceDocument) -> dict[str, obje
         "citations": [asdict(citation) for citation in parsed.citations],
         "classification": asdict(classification),
         "clauses": clauses,
-        "summaries": {},
+        "summaries": generate_summaries(blocks),
     }
