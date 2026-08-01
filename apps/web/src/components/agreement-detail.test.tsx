@@ -162,11 +162,9 @@ describe("AgreementDetail", () => {
   });
 
   it("renders a legacy analysis artifact without hybrid fields", () => {
-    const {
-      risks: _risks,
-      analysis_provenance: _provenance,
-      ...legacyAnalysis
-    } = analysisWithRisk;
+    const legacyAnalysis = { ...analysisWithRisk };
+    delete legacyAnalysis.risks;
+    delete legacyAnalysis.analysis_provenance;
 
     render(<AgreementDetail agreement={agreement} analysis={legacyAnalysis} />);
 
