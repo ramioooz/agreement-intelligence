@@ -157,6 +157,8 @@ services:
       AWS_ENDPOINT_URL: http://localstack:4566
       S3_DOCUMENT_BUCKET: ${S3_DOCUMENT_BUCKET:?required}
       SQS_PROCESSING_QUEUE: ${SQS_PROCESSING_QUEUE:?required}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
     depends_on:
       postgres:
         condition: service_healthy

@@ -63,6 +63,16 @@ export type DocumentAnalysis = {
     confidence: number;
     extraction_version: string;
   }>;
+  risks?: Array<{
+    severity: "low" | "medium" | "high" | "critical";
+    explanation: string;
+    citation_anchor_ids: string[];
+  }>;
+  analysis_provenance?: {
+    mode: "deterministic" | "hybrid";
+    model?: string;
+    fallback_reason?: string;
+  };
   summaries: Record<
     string,
     {

@@ -2,7 +2,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { AgreementDetail } from "@/components/agreement-detail";
-import type { AgreementSummary } from "@/lib/agreement-api";
+import type { AgreementSummary, DocumentAnalysis } from "@/lib/agreement-api";
 import type { ProcessingJob } from "@/lib/processing-api";
 
 const agreement: AgreementSummary = {
@@ -53,6 +53,40 @@ const job: ProcessingJob = {
   created_at: "2026-07-31T09:00:00Z",
   updated_at: "2026-07-31T09:02:00Z",
   retry_permitted: true,
+};
+
+const analysisWithRisk: DocumentAnalysis = {
+  schema_version: "document-analysis.v1",
+  pipeline_version: "sprint-2.v1",
+  diagnostics: [],
+  classification: null,
+  clauses: [],
+  risks: [
+    {
+      severity: "high",
+      explanation: "Termination notice requirements are unclear.",
+      citation_anchor_ids: ["citation-a"],
+    },
+  ],
+  summaries: {},
+  document: {
+    pages: [
+      {
+        number: 1,
+        blocks: [
+          {
+            anchor_id: "citation-a",
+            kind: "paragraph",
+            text: "Termination is permitted on notice.",
+          },
+        ],
+      },
+    ],
+  },
+  analysis_provenance: {
+    mode: "hybrid",
+    model: "gpt-5.4-mini",
+  },
 };
 
 describe("AgreementDetail", () => {
@@ -113,5 +147,30 @@ describe("AgreementDetail", () => {
     expect(
       screen.getByRole("button", { name: "Start analysis" }),
     ).toBeInTheDocument();
+  });
+
+  it("shows a cited high risk and analysis provenance", () => {
+    render(
+      <AgreementDetail agreement={agreement} analysis={analysisWithRisk} />,
+    );
+
+    expect(screen.getByText("High risk")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "View source evidence" }),
+    ).toHaveAttribute("href", "#evidence-citation-a");
+    expect(screen.getByText(/gpt-5.4-mini/)).toBeInTheDocument();
+  });
+
+  it("renders a legacy analysis artifact without hybrid fields", () => {
+    const legacyAnalysis = { ...analysisWithRisk };
+    delete legacyAnalysis.risks;
+    delete legacyAnalysis.analysis_provenance;
+
+    render(<AgreementDetail agreement={agreement} analysis={legacyAnalysis} />);
+
+    expect(
+      screen.getByRole("heading", { name: "Document understanding" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Analysis provenance")).not.toBeInTheDocument();
   });
 });
