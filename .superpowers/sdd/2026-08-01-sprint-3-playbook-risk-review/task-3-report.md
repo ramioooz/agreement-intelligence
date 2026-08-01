@@ -36,3 +36,10 @@
 - Corrected semantic assessment to receive the same selected highest-confidence candidate whose citation, confidence, and extraction provenance are persisted.
 - Added and composed `SQLAlchemyPlaybookEvaluationSink` in the production worker runtime. It sets PostgreSQL tenant scope, selects a published same-family playbook in the job's organization/workspace, evaluates the immutable manifest, and persists scoped evaluations/findings.
 - Focused regression evidence: `17 passed` across the API/worker review, sink, and document-processor tests. A fresh full `make check` then passed with `143 passed, 1 skipped` Python tests, 28 web tests, static checks, contract scripts, and both package builds.
+
+## Review Fix Round 2
+
+- Moved review evaluation from document parsing to a `JobProcessor` post-completion handler. The immutable artifact and completed job state are now durably persisted before the worker reads the artifact and writes any evaluation/finding rows.
+- Wired the production runtime with the shared object storage and post-completion SQLAlchemy handler; document parsing no longer writes review data directly.
+- Added lifecycle regressions proving evaluation observes `completed` state, is skipped on redelivery, and is not called when durable completion raises. This prevents completion failures from leaving review findings behind.
+- Focused regression evidence: `18 passed`; a fresh `make check` then passed with `144 passed, 1 skipped` Python tests, 28 web tests, static checks, contract scripts, and both package builds.

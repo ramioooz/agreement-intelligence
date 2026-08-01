@@ -73,14 +73,15 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
         region_name=region,
     )
+    storage = S3ObjectStorage(client=document_client, bucket=bucket)
     processor = JobProcessor(
         repository,
         queue,
         DocumentUnderstandingProcessor(
-            S3ObjectStorage(client=document_client, bucket=bucket),
+            storage,
             analysis_provider=provider_from_environment(),
-            evaluation_sink=SQLAlchemyPlaybookEvaluationSink(engine),
         ),
+        completion_handler=SQLAlchemyPlaybookEvaluationSink(engine, storage),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
     return ProcessingRuntime(receiver=receiver, processor=processor)

@@ -99,25 +99,6 @@ def test_processor_publishes_validated_provider_enrichment() -> None:
     }
 
 
-def test_processor_notifies_selected_playbook_evaluation_only_after_analysis_is_persisted() -> None:
-    storage, job = _processor_input()
-    observed: dict[str, object] = {}
-
-    class EvaluationSink:
-        def evaluate_completed_analysis(
-            self, received_job: ProcessingJob, manifest: dict[str, object]
-        ) -> None:
-            observed["job"] = received_job
-            observed["manifest"] = manifest
-            observed["artifact_count"] = len(storage.objects)
-
-    DocumentUnderstandingProcessor(storage, evaluation_sink=EvaluationSink()).process(job)
-
-    assert observed["job"] == job
-    assert cast(dict[str, object], observed["manifest"])["schema_version"] == "document-analysis.v1"
-    assert observed["artifact_count"] == 2
-
-
 def test_processor_keeps_deterministic_output_when_provider_fails() -> None:
     baseline_storage, baseline_job = _processor_input()
     baseline = _process_manifest(
@@ -164,7 +145,7 @@ def test_processor_propagates_provider_timeout_for_job_retry() -> None:
     assert set(storage.objects) == {job.source_storage_key}
 
 
-def test_processing_runtime_injects_provider_and_playbook_evaluation_sink_into_document_processor(
+def test_processing_runtime_injects_provider_and_post_completion_evaluation_handler(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from agreement_intelligence_worker import main as worker_main
@@ -178,10 +159,8 @@ def test_processing_runtime_injects_provider_and_playbook_evaluation_sink_into_d
             storage: object,
             *,
             analysis_provider: object | None = None,
-            evaluation_sink: object | None = None,
         ) -> None:
             captured["analysis_provider"] = analysis_provider
-            captured["evaluation_sink"] = evaluation_sink
 
         def process(self, job: ProcessingJob) -> Any:
             raise AssertionError("runtime composition must not process a job")
@@ -198,17 +177,21 @@ def test_processing_runtime_injects_provider_and_playbook_evaluation_sink_into_d
     monkeypatch.setattr(worker_main, "S3ObjectStorage", lambda **kwargs: object())
     configured_sink = object()
     monkeypatch.setattr(
-        worker_main, "SQLAlchemyPlaybookEvaluationSink", lambda engine: configured_sink
+        worker_main, "SQLAlchemyPlaybookEvaluationSink", lambda engine, storage: configured_sink
     )
     monkeypatch.setattr(worker_main, "DocumentUnderstandingProcessor", FakeDocumentProcessor)
-    monkeypatch.setattr(worker_main, "JobProcessor", lambda *args: object())
+    monkeypatch.setattr(
+        worker_main,
+        "JobProcessor",
+        lambda *args, **kwargs: captured.update(kwargs) or object(),
+    )
     monkeypatch.setattr(worker_main, "SQSProcessingMessageReceiver", lambda **kwargs: object())
 
     runtime = worker_main.processing_runtime_from_environment()
 
     assert runtime is not None
     assert captured["analysis_provider"] is configured_provider
-    assert captured["evaluation_sink"] is configured_sink
+    assert captured["completion_handler"] is configured_sink
 
 
 def _processor_input() -> tuple[InMemoryObjectStorage, ProcessingJob]:

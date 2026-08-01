@@ -141,6 +141,10 @@ class AgreementProcessor(Protocol):
     def process(self, job: ProcessingJob) -> CompletedArtifact: ...
 
 
+class CompletionHandler(Protocol):
+    def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None: ...
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     max_attempts: int = 3
@@ -171,11 +175,13 @@ class JobProcessor:
         processor: AgreementProcessor,
         *,
         retry_policy: RetryPolicy | None = None,
+        completion_handler: CompletionHandler | None = None,
     ) -> None:
         self._repository = repository
         self._queue = queue
         self._processor = processor
         self._retry_policy = retry_policy or RetryPolicy()
+        self._completion_handler = completion_handler
 
     def handle(self, job_id: UUID) -> None:
         job = self._repository.claim(job_id)
@@ -191,6 +197,8 @@ class JobProcessor:
             self._handle_transient_failure(job, "Unexpected processing dependency failure")
         else:
             self._repository.complete(job.id, artifact)
+            if self._completion_handler is not None:
+                self._completion_handler.completed(job, artifact)
 
     def _handle_transient_failure(self, job: ProcessingJob, message: str) -> None:
         safe_message = _safe_summary(message)

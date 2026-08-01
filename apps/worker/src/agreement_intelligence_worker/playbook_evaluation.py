@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
@@ -265,15 +266,29 @@ def _string(value: object, default: str) -> str:
 class SQLAlchemyPlaybookEvaluationSink:
     """Select and persist deterministic findings after an immutable analysis exists."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, storage: object) -> None:
         self._engine = engine
+        self._storage = storage
 
-    def evaluate_completed_analysis(self, job: object, manifest: dict[str, object]) -> None:
+    def completed(self, job: object, artifact: object) -> None:
         from agreement_intelligence_worker.processing import ProcessingJob
 
         if not isinstance(job, ProcessingJob):
             raise TypeError("playbook evaluation requires a processing job")
         if job.organization_id is None or job.workspace_id is None:
+            return
+        artifact_key = getattr(artifact, "key", None)
+        reader = getattr(self._storage, "read", None)
+        if not isinstance(artifact_key, str) or not callable(reader):
+            return
+        content = reader(artifact_key)
+        if not isinstance(content, bytes):
+            return
+        try:
+            manifest = json.loads(content)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return
+        if not isinstance(manifest, dict):
             return
         with self._engine.begin() as connection:
             if connection.dialect.name == "postgresql":

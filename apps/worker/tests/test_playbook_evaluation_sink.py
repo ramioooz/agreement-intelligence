@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from uuid import uuid4
 
 from agreement_intelligence_worker.playbook_evaluation import (
     SQLAlchemyPlaybookEvaluationSink,
     worker_evaluation_metadata,
 )
-from agreement_intelligence_worker.processing import ProcessingJob
+from agreement_intelligence_worker.processing import CompletedArtifact, ProcessingJob
 from sqlalchemy import create_engine, select
 
 
@@ -75,20 +76,27 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
             )
         )
 
-    SQLAlchemyPlaybookEvaluationSink(engine).evaluate_completed_analysis(
+    manifest = {
+        "schema_version": "document-analysis.v1",
+        "clauses": [
+            {
+                "category": "limitation_of_liability",
+                "source_text": "The supplier accepts unlimited liability.",
+                "confidence": 0.91,
+                "citation_anchor_ids": ["citation-liability"],
+                "extraction_version": "clause-rules.v1",
+            }
+        ],
+    }
+
+    class Storage:
+        def read(self, key: str) -> bytes | None:
+            assert key == "analysis/manifest.json"
+            return json.dumps(manifest).encode()
+
+    SQLAlchemyPlaybookEvaluationSink(engine, Storage()).completed(
         job,
-        {
-            "schema_version": "document-analysis.v1",
-            "clauses": [
-                {
-                    "category": "limitation_of_liability",
-                    "source_text": "The supplier accepts unlimited liability.",
-                    "confidence": 0.91,
-                    "citation_anchor_ids": ["citation-liability"],
-                    "extraction_version": "clause-rules.v1",
-                }
-            ],
-        },
+        CompletedArtifact(job_id=job.id, key="analysis/manifest.json"),
     )
 
     with engine.connect() as connection:

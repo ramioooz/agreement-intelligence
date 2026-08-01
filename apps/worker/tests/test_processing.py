@@ -17,6 +17,7 @@ from agreement_intelligence_worker.processing import (
     create_processing_tables,
     run_processing_loop,
 )
+from pytest import raises
 from sqlalchemy import create_engine, select
 
 
@@ -98,6 +99,55 @@ def test_duplicate_delivery_does_not_duplicate_completed_artifacts() -> None:
         f"checkpoints/{repository.job.id}/placeholder.json"
     ]
     assert queue.retries == []
+
+
+def test_evaluation_runs_only_after_durable_completion_and_not_on_redelivery() -> None:
+    repository = InMemoryRepository(job=_job(), artifacts=[])
+    queue = InMemoryQueue(retries=[])
+    observed: list[tuple[str, UUID, str]] = []
+
+    class EvaluationHandler:
+        def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+            observed.append((repository.job.state, job.id, artifact.key))
+
+    worker = JobProcessor(
+        repository,
+        queue,
+        PlaceholderProcessor(),
+        completion_handler=EvaluationHandler(),
+    )
+
+    worker.handle(repository.job.id)
+    worker.handle(repository.job.id)
+
+    assert observed == [
+        ("completed", repository.job.id, f"checkpoints/{repository.job.id}/placeholder.json")
+    ]
+
+
+def test_completion_failure_does_not_run_evaluation_handler() -> None:
+    class FailingRepository(InMemoryRepository):
+        def complete(self, job_id: UUID, artifact: CompletedArtifact) -> None:
+            raise RuntimeError("database completion failed")
+
+    repository = FailingRepository(job=_job(), artifacts=[])
+    observed: list[CompletedArtifact] = []
+
+    class EvaluationHandler:
+        def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+            observed.append(artifact)
+
+    worker = JobProcessor(
+        repository,
+        InMemoryQueue(retries=[]),
+        PlaceholderProcessor(),
+        completion_handler=EvaluationHandler(),
+    )
+
+    with raises(RuntimeError, match="database completion failed"):
+        worker.handle(repository.job.id)
+
+    assert observed == []
 
 
 def test_completing_a_job_updates_the_parent_agreement_state(tmp_path: Path) -> None:
