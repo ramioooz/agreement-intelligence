@@ -5,9 +5,11 @@ import { auth } from "@/auth";
 import { AgreementDetail } from "@/components/agreement-detail";
 import {
   documentDownloadPath,
+  getDocumentAnalysis,
   getAgreement,
   type AgreementScope,
   type AgreementSummary,
+  type DocumentAnalysis,
 } from "@/lib/agreement-api";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
@@ -20,6 +22,21 @@ function scopeFromEnvironment(): AgreementScope | null {
   const organizationId = process.env.API_ORGANIZATION_ID;
   const workspaceId = process.env.API_WORKSPACE_ID;
   return organizationId && workspaceId ? { organizationId, workspaceId } : null;
+}
+
+async function loadDocumentAnalysis(
+  scope: AgreementScope,
+  agreementId: string,
+): Promise<DocumentAnalysis | undefined> {
+  try {
+    return await getDocumentAnalysis({
+      scope,
+      agreementId,
+      token: await getKeycloakAccessToken(await headers()),
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 async function loadAgreement(
@@ -70,6 +87,7 @@ export default async function AgreementDetailPage({
   const processingJob = jobId
     ? await loadProcessingJob(scope, agreement.id, jobId)
     : undefined;
+  const analysis = await loadDocumentAnalysis(scope, agreement.id);
   const retryScope = scope;
   const retryAgreementId = agreement.id;
 
@@ -94,6 +112,7 @@ export default async function AgreementDetailPage({
             : undefined
         }
         processingJob={processingJob}
+        analysis={analysis}
         retryAction={processingJob?.retry_permitted ? retryAction : undefined}
       />
     </main>
