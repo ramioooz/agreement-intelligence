@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 from sqlalchemy.exc import IntegrityError
 
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
+from agreement_intelligence_api.agreements.schemas import AgreementResponse
 from agreement_intelligence_api.agreements.service import AgreementNotFoundError
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.permissions import PermissionKey
@@ -52,7 +53,7 @@ class ProcessingJobService:
         request: SubmitProcessingJobRequest,
     ) -> tuple[ProcessingJobResponse, bool]:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        self._agreement_in_scope(
+        agreement = self._agreement_in_scope(
             agreement_id,
             organization_id=organization_id,
             workspace_id=workspace_id,
@@ -64,6 +65,7 @@ class ProcessingJobService:
             return self._repository.response(existing), False
 
         now = datetime.now(UTC)
+        source_file = agreement.files[0] if agreement.files else None
         job = ProcessingJobRecord(
             id=uuid4(),
             organization_id=organization_id,
@@ -71,6 +73,9 @@ class ProcessingJobService:
             agreement_id=agreement_id,
             idempotency_key=idempotency_key,
             profile=request.profile,
+            source_storage_key=source_file.storage_key if source_file is not None else None,
+            source_checksum=source_file.checksum if source_file is not None else None,
+            source_content_type=source_file.content_type if source_file is not None else None,
             state="queued",
             attempt_count=0,
             failure_category=None,
@@ -184,7 +189,7 @@ class ProcessingJobService:
         *,
         organization_id: UUID,
         workspace_id: UUID,
-    ) -> None:
+    ) -> AgreementResponse:
         agreement = self._agreements.get(agreement_id)
         if (
             agreement is None
@@ -192,6 +197,7 @@ class ProcessingJobService:
             or agreement.workspace_id != workspace_id
         ):
             raise AgreementNotFoundError
+        return agreement
 
     def _set_agreement_state(
         self,

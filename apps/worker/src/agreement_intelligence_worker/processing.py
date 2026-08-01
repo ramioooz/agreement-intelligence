@@ -38,6 +38,9 @@ processing_jobs = Table(
     Column("agreement_id", Uuid(as_uuid=True), nullable=False),
     Column("idempotency_key", String(255), nullable=False),
     Column("profile", String(100), nullable=False),
+    Column("source_storage_key", String(1024), nullable=True),
+    Column("source_checksum", String(255), nullable=True),
+    Column("source_content_type", String(100), nullable=True),
     Column("state", String(32), nullable=False, index=True),
     Column("attempt_count", Integer, nullable=False),
     Column("failure_category", String(64), nullable=True),
@@ -78,6 +81,12 @@ class ProcessingJob:
     agreement_id: UUID
     state: JobState
     attempt_count: int
+    organization_id: UUID | None = None
+    workspace_id: UUID | None = None
+    profile: str | None = None
+    source_storage_key: str | None = None
+    source_checksum: str | None = None
+    source_content_type: str | None = None
     failure_category: str | None = None
     failure_message: str | None = None
     next_retry_at: datetime | None = None
@@ -298,6 +307,12 @@ class SQLAlchemyProcessingJobRepository:
                     agreement_id=cast(UUID, job["agreement_id"]),
                     state="processing",
                     attempt_count=int(job["attempt_count"]),
+                    organization_id=cast(UUID, job["organization_id"]),
+                    workspace_id=cast(UUID, job["workspace_id"]),
+                    profile=cast(str, job["profile"]),
+                    source_storage_key=cast(str | None, job["source_storage_key"]),
+                    source_checksum=cast(str | None, job["source_checksum"]),
+                    source_content_type=cast(str | None, job["source_content_type"]),
                     processing_started_at=cast(datetime | None, job["processing_started_at"]),
                 )
             if job["state"] != "queued":
@@ -321,6 +336,12 @@ class SQLAlchemyProcessingJobRepository:
                 agreement_id=cast(UUID, job["agreement_id"]),
                 state="processing",
                 attempt_count=attempt_count,
+                organization_id=cast(UUID, job["organization_id"]),
+                workspace_id=cast(UUID, job["workspace_id"]),
+                profile=cast(str, job["profile"]),
+                source_storage_key=cast(str | None, job["source_storage_key"]),
+                source_checksum=cast(str | None, job["source_checksum"]),
+                source_content_type=cast(str | None, job["source_content_type"]),
                 processing_started_at=now,
             )
 
