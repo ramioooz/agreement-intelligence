@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -23,6 +24,8 @@ from sqlalchemy import (
     text,
     update,
 )
+
+logger = logging.getLogger("agreement_intelligence.worker")
 
 JobState = Literal["queued", "processing", "completed", "failed"]
 _SENSITIVE_MESSAGE_PATTERN = re.compile(
@@ -555,7 +558,18 @@ async def run_processing_loop(
         if message is None:
             await asyncio.sleep(idle_sleep_seconds)
             continue
-        processor.handle(message.job_id)
+        try:
+            processor.handle(message.job_id)
+        except Exception:
+            logger.exception(
+                "processing message handling failed",
+                extra={
+                    "correlation_id": str(message.job_id),
+                    "event": "worker.processing_message.failed",
+                    "service": "worker",
+                },
+            )
+            continue
         await receiver.ack(message)
 
 

@@ -50,3 +50,14 @@
 - Added `processing_job_id` and a unique job/version constraint to evaluation persistence. The worker sink checks that idempotency key before writing, so recovery cannot duplicate findings.
 - Added regressions for transient handler failure followed by redelivery success, repeated completed-artifact recovery after durable completion, and idempotent sink re-entry.
 - Focused regression evidence: `3 passed`; a fresh `make check` then passed with `145 passed, 1 skipped` Python tests, 28 web tests, static checks, contract scripts, and both package builds.
+
+## Review Fix Round 4
+
+- Root cause: `run_processing_loop` invoked `JobProcessor.handle` without an exception boundary. A post-completion evaluation-handler exception correctly left the SQS message unacknowledged, but escaped the loop and permanently stopped polling while the outer worker lifecycle continued reporting healthy.
+- Added a message-handling exception boundary in `run_processing_loop`. Handler failures are logged with the job ID and `worker.processing_message.failed` event, the failed receipt is not acknowledged, and the loop continues polling for redelivery. Receiver and acknowledgement failures remain outside this boundary.
+- Added a loop-level integration regression using the real SQLAlchemy evaluation sink. The first evaluation is durably persisted before the injected handler failure, the first receipt remains unacknowledged, the polling loop receives the redelivery, recovery succeeds, only the second receipt is acknowledged, and exactly one evaluation plus one finding remain persisted.
+- Focused regression evidence: `18 passed` across processing, evaluation-sink, and lifecycle tests. A fresh `make check` passed formatting, linting, type checks, 28 web tests, `146 passed, 1 skipped` Python tests, CI/auth contract scripts, and both package builds.
+
+### Round 4 Concerns
+
+- The existing optional PostgreSQL tenant-isolation RLS integration test remains skipped because `AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL` is not configured; no new concerns were identified.

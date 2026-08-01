@@ -1,10 +1,15 @@
 import asyncio
 import json
+import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from agreement_intelligence_worker.playbook_evaluation import (
+    SQLAlchemyPlaybookEvaluationSink,
+    worker_evaluation_metadata,
+)
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     JobProcessor,
@@ -17,7 +22,7 @@ from agreement_intelligence_worker.processing import (
     create_processing_tables,
     run_processing_loop,
 )
-from pytest import raises
+from pytest import LogCaptureFixture, raises
 from sqlalchemy import create_engine, select
 
 
@@ -279,6 +284,159 @@ def test_processing_loop_consumes_and_acknowledges_fake_messages() -> None:
 
     assert repository.job.state == "completed"
     assert receiver.acked == ["receipt-1"]
+
+
+def test_processing_loop_recovers_unacked_evaluation_without_duplicate_findings(
+    caplog: LogCaptureFixture,
+) -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    worker_evaluation_metadata.create_all(engine)
+    organization_id = uuid4()
+    workspace_id = uuid4()
+    agreement_id = uuid4()
+    playbook_id = uuid4()
+    version_id = uuid4()
+    rule_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            worker_evaluation_metadata.tables["agreements"]
+            .insert()
+            .values(
+                id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_type="client_agreement",
+            )
+        )
+        connection.execute(
+            worker_evaluation_metadata.tables["legal_playbooks"]
+            .insert()
+            .values(
+                id=playbook_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_family="client_agreement",
+            )
+        )
+        connection.execute(
+            worker_evaluation_metadata.tables["playbook_versions"]
+            .insert()
+            .values(
+                id=version_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                playbook_id=playbook_id,
+                status="published",
+            )
+        )
+        connection.execute(
+            worker_evaluation_metadata.tables["playbook_rules"]
+            .insert()
+            .values(
+                id=rule_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                playbook_version_id=version_id,
+                clause_type="limitation_of_liability",
+                policy_type="required",
+                preferred_language="liability is capped",
+                severity="critical",
+                evaluation_config={"method": "deterministic"},
+            )
+        )
+
+    manifest = {
+        "schema_version": "document-analysis.v1",
+        "clauses": [
+            {
+                "category": "limitation_of_liability",
+                "source_text": "The supplier's liability is capped at the fees paid.",
+                "confidence": 0.91,
+                "citation_anchor_ids": ["citation-liability"],
+                "extraction_version": "clause-rules.v1",
+            }
+        ],
+    }
+
+    class Storage:
+        def read(self, key: str) -> bytes:
+            assert key == f"checkpoints/{job.id}/placeholder.json"
+            return json.dumps(manifest).encode()
+
+    class RedeliveringReceiver:
+        def __init__(self) -> None:
+            self._messages = [
+                ProcessingMessage(job_id=job.id, receipt_handle="receipt-1"),
+                ProcessingMessage(job_id=job.id, receipt_handle="receipt-2"),
+            ]
+            self.received: list[str] = []
+            self.acked: list[str] = []
+
+        async def receive(self) -> ProcessingMessage | None:
+            message = self._messages.pop(0)
+            self.received.append(message.receipt_handle)
+            return message
+
+        async def ack(self, message: ProcessingMessage) -> None:
+            self.acked.append(message.receipt_handle)
+            stop_event.set()
+
+    job = ProcessingJob(
+        id=uuid4(),
+        agreement_id=agreement_id,
+        state="queued",
+        attempt_count=0,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    repository = InMemoryRepository(job=job, artifacts=[])
+    sink = SQLAlchemyPlaybookEvaluationSink(engine, Storage())
+    handler_attempts = 0
+
+    class FailsAfterFirstPersist:
+        def completed(self, completed_job: ProcessingJob, artifact: CompletedArtifact) -> None:
+            nonlocal handler_attempts
+            sink.completed(completed_job, artifact)
+            handler_attempts += 1
+            if handler_attempts == 1:
+                raise RuntimeError("evaluation database temporarily unavailable")
+
+    stop_event = asyncio.Event()
+    receiver = RedeliveringReceiver()
+    worker = JobProcessor(
+        repository,
+        InMemoryQueue(retries=[]),
+        PlaceholderProcessor(),
+        completion_handler=FailsAfterFirstPersist(),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="agreement_intelligence.worker"):
+        asyncio.run(
+            run_processing_loop(
+                stop_event,
+                receiver=receiver,
+                processor=worker,
+                idle_sleep_seconds=0,
+            )
+        )
+
+    with engine.connect() as connection:
+        evaluations = connection.execute(
+            select(worker_evaluation_metadata.tables["playbook_evaluations"])
+        ).all()
+        findings = connection.execute(
+            select(worker_evaluation_metadata.tables["playbook_findings"])
+        ).all()
+
+    assert repository.job.state == "completed"
+    assert receiver.received == ["receipt-1", "receipt-2"]
+    assert receiver.acked == ["receipt-2"]
+    assert handler_attempts == 2
+    assert len(evaluations) == 1
+    assert len(findings) == 1
+    assert [getattr(record, "event", None) for record in caplog.records] == [
+        "worker.processing_message.failed"
+    ]
 
 
 def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path: Path) -> None:
