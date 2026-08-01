@@ -8,7 +8,7 @@ COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STA
 
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
-	format format-check lint typecheck test build check
+	format format-check lint typecheck test build check provider-smoke
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -27,6 +27,7 @@ help:
 	@echo "  make test           Run JavaScript and Python tests"
 	@echo "  make build          Build every application"
 	@echo "  make check          Run all pre-review source checks"
+	@echo "  make provider-smoke Run an opt-in configured-provider smoke check"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -127,3 +128,6 @@ check:
 	$(MAKE) typecheck
 	$(MAKE) test
 	$(MAKE) build
+
+provider-smoke:
+	uv run python -m agreement_intelligence_worker.provider_smoke

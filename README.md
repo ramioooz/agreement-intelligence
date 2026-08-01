@@ -133,6 +133,14 @@ make setup
 | `make test` | Run JavaScript and Python tests. |
 | `make build` | Build every application outside Docker. |
 | `make check` | Run all pre-review source checks. |
+| `make provider-smoke` | Make one opt-in provider preflight request using a fixed non-sensitive sample. |
+
+Document enrichment works without a hosted provider, using the deterministic
+analysis baseline. To opt in to the hybrid interpretation layer locally, add
+`OPENAI_API_KEY` (and optionally `OPENAI_MODEL`) only to the ignored `.env`
+file; never commit it. `make provider-smoke` is deliberately excluded from CI:
+it makes one bounded provider request and prints only the configured model,
+latency, usage metadata, and validation status.
 
 See the
 [monorepo foundation design](docs/plans/2026-07-27-monorepo-foundation-design.md)
