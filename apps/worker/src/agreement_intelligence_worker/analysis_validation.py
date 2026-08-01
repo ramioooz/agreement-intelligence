@@ -26,7 +26,12 @@ CLAUSE_CATEGORIES = frozenset(
 RISK_SEVERITIES = frozenset({"low", "medium", "high", "critical"})
 SUMMARY_TYPES = frozenset({"business", "legal"})
 AGREEMENT_FAMILIES = frozenset(
-    {"client_agreement", "liquidity_provider_agreement", "unknown_needs_review"}
+    {
+        "client_agreement",
+        "liquidity_provider_agreement",
+        "non_agreement_material",
+        "unknown_needs_review",
+    }
 )
 
 

@@ -29,6 +29,16 @@ function riskLabel(severity: keyof typeof riskSeverityOrder): string {
   return `${severity[0].toUpperCase()}${severity.slice(1)} risk`;
 }
 
+function agreementFamilyLabel(
+  family: NonNullable<DocumentAnalysis["classification"]>["family"],
+): string {
+  if (family === "non_agreement_material") return "Non-Agreement Material";
+  if (family === "unknown_needs_review") return "Unknown — Needs Review";
+  return family
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
 export function AgreementDetail({
   agreement,
   documentUrl,
@@ -202,8 +212,8 @@ export function AgreementDetail({
           {analysis.classification ? (
             <section className="mt-4 rounded-lg bg-slate-50 p-4">
               <h3 className="font-semibold">Agreement family</h3>
-              <p className="mt-1 capitalize">
-                {analysis.classification.family.replaceAll("_", " ")}
+              <p className="mt-1">
+                {agreementFamilyLabel(analysis.classification.family)}
               </p>
               <p className="mt-1 text-sm text-slate-600">
                 {analysis.classification.rationale} · Confidence{" "}

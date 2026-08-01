@@ -50,6 +50,7 @@ export type DocumentAnalysis = {
     family:
       | "client_agreement"
       | "liquidity_provider_agreement"
+      | "non_agreement_material"
       | "unknown_needs_review";
     confidence: number;
     rationale: string;

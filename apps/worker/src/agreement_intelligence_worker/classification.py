@@ -6,6 +6,7 @@ from typing import Literal
 AgreementFamily = Literal[
     "client_agreement",
     "liquidity_provider_agreement",
+    "non_agreement_material",
     "unknown_needs_review",
 ]
 
@@ -21,6 +22,36 @@ class AgreementClassification:
 
 def classify_document(text: str) -> AgreementClassification:
     normalized = text.lower()
+    non_agreement_terms = tuple(
+        term
+        for term in (
+            "curriculum vitae",
+            "resume",
+            "work experience",
+            "professional experience",
+            "education",
+            "skills",
+        )
+        if term in normalized
+    )
+    has_specific_agreement_language = any(
+        term in normalized
+        for term in (
+            "agreement",
+            "client assets",
+            "margin",
+            "liquidity provider",
+            "executable prices",
+            "market maker",
+        )
+    )
+    if len(non_agreement_terms) >= 2 and not has_specific_agreement_language:
+        return AgreementClassification(
+            "non_agreement_material",
+            0.9,
+            "Resume/CV-style material detected without agreement terms",
+            non_agreement_terms,
+        )
     client_hits = sum(term in normalized for term in ("client", "margin", "client assets"))
     provider_hits = sum(
         term in normalized for term in ("liquidity provider", "executable prices", "market maker")

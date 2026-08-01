@@ -14,7 +14,10 @@ _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
 _ANALYSIS_INSTRUCTION = (
     "Analyze only the supplied agreement blocks. Return classification using families "
     "client_agreement, "
-    "liquidity_provider_agreement, or unknown_needs_review; clause categories termination, "
+    "liquidity_provider_agreement, non_agreement_material, or unknown_needs_review; use "
+    "non_agreement_material only when the material is confidently not an agreement, and "
+    "unknown_needs_review only when its agreement status or family is uncertain; "
+    "clause categories termination, "
     "confidentiality, governing_law, liability, dispute_resolution, or other_needs_review; "
     "and risk severities low, medium, high, or critical. Return clauses, risks, and business "
     "and legal summaries. "
