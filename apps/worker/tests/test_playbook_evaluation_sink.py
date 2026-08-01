@@ -94,7 +94,14 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
             assert key == "analysis/manifest.json"
             return json.dumps(manifest).encode()
 
-    sink = SQLAlchemyPlaybookEvaluationSink(engine, Storage())
+    sink = SQLAlchemyPlaybookEvaluationSink(
+        engine,
+        Storage(),
+        risk_model_explainer=lambda _: {
+            "rationale": "The cited clause accepts unlimited liability.",
+            "citation_ids": ["citation-liability"],
+        },
+    )
     artifact = CompletedArtifact(job_id=job.id, key="analysis/manifest.json")
     sink.completed(
         job,
@@ -124,3 +131,12 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
     assert finding["rule_id"] == rule_id
     assert finding["result"] == "needs_review"
     assert finding["citation_ids"] == ["citation-liability"]
+    assert finding["risk_payload"] == {
+        "version": "playbook-risk.v1",
+        "severity": "critical",
+        "risk_rationale": "The deterministic finding requires reviewer assessment.",
+        "risk_confidence": 0.91,
+        "review_status": "review_required",
+        "citation_ids": ["citation-liability"],
+        "model_explanation": "The cited clause accepts unlimited liability.",
+    }

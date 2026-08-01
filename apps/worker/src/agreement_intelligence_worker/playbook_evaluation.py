@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -21,6 +21,13 @@ from sqlalchemy import (
     Uuid,
     select,
     text,
+)
+
+from agreement_intelligence_worker.risk_explanation import (
+    RiskExplanationRequest,
+    RiskModelExplainer,
+    RiskPayload,
+    explain_risk,
 )
 
 EvaluationMethod = Literal["deterministic", "semantic"]
@@ -64,6 +71,7 @@ playbook_rules = Table(
     Column("policy_type", String(16), nullable=False),
     Column("preferred_language", String(), nullable=True),
     Column("severity", String(16), nullable=False),
+    Column("legal_rationale", String(), nullable=False, server_default=""),
     Column("evaluation_config", JSON, nullable=False),
 )
 playbook_evaluations = Table(
@@ -96,6 +104,7 @@ playbook_findings = Table(
     Column("citation_ids", JSON, nullable=False),
     Column("extraction_version", String(100), nullable=False),
     Column("review_state", String(32), nullable=False),
+    Column("risk_payload", JSON, nullable=False),
 )
 
 
@@ -113,6 +122,7 @@ class PlaybookRule:
     policy_type: PolicyType
     preferred_language: str | None
     severity: str
+    legal_rationale: str = ""
     evaluation_method: EvaluationMethod = "deterministic"
     semantic_assessment_permitted: bool = False
 
@@ -126,6 +136,7 @@ class EvaluatedFinding:
     method: EvaluationMethod
     citation_ids: list[str]
     extraction_version: str
+    risk: RiskPayload
 
 
 SemanticAssessor = Callable[[PlaybookRule, Mapping[str, object]], FindingResult]
@@ -136,6 +147,7 @@ def evaluate_playbook(
     analysis: Mapping[str, object],
     *,
     semantic_assessor: SemanticAssessor | None = None,
+    risk_model_explainer: RiskModelExplainer | None = None,
 ) -> list[EvaluatedFinding]:
     """Evaluate extracted clauses deterministically before optional semantic assessment.
 
@@ -165,8 +177,16 @@ def evaluate_playbook(
                     method="semantic",
                     citation_ids=finding.citation_ids,
                     extraction_version=finding.extraction_version,
+                    risk=finding.risk,
                 )
-        findings.append(finding)
+        findings.append(
+            _with_risk_explanation(
+                rule,
+                finding,
+                selected_clause,
+                risk_model_explainer if finding.method == "deterministic" else None,
+            )
+        )
     return findings
 
 
@@ -234,6 +254,48 @@ def _finding(
         method="deterministic",
         citation_ids=citation_ids,
         extraction_version=extraction_version,
+        risk=_risk_payload(rule, result, confidence, citation_ids, None),
+    )
+
+
+def _with_risk_explanation(
+    rule: PlaybookRule,
+    finding: EvaluatedFinding,
+    clause: Mapping[str, object] | None,
+    model_explainer: RiskModelExplainer | None,
+) -> EvaluatedFinding:
+    source_text = _string(clause.get("source_text"), "") if clause is not None else None
+    return replace(
+        finding,
+        risk=_risk_payload(
+            rule,
+            finding.result,
+            finding.confidence,
+            finding.citation_ids,
+            source_text,
+            model_explainer,
+        ),
+    )
+
+
+def _risk_payload(
+    rule: PlaybookRule,
+    result: FindingResult,
+    confidence: float,
+    citation_ids: list[str],
+    source_text: str | None,
+    model_explainer: RiskModelExplainer | None = None,
+) -> RiskPayload:
+    return explain_risk(
+        RiskExplanationRequest(
+            rule_severity=rule.severity,
+            rule_rationale=rule.legal_rationale,
+            deterministic_result=result.value,
+            confidence=confidence,
+            citation_ids=citation_ids,
+            cited_clause_text=source_text,
+        ),
+        model_explainer=model_explainer,
     )
 
 
@@ -267,9 +329,16 @@ def _string(value: object, default: str) -> str:
 class SQLAlchemyPlaybookEvaluationSink:
     """Select and persist deterministic findings after an immutable analysis exists."""
 
-    def __init__(self, engine: Engine, storage: object) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        storage: object,
+        *,
+        risk_model_explainer: RiskModelExplainer | None = None,
+    ) -> None:
         self._engine = engine
         self._storage = storage
+        self._risk_model_explainer = risk_model_explainer
 
     def completed(self, job: object, artifact: object) -> None:
         from agreement_intelligence_worker.processing import ProcessingJob
@@ -351,12 +420,17 @@ class SQLAlchemyPlaybookEvaluationSink:
                     policy_type=_policy_type(row["policy_type"]),
                     preferred_language=_optional_string(row["preferred_language"]),
                     severity=str(row["severity"]),
+                    legal_rationale=_string(row["legal_rationale"], ""),
                     evaluation_method=_evaluation_method(row["evaluation_config"]),
                     semantic_assessment_permitted=_semantic_permitted(row["evaluation_config"]),
                 )
                 for row in rule_rows
             ]
-            findings = evaluate_playbook(rules, manifest)
+            findings = evaluate_playbook(
+                rules,
+                manifest,
+                risk_model_explainer=self._risk_model_explainer,
+            )
             extraction_version = next(
                 (
                     finding.extraction_version
@@ -398,6 +472,7 @@ class SQLAlchemyPlaybookEvaluationSink:
                         "citation_ids": finding.citation_ids,
                         "extraction_version": finding.extraction_version,
                         "review_state": "unreviewed",
+                        "risk_payload": _risk_payload_value(finding.risk),
                     }
                     for finding in findings
                 ],
@@ -420,3 +495,15 @@ def _semantic_permitted(value: object) -> bool:
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _risk_payload_value(payload: RiskPayload) -> dict[str, object]:
+    return {
+        "version": payload.version,
+        "severity": payload.severity,
+        "risk_rationale": payload.risk_rationale,
+        "risk_confidence": payload.risk_confidence,
+        "review_status": payload.review_status,
+        "citation_ids": payload.citation_ids,
+        "model_explanation": payload.model_explanation,
+    }
