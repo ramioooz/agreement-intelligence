@@ -42,6 +42,10 @@ export type AgreementPage = {
   page: { limit: number; next_cursor: string | null };
 };
 
+export type WorkspaceCapabilities = {
+  agreements_delete: boolean;
+};
+
 export type DocumentAnalysis = {
   schema_version: string;
   pipeline_version: string;
@@ -210,6 +214,25 @@ export async function listAgreements({
       cache: "no-store",
       headers: authorizationHeader(token),
     }),
+  );
+}
+
+export async function getWorkspaceCapabilities({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  fetcher = fetch,
+}: ClientOptions & {
+  scope: AgreementScope;
+}): Promise<WorkspaceCapabilities> {
+  return decode<WorkspaceCapabilities>(
+    await fetcher(
+      endpoint(
+        baseUrl,
+        `/identity/organizations/${scope.organizationId}/workspaces/${scope.workspaceId}/capabilities`,
+      ),
+      { cache: "no-store", headers: authorizationHeader(token) },
+    ),
   );
 }
 
