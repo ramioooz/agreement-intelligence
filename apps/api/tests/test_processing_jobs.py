@@ -288,6 +288,36 @@ def test_failed_job_status_exposes_permitted_retry_and_retry_requeues_it(
     ]
 
 
+def test_queued_job_can_be_requeued_for_delivery_recovery(
+    session: Session,
+    client_for_session: ClientFactory,
+) -> None:
+    user_id, organization, workspace = _create_business_user_scope(session)
+    client = client_for_session(user_id)
+    agreement = client.post(
+        "/agreements", params=_scope_query(organization, workspace), json=_agreement_payload()
+    )
+    scope = _scope_query(organization, workspace)
+    submitted = client.post(
+        f"/agreements/{agreement.json()['id']}/processing-jobs",
+        params=scope,
+        headers={"Idempotency-Key": "requeue-queued-job"},
+        json={"profile": "baseline"},
+    )
+
+    requeued = client.post(
+        f"/agreements/{agreement.json()['id']}/processing-jobs/{submitted.json()['id']}/requeue",
+        params=scope,
+    )
+
+    assert requeued.status_code == 202
+    assert requeued.json()["state"] == "queued"
+    assert [job.id for job in client_for_session.published_jobs.jobs] == [
+        UUID(submitted.json()["id"]),
+        UUID(submitted.json()["id"]),
+    ]
+
+
 def test_permanent_failure_is_not_retryable(
     session: Session,
     client_for_session: ClientFactory,

@@ -165,6 +165,34 @@ class ProcessingJobService:
         self._dispatch_pending()
         return response
 
+    def requeue(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        agreement_id: UUID,
+        job_id: UUID,
+    ) -> ProcessingJobResponse:
+        self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
+        job = self._job_in_scope(
+            agreement_id,
+            job_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if job.state != "queued":
+            raise RetryNotPermittedError
+        response = self._repository.response(job)
+        self._repository.enqueue_outbox(
+            response,
+            idempotency_key=job.idempotency_key,
+            profile=job.profile,
+        )
+        self._identity.session.commit()
+        self._dispatch_pending()
+        return response
+
     def _job_in_scope(
         self,
         agreement_id: UUID,
