@@ -42,6 +42,18 @@ export type AgreementPage = {
   page: { limit: number; next_cursor: string | null };
 };
 
+export type DocumentAnalysis = {
+  schema_version: string;
+  pipeline_version: string;
+  diagnostics: Array<{ code: string; message: string; page_numbers: number[] }>;
+  document: {
+    pages: Array<{
+      number: number;
+      blocks: Array<{ anchor_id: string; kind: string; text: string }>;
+    }>;
+  };
+};
+
 export type UploadedDocument = {
   document_id: string;
   tenant_id: string;
@@ -181,6 +193,21 @@ export async function getAgreement({
         cache: "no-store",
         headers: authorizationHeader(token),
       },
+    ),
+  );
+}
+
+export async function getDocumentAnalysis({
+  baseUrl = defaultBaseUrl,
+  scope,
+  agreementId,
+  token,
+  fetcher = fetch,
+}: GetAgreementOptions): Promise<DocumentAnalysis> {
+  return decode<DocumentAnalysis>(
+    await fetcher(
+      endpoint(baseUrl, `/agreements/${agreementId}/analysis`, scopedParams(scope)),
+      { cache: "no-store", headers: authorizationHeader(token) },
     ),
   );
 }

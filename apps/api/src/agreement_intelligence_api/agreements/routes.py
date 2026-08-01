@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import JSONResponse
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
@@ -12,10 +13,16 @@ from agreement_intelligence_api.agreements.schemas import (
     CreateAgreementRequest,
     ErrorResponse,
 )
-from agreement_intelligence_api.agreements.service import AgreementService
+from agreement_intelligence_api.agreements.service import AgreementNotFoundError, AgreementService
+from agreement_intelligence_api.analysis.service import load_analysis
 from agreement_intelligence_api.db import get_session
+from agreement_intelligence_api.documents.routes import get_document_service
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.processing.models import (
+    ProcessingArtifactRecord,
+    ProcessingJobRecord,
+)
 
 router = APIRouter(prefix="/agreements", tags=["agreements"])
 
@@ -105,6 +112,40 @@ def get_agreement(
         workspace_id=workspace_id,
         agreement_id=agreement_id,
     )
+
+
+@router.get(
+    "/{agreement_id}/analysis",
+    responses={404: {"model": ErrorResponse}},
+)
+def get_document_analysis(
+    agreement_id: UUID,
+    request: Request,
+    principal: PrincipalDependency,
+    service: AgreementServiceDependency,
+    session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> dict[str, object]:
+    service.get(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+    )
+    artifact_key = session.scalar(
+        select(ProcessingArtifactRecord.artifact_key)
+        .join(ProcessingJobRecord, ProcessingArtifactRecord.job_id == ProcessingJobRecord.id)
+        .where(ProcessingArtifactRecord.agreement_id == agreement_id)
+        .where(ProcessingJobRecord.state == "completed")
+        .order_by(desc(ProcessingArtifactRecord.created_at))
+        .limit(1)
+    )
+    storage = get_document_service(request)._storage
+    analysis = load_analysis(storage, artifact_key)
+    if analysis is None:
+        raise AgreementNotFoundError
+    return analysis
 
 
 @router.post(
