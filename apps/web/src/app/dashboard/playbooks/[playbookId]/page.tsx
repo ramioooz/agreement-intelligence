@@ -30,6 +30,19 @@ function scopeFromEnvironment(): AgreementScope | null {
   return organizationId && workspaceId ? { organizationId, workspaceId } : null;
 }
 
+async function requirePlaybookAccessToken(
+  playbookId?: string,
+): Promise<string> {
+  const token = await getKeycloakAccessToken(await headers());
+  if (!token) {
+    const callbackUrl = playbookId
+      ? `/dashboard/playbooks/${playbookId}`
+      : "/dashboard/playbooks";
+    redirect(`/sign-in?callbackUrl=${encodeURIComponent(callbackUrl)}`);
+  }
+  return token;
+}
+
 async function loadPlaybooks(
   scope: AgreementScope,
   token: string | null | undefined,
@@ -66,7 +79,7 @@ export default async function PlaybookDetailPage({
   if (!scope) return notFound();
   const configuredScope = scope;
   const [{ playbookId }, query] = await Promise.all([params, searchParams]);
-  const token = await getKeycloakAccessToken(await headers());
+  const token = await requirePlaybookAccessToken(playbookId);
   const [playbooks, canManage] = await Promise.all([
     loadPlaybooks(configuredScope, token),
     canManagePlaybooks(configuredScope, token),
@@ -95,7 +108,7 @@ export default async function PlaybookDetailPage({
 
     await addPlaybookRule({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       version: playbook.version,
       rule,
@@ -108,7 +121,7 @@ export default async function PlaybookDetailPage({
 
     await updatePlaybookRule({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       version: playbook.version,
       ruleId,
@@ -122,7 +135,7 @@ export default async function PlaybookDetailPage({
 
     await deletePlaybookRule({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       version: playbook.version,
       ruleId,
@@ -135,7 +148,7 @@ export default async function PlaybookDetailPage({
 
     await publishPlaybookVersion({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       version: playbook.version,
     });
@@ -147,7 +160,7 @@ export default async function PlaybookDetailPage({
 
     const created = await createPlaybookVersion({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       sourceVersion: playbook.version,
     });
@@ -161,7 +174,7 @@ export default async function PlaybookDetailPage({
     if (!reason) return;
     await archivePlaybook({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       reason,
     });
@@ -175,7 +188,7 @@ export default async function PlaybookDetailPage({
     if (!reason) return;
     await deletePlaybook({
       scope: configuredScope,
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(playbookId),
       playbookId,
       reason,
     });

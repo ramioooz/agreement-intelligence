@@ -9,6 +9,10 @@ DocumentDirection = Literal["any", "first_party", "counterparty"]
 PolicyType = Literal["required", "prohibited", "preferred"]
 Severity = Literal["low", "medium", "high", "critical"]
 EvaluationMethod = Literal["deterministic", "semantic"]
+SupportedAgreementFamily = Literal[
+    "client_agreement",
+    "liquidity_provider_agreement",
+]
 
 
 class RuleEvaluationConfig(BaseModel):
@@ -50,7 +54,7 @@ class CreatePlaybookRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=256)
-    agreement_family: str = Field(min_length=1, max_length=100)
+    agreement_family: SupportedAgreementFamily
     document_direction: DocumentDirection = "any"
     jurisdiction: str = Field(default="any", min_length=2, max_length=16)
     priority: int = Field(default=100, ge=0, le=1000)

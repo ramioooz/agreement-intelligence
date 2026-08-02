@@ -1,5 +1,5 @@
 import "next-auth";
-import "next-auth/jwt";
+import "@auth/core/jwt";
 
 declare module "next-auth" {
   interface User {
@@ -11,9 +11,12 @@ declare module "next-auth" {
   }
 }
 
-declare module "next-auth/jwt" {
+declare module "@auth/core/jwt" {
   interface JWT {
     keycloakIdToken?: string;
     keycloakAccessToken?: string;
+    keycloakAccessTokenExpiresAt?: number;
+    keycloakRefreshError?: "refresh_failed";
+    keycloakRefreshToken?: string;
   }
 }

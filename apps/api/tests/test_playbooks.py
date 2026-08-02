@@ -9,10 +9,15 @@ from agreement_intelligence_api.identity.models import Base, Organization, Works
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
-from agreement_intelligence_api.playbooks.models import PlaybookVersionRecord
+from agreement_intelligence_api.playbooks.models import (
+    LegalPlaybookRecord,
+    PlaybookAuditEventRecord,
+    PlaybookRuleRecord,
+    PlaybookVersionRecord,
+)
 from fastapi.testclient import TestClient
 from pytest import fixture, raises
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -122,6 +127,21 @@ def test_platform_admin_can_create_a_draft_playbook(
     assert payload["rules"][0]["clause_type"] == "limitation_of_liability"
     assert payload["audit_events"][0]["action"] == "draft_created"
     assert payload["audit_events"][0]["actor_id"] == str(administrator_id)
+
+
+def test_platform_admin_cannot_create_a_playbook_for_an_unsupported_agreement_family(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+
+    response = client_for_session(administrator_id).post(
+        "/playbooks",
+        params=_scope_query(organization, workspace),
+        json={**_playbook_payload(), "agreement_family": "arbitrary_family"},
+    )
+
+    assert response.status_code == 422
 
 
 def test_legal_admin_and_legal_reviewer_cannot_manage_playbooks(
@@ -264,6 +284,7 @@ def test_platform_admin_can_delete_a_draft_playbook_with_an_audit_event(
     created = client.post(
         "/playbooks", params=_scope_query(organization, workspace), json=_playbook_payload()
     ).json()
+    session.expire_all()
 
     deleted = client.delete(
         f"/playbooks/{created['playbook_id']}",
@@ -276,6 +297,22 @@ def test_platform_admin_can_delete_a_draft_playbook_with_an_audit_event(
 
     assert deleted.status_code == 204
     assert client.get("/playbooks", params=_scope_query(organization, workspace)).json() == []
+    assert session.get(LegalPlaybookRecord, UUID(created["playbook_id"])) is None
+    assert (
+        session.scalar(
+            select(PlaybookVersionRecord).where(
+                PlaybookVersionRecord.playbook_id == UUID(created["playbook_id"])
+            )
+        )
+        is None
+    )
+    assert session.scalar(select(PlaybookRuleRecord)) is None
+    audit_events = session.scalars(
+        select(PlaybookAuditEventRecord).where(
+            PlaybookAuditEventRecord.playbook_id == UUID(created["playbook_id"])
+        )
+    ).all()
+    assert [event.action for event in audit_events] == ["draft_created", "draft_deleted"]
 
 
 def test_platform_admin_archives_a_published_playbook_and_retains_its_version(

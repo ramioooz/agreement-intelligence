@@ -5,7 +5,7 @@ from typing import cast
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -478,12 +478,20 @@ class PlaybookService:
         if not confirmed:
             self._confirmation_required()
         playbook = self._playbook_for_scope(playbook_id, organization_id, workspace_id)
-        if any(version.status == "published" for version in playbook.versions):
+        versions = list(
+            self._session.scalars(
+                select(PlaybookVersionRecord)
+                .where(PlaybookVersionRecord.playbook_id == playbook.id)
+                .where(PlaybookVersionRecord.organization_id == organization_id)
+                .where(PlaybookVersionRecord.workspace_id == workspace_id)
+            )
+        )
+        if any(version.status == "published" for version in versions):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "published_playbook_must_be_archived"},
             )
-        for version in playbook.versions:
+        for version in versions:
             self._audit(
                 playbook=playbook,
                 version=version,
@@ -491,7 +499,19 @@ class PlaybookService:
                 action="draft_deleted",
                 metadata={"reason": reason},
             )
-        self._session.delete(playbook)
+        version_ids = [version.id for version in versions]
+        if version_ids:
+            self._session.execute(
+                delete(PlaybookRuleRecord).where(
+                    PlaybookRuleRecord.playbook_version_id.in_(version_ids)
+                )
+            )
+            self._session.execute(
+                delete(PlaybookVersionRecord).where(PlaybookVersionRecord.id.in_(version_ids))
+            )
+        self._session.execute(
+            delete(LegalPlaybookRecord).where(LegalPlaybookRecord.id == playbook.id)
+        )
         self._session.commit()
 
     def list(

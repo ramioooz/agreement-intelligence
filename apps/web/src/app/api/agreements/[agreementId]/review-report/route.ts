@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
 
-import { getKeycloakAccessToken } from "@/lib/auth-session-token";
+import {
+  applyRefreshedKeycloakSession,
+  getKeycloakAccessTokenResult,
+} from "@/lib/auth-session-token";
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -10,7 +13,8 @@ export async function GET(
 ) {
   const organizationId = process.env.API_ORGANIZATION_ID;
   const workspaceId = process.env.API_WORKSPACE_ID;
-  const token = await getKeycloakAccessToken(request.headers);
+  const session = await getKeycloakAccessTokenResult(request.headers);
+  const { accessToken: token } = session;
   if (!organizationId || !workspaceId || !token) {
     return Response.json(
       { message: "An authorized workspace session is required." },
@@ -35,12 +39,16 @@ export async function GET(
       { status: response.status },
     );
   }
-  return new Response(response.body, {
-    headers: {
-      "Content-Type": response.headers.get("Content-Type") ?? "application/pdf",
-      "Content-Disposition":
-        response.headers.get("Content-Disposition") ??
-        `attachment; filename="agreement-${agreementId}-review-report.pdf"`,
-    },
-  });
+  return applyRefreshedKeycloakSession(
+    new Response(response.body, {
+      headers: {
+        "Content-Type":
+          response.headers.get("Content-Type") ?? "application/pdf",
+        "Content-Disposition":
+          response.headers.get("Content-Disposition") ??
+          `attachment; filename="agreement-${agreementId}-review-report.pdf"`,
+      },
+    }),
+    session,
+  );
 }

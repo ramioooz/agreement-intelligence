@@ -88,6 +88,9 @@ async function request<T>(response: Response): Promise<T> {
       "The playbook request could not be completed.";
     throw new ApiRequestError(message, response.status);
   }
+  if (response.status === 204) {
+    return undefined as T;
+  }
   return response.json() as Promise<T>;
 }
 
