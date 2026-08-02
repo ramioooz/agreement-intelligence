@@ -3,6 +3,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 
 import { auth } from "@/auth";
+import { FieldHelp } from "@/components/field-help";
 import { PlaybookVersionList } from "@/components/playbook-version-list";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
@@ -135,40 +136,72 @@ export default async function PlaybooksPage() {
                 </option>
               </select>
             </label>
-            <label className="grid gap-1.5 text-sm font-medium">
-              Document direction
-              <select
-                className="rounded-lg border border-slate-300 px-3 py-2"
-                defaultValue="any"
-                name="documentDirection"
-              >
-                <option value="any">Any direction</option>
-                <option value="first_party">Our paper</option>
-                <option value="counterparty">Counterparty paper</option>
-              </select>
-            </label>
-            <label className="grid gap-1.5 text-sm font-medium">
-              Jurisdiction
-              <input
-                className="rounded-lg border border-slate-300 px-3 py-2"
-                defaultValue="any"
-                name="jurisdiction"
-              />
-            </label>
-            <label className="grid gap-1.5 text-sm font-medium">
-              Routing priority
-              <input
-                className="rounded-lg border border-slate-300 px-3 py-2"
-                defaultValue="100"
-                max="1000"
-                min="0"
-                name="priority"
-                type="number"
-              />
-            </label>
             <p className="text-sm text-slate-600 md:col-span-2">
               Choose the recognized agreement family governed by this playbook.
             </p>
+            <details className="rounded-xl border border-slate-200 bg-slate-50 p-4 md:col-span-2">
+              <summary className="cursor-pointer font-semibold text-slate-800">
+                Advanced settings
+              </summary>
+              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                <label className="grid gap-1.5 text-sm font-medium">
+                  Document direction
+                  <FieldHelp>
+                    Select Our paper when this is the organization&apos;s
+                    template, Counterparty paper for inbound terms, or Any when
+                    direction is not relevant.
+                  </FieldHelp>
+                  <select
+                    aria-label="Document direction"
+                    className="rounded-lg border border-slate-300 px-3 py-2"
+                    defaultValue="any"
+                    name="documentDirection"
+                  >
+                    <option value="any">Any direction</option>
+                    <option value="first_party">Our paper</option>
+                    <option value="counterparty">Counterparty paper</option>
+                  </select>
+                </label>
+                <label className="grid gap-1.5 text-sm font-medium">
+                  Jurisdiction
+                  <FieldHelp>
+                    The legal market this playbook governs. UAE is the local
+                    default; enter Any only for a policy intended to apply
+                    across jurisdictions.
+                  </FieldHelp>
+                  <input
+                    aria-label="Jurisdiction"
+                    className="rounded-lg border border-slate-300 px-3 py-2"
+                    defaultValue="UAE"
+                    name="jurisdiction"
+                  />
+                </label>
+                <label className="grid gap-1.5 text-sm font-medium">
+                  Override priority
+                  <FieldHelp>
+                    Used only as the final tie-breaker for eligible playbooks in
+                    the same agreement family. Higher values win; use 100 for
+                    the normal position and change it only for a deliberate
+                    exception. It is not a risk score.
+                  </FieldHelp>
+                  <input
+                    aria-label="Override priority"
+                    className="rounded-lg border border-slate-300 px-3 py-2"
+                    defaultValue="100"
+                    max="1000"
+                    min="0"
+                    name="priority"
+                    type="number"
+                  />
+                </label>
+                <p className="self-end text-sm text-slate-600">
+                  These settings define intended scope. Today, override priority
+                  orders eligible playbooks in the same agreement family;
+                  context-aware routing will use direction and jurisdiction when
+                  that agreement metadata is available.
+                </p>
+              </div>
+            </details>
             <button
               className="w-fit rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
               type="submit"

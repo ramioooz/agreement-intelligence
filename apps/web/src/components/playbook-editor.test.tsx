@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { PlaybookEditor } from "@/components/playbook-editor";
@@ -95,5 +95,41 @@ describe("PlaybookEditor", () => {
     expect(
       screen.queryByRole("button", { name: "Save rule" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("only enables an existing rule save after the rule changes", () => {
+    render(
+      <PlaybookEditor
+        canManage
+        playbook={{ ...draft, rules: published.rules }}
+      />,
+    );
+
+    const saveRule = screen.getByRole("button", { name: "Save rule" });
+    expect(saveRule).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("Rule title"), {
+      target: { value: "Updated liability cap" },
+    });
+
+    expect(saveRule).toBeEnabled();
+  });
+
+  it("reveals the add-rule form only when requested after a rule exists", () => {
+    render(
+      <PlaybookEditor
+        canManage
+        playbook={{ ...draft, rules: published.rules }}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("heading", { name: "Add rule" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+
+    expect(
+      screen.getByRole("heading", { name: "Add rule" }),
+    ).toBeInTheDocument();
   });
 });
