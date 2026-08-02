@@ -7,7 +7,12 @@ import {
   findingResultLabel,
   ReviewFindingList,
 } from "@/components/review-finding-list";
-import type { PlaybookFindingResponse } from "@/lib/review-api";
+import { ReviewDecisions } from "@/components/review-decisions";
+import type {
+  CurrentReviewDecision,
+  PlaybookFindingResponse,
+  ReviewDecisionEvent,
+} from "@/lib/review-api";
 
 export type ReviewEvidence = {
   citationId: string;
@@ -62,6 +67,25 @@ export function ReviewWorkspace({
   const [severity, setSeverity] = useState("all");
   const [status, setStatus] = useState("all");
   const [selectedFindingId, setSelectedFindingId] = useState<string>();
+  const [decisionsByFinding, setDecisionsByFinding] = useState<
+    Record<
+      string,
+      {
+        events: ReviewDecisionEvent[];
+        current: CurrentReviewDecision | null;
+      }
+    >
+  >(() =>
+    Object.fromEntries(
+      findings.map((finding) => [
+        finding.id,
+        {
+          events: finding.decision_events,
+          current: finding.current_decision,
+        },
+      ]),
+    ),
+  );
   const sortedFindings = useMemo(
     () => [...findings].sort(compareFindings),
     [findings],
@@ -78,6 +102,12 @@ export function ReviewWorkspace({
   const selectedFinding =
     filteredFindings.find((finding) => finding.id === selectedFindingId) ??
     filteredFindings[0];
+  const selectedDecisions = selectedFinding
+    ? (decisionsByFinding[selectedFinding.id] ?? {
+        events: selectedFinding.decision_events,
+        current: selectedFinding.current_decision,
+      })
+    : undefined;
   const selectedEvidence = selectedFinding
     ? evidence.filter((item) =>
         selectedFinding.citation_ids.includes(item.citationId),
@@ -133,6 +163,14 @@ export function ReviewWorkspace({
         <p className="mt-2 text-slate-600">
           Review playbook findings alongside their cited source evidence.
         </p>
+        {findings.length ? (
+          <a
+            className="mt-4 inline-block rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-semibold hover:border-slate-500"
+            href={`/api/agreements/${agreementId}/review-report`}
+          >
+            Export cited review report
+          </a>
+        ) : null}
       </header>
 
       <nav aria-label="Review workspace sections">
@@ -388,6 +426,28 @@ export function ReviewWorkspace({
                       ))}
                     </ul>
                   </nav>
+
+                  <ReviewDecisions
+                    currentDecision={selectedDecisions?.current ?? null}
+                    decisionEvents={selectedDecisions?.events ?? []}
+                    findingId={selectedFinding.id}
+                    key={selectedFinding.id}
+                    onRecorded={(decision, current) => {
+                      setDecisionsByFinding((existing) => ({
+                        ...existing,
+                        [selectedFinding.id]: {
+                          events: [
+                            ...(existing[selectedFinding.id]?.events ??
+                              selectedFinding.decision_events),
+                            decision,
+                          ],
+                          current,
+                        },
+                      }));
+                    }}
+                    originalResult={selectedFinding.result}
+                    originalSeverity={selectedFinding.severity}
+                  />
                 </article>
               ) : null}
 

@@ -7,10 +7,13 @@ dependencies = [
   "boto3==1.43.60",
   "agreement-intelligence-worker>=0.1.0",
   "fastapi==0.140.0",
+  "fpdf2==2.8.7",
+  "pymupdf-fonts==1.0.5",
   "psycopg[binary]==3.2.9",
   "pydantic==2.13.4",
   "python-multipart==0.0.32",
   "sqlalchemy==2.0.46",
+  "uharfbuzz==0.56.0",
   "uvicorn[standard]==0.51.0",
 ]
 

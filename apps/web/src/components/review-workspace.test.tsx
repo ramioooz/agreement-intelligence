@@ -1,5 +1,11 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ReviewWorkspace } from "@/components/review-workspace";
 
@@ -27,6 +33,8 @@ const lowConfidenceFinding = {
     model_explanation: null,
   },
   fallback_suggestions: [],
+  decision_events: [],
+  current_decision: null,
 };
 
 const highRiskFinding = {
@@ -53,9 +61,15 @@ const highRiskFinding = {
     model_explanation: "The clause does not state a monetary ceiling.",
   },
   fallback_suggestions: [],
+  decision_events: [],
+  current_decision: null,
 };
 
 describe("ReviewWorkspace", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("synchronizes selected finding evidence and marks low-confidence findings for human review", () => {
     render(
       <ReviewWorkspace
@@ -133,6 +147,12 @@ describe("ReviewWorkspace", () => {
         name: "Confidentiality — Confidentiality survival",
       }),
     ).toHaveAttribute("aria-current", "true");
+    expect(
+      screen.getByRole("heading", { name: "Reviewer decision" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Export cited review report" }),
+    ).toHaveAttribute("href", "/api/agreements/agreement-1/review-report");
   });
 
   it("sorts findings by legal severity before rendering or filtering", () => {
@@ -170,5 +190,65 @@ describe("ReviewWorkspace", () => {
       expect.stringContaining("High severity"),
       expect.stringContaining("Low severity"),
     ]);
+  });
+
+  it("keeps a recorded decision when the reviewer switches findings", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "decision-1",
+            finding_id: highRiskFinding.id,
+            action: "accepted",
+            original_result: highRiskFinding.result,
+            rationale: "Approved after legal review.",
+            edited_result: null,
+            edited_severity: null,
+            actor_id: "reviewer-1",
+            occurred_at: "2026-08-02T10:00:00Z",
+            current: {
+              action: "accepted",
+              result: highRiskFinding.result,
+              severity: highRiskFinding.severity,
+              rationale: "Approved after legal review.",
+              actor_id: "reviewer-1",
+              decided_at: "2026-08-02T10:00:00Z",
+            },
+          }),
+          { status: 201, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    render(
+      <ReviewWorkspace
+        agreementId="agreement-1"
+        agreementTitle="Supplier agreement"
+        findings={[lowConfidenceFinding, highRiskFinding]}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Reviewer rationale"), {
+      target: { value: "Approved after legal review." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Record decision" }));
+    await screen.findByRole("status", { name: "Current reviewer decision" });
+
+    fireEvent.click(screen.getByRole("button", { name: /Confidentiality/ }));
+    expect(
+      screen.queryByRole("status", { name: "Current reviewer decision" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Limitation of liability/ }),
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("status", { name: "Current reviewer decision" }),
+      ).toHaveTextContent("Accepted · Non compliant · High severity"),
+    );
+    expect(
+      screen.getByText("1 immutable decision event recorded."),
+    ).toBeVisible();
   });
 });
