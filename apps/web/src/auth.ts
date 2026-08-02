@@ -2,6 +2,11 @@ import NextAuth from "next-auth";
 import Keycloak from "next-auth/providers/keycloak";
 
 import { isAllowedPostSignOutRedirect } from "@/lib/keycloak-logout";
+import {
+  hasUsableKeycloakAccessToken,
+  type KeycloakSessionToken,
+  refreshKeycloakToken,
+} from "@/lib/keycloak-token";
 
 const localIssuer =
   process.env.OIDC_ISSUER ??
@@ -71,19 +76,33 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
 
       return baseUrl;
     },
-    jwt({ token, account, profile }) {
+    async jwt({ token, account, profile }) {
       if (profile?.sub) {
         token.sub = profile.sub;
       }
 
-      if (account?.id_token) {
-        token.keycloakIdToken = account.id_token;
-      }
-
-      if (account?.access_token) {
+      if (account) {
+        token.keycloakIdToken = account?.id_token;
         token.keycloakAccessToken = account.access_token;
+        token.keycloakAccessTokenExpiresAt = account.expires_at
+          ? account.expires_at * 1000
+          : undefined;
+        token.keycloakRefreshError = undefined;
+        token.keycloakRefreshToken = account.refresh_token;
+        return token;
       }
 
+      const keycloakToken = token as typeof token & KeycloakSessionToken;
+      if (hasUsableKeycloakAccessToken(keycloakToken)) {
+        return token;
+      }
+
+      const refreshed = await refreshKeycloakToken(keycloakToken, {
+        clientId: process.env.OIDC_CLIENT_ID ?? "agreement-intelligence-web",
+        clientSecret: process.env.OIDC_CLIENT_SECRET ?? "",
+        issuer: internalIssuer,
+      });
+      Object.assign(token, refreshed);
       return token;
     },
     session({ session, token }) {

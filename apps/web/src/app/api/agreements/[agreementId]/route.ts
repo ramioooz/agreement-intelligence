@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
 
 import { deleteAgreement, type AgreementScope } from "@/lib/agreement-api";
-import { getKeycloakAccessToken } from "@/lib/auth-session-token";
+import {
+  applyRefreshedKeycloakSession,
+  getKeycloakAccessTokenResult,
+} from "@/lib/auth-session-token";
 
 function scopeFromEnvironment(): AgreementScope | null {
   const organizationId = process.env.API_ORGANIZATION_ID;
@@ -14,7 +17,8 @@ export async function DELETE(
   context: { params: Promise<{ agreementId: string }> },
 ) {
   const scope = scopeFromEnvironment();
-  const token = await getKeycloakAccessToken(request.headers);
+  const session = await getKeycloakAccessTokenResult(request.headers);
+  const { accessToken: token } = session;
   if (!scope || !token) {
     return Response.json(
       { message: "An authorized workspace session is required." },
@@ -27,7 +31,10 @@ export async function DELETE(
       agreementId: (await context.params).agreementId,
       token,
     });
-    return new Response(null, { status: 204 });
+    return applyRefreshedKeycloakSession(
+      new Response(null, { status: 204 }),
+      session,
+    );
   } catch {
     return Response.json(
       { message: "The agreement could not be deleted." },

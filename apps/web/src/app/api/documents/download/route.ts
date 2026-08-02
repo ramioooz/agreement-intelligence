@@ -1,6 +1,9 @@
 import { NextRequest } from "next/server";
 
-import { getKeycloakAccessToken } from "@/lib/auth-session-token";
+import {
+  applyRefreshedKeycloakSession,
+  getKeycloakAccessTokenResult,
+} from "@/lib/auth-session-token";
 
 const apiBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";
 
@@ -13,7 +16,8 @@ export async function GET(request: NextRequest) {
       { message: "A document scope is required." },
       { status: 400 },
     );
-  const accessToken = await getKeycloakAccessToken(request.headers);
+  const session = await getKeycloakAccessTokenResult(request.headers);
+  const { accessToken } = session;
   if (!accessToken)
     return Response.json(
       { message: "Sign in is required to download documents." },
@@ -33,12 +37,15 @@ export async function GET(request: NextRequest) {
       { message: "The requested document is unavailable." },
       { status: response.status },
     );
-  return new Response(response.body, {
-    headers: {
-      "Content-Type":
-        response.headers.get("Content-Type") ?? "application/octet-stream",
-      "Content-Disposition":
-        response.headers.get("Content-Disposition") ?? "inline",
-    },
-  });
+  return applyRefreshedKeycloakSession(
+    new Response(response.body, {
+      headers: {
+        "Content-Type":
+          response.headers.get("Content-Type") ?? "application/octet-stream",
+        "Content-Disposition":
+          response.headers.get("Content-Disposition") ?? "inline",
+      },
+    }),
+    session,
+  );
 }

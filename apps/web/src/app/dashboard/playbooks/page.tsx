@@ -21,6 +21,14 @@ function scopeFromEnvironment(): AgreementScope | null {
   return organizationId && workspaceId ? { organizationId, workspaceId } : null;
 }
 
+async function requirePlaybookAccessToken(): Promise<string> {
+  const token = await getKeycloakAccessToken(await headers());
+  if (!token) {
+    redirect("/sign-in?callbackUrl=%2Fdashboard%2Fplaybooks");
+  }
+  return token;
+}
+
 async function loadPlaybooks(
   scope: AgreementScope,
   token: string | null | undefined,
@@ -55,7 +63,7 @@ export default async function PlaybooksPage() {
       </main>
     );
   const configuredScope = scope;
-  const token = await getKeycloakAccessToken(await headers());
+  const token = await requirePlaybookAccessToken();
   const [playbooks, canManage] = await Promise.all([
     loadPlaybooks(configuredScope, token),
     canManagePlaybooks(configuredScope, token),
@@ -86,7 +94,7 @@ export default async function PlaybooksPage() {
       jurisdiction:
         String(formData.get("jurisdiction") ?? "any").trim() || "any",
       priority: Number(formData.get("priority") ?? 100),
-      token: await getKeycloakAccessToken(await headers()),
+      token: await requirePlaybookAccessToken(),
     });
     redirect(
       `/dashboard/playbooks/${created.playbook_id}?version=${created.version}`,
@@ -116,12 +124,16 @@ export default async function PlaybooksPage() {
             </label>
             <label className="grid gap-1.5 text-sm font-medium">
               Agreement family
-              <input
+              <select
                 className="rounded-lg border border-slate-300 px-3 py-2"
                 defaultValue="client_agreement"
                 name="agreementFamily"
-                required
-              />
+              >
+                <option value="client_agreement">Client Agreement</option>
+                <option value="liquidity_provider_agreement">
+                  Liquidity Provider Agreement
+                </option>
+              </select>
             </label>
             <label className="grid gap-1.5 text-sm font-medium">
               Document direction
@@ -155,8 +167,7 @@ export default async function PlaybooksPage() {
               />
             </label>
             <p className="text-sm text-slate-600 md:col-span-2">
-              Use the classified agreement-family identifier, for example
-              client_agreement.
+              Choose the recognized agreement family governed by this playbook.
             </p>
             <button
               className="w-fit rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"

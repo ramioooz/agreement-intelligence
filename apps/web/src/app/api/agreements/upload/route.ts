@@ -5,7 +5,10 @@ import {
   uploadDocument,
   type AgreementScope,
 } from "@/lib/agreement-api";
-import { getKeycloakAccessToken } from "@/lib/auth-session-token";
+import {
+  applyRefreshedKeycloakSession,
+  getKeycloakAccessTokenResult,
+} from "@/lib/auth-session-token";
 import { submitProcessingJob } from "@/lib/processing-api";
 
 function scopeFromEnvironment(): AgreementScope | null {
@@ -16,7 +19,8 @@ function scopeFromEnvironment(): AgreementScope | null {
 
 export async function POST(request: NextRequest) {
   const scope = scopeFromEnvironment();
-  const token = await getKeycloakAccessToken(request.headers);
+  const session = await getKeycloakAccessTokenResult(request.headers);
+  const { accessToken: token } = session;
   if (!scope || !token)
     return Response.json(
       { message: "An authorized workspace session is required." },
@@ -75,9 +79,12 @@ export async function POST(request: NextRequest) {
       agreementId: agreement.id,
       idempotencyKey: crypto.randomUUID(),
     });
-    return Response.json(
-      { id: agreement.id, processingJobId: job.id },
-      { status: 201 },
+    return applyRefreshedKeycloakSession(
+      Response.json(
+        { id: agreement.id, processingJobId: job.id },
+        { status: 201 },
+      ),
+      session,
     );
   } catch {
     return Response.json(
