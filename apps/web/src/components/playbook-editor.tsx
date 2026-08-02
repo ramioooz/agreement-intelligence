@@ -3,6 +3,7 @@
 import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 
+import { FieldHelp } from "@/components/field-help";
 import type {
   PlaybookRule,
   PlaybookRuleWrite,
@@ -33,6 +34,42 @@ const emptyRule: PlaybookRuleWrite = {
   },
 };
 
+const clauseTypes = [
+  ["limitation_of_liability", "Limitation of liability"],
+  ["indemnity", "Indemnity"],
+  ["confidentiality", "Confidentiality"],
+  ["termination", "Term and termination"],
+  ["governing_law", "Governing law"],
+  ["dispute_resolution", "Dispute resolution"],
+  ["data_protection", "Data protection"],
+  ["intellectual_property", "Intellectual property"],
+  ["payment_terms", "Payment terms"],
+  ["assignment", "Assignment"],
+  ["audit_rights", "Audit rights"],
+  ["sanctions_and_compliance", "Sanctions and compliance"],
+] as const;
+
+const reviewerGuidanceTemplates = [
+  {
+    value: "escalate_to_legal",
+    label: "Escalate to Legal",
+    guidance:
+      "Escalate to Legal for review and approval before accepting this clause.",
+  },
+  {
+    value: "approved_fallback",
+    label: "Accept approved fallback only",
+    guidance:
+      "Accept only if the approved fallback language is used; otherwise escalate to Legal.",
+  },
+  {
+    value: "business_approval",
+    label: "Require business-owner approval",
+    guidance:
+      "Obtain documented business-owner approval before accepting a deviation.",
+  },
+] as const;
+
 function isPublishableRule(rule: PlaybookRuleWrite): boolean {
   return Boolean(
     rule.clause_type.trim() &&
@@ -49,12 +86,22 @@ function messageFor(error: unknown): string {
     : "The playbook change could not be saved. Please try again.";
 }
 
+function editableRule(
+  rule: PlaybookRuleWrite | PlaybookRule,
+): PlaybookRuleWrite {
+  const ruleWrite = { ...rule } as PlaybookRuleWrite & { id?: string };
+  delete ruleWrite.id;
+  return ruleWrite;
+}
+
 type RuleFormProps = {
   heading: string;
-  initialRule: PlaybookRuleWrite;
+  initialRule: PlaybookRuleWrite | PlaybookRule;
   submitLabel: string;
   submittingLabel: string;
   onSubmit: (rule: PlaybookRuleWrite) => Promise<void>;
+  onDelete?: () => void;
+  onDiscard?: () => void;
 };
 
 function RuleForm({
@@ -63,11 +110,23 @@ function RuleForm({
   submitLabel,
   submittingLabel,
   onSubmit,
+  onDelete,
+  onDiscard,
 }: RuleFormProps) {
-  const [rule, setRule] = useState<PlaybookRuleWrite>(initialRule);
+  const initialWriteRule = editableRule(initialRule);
+  const [rule, setRule] = useState<PlaybookRuleWrite>(initialWriteRule);
+  const [customClauseType, setCustomClauseType] = useState(
+    Boolean(
+      initialRule.clause_type &&
+      !clauseTypes.some(([value]) => value === initialRule.clause_type),
+    ),
+  );
   const [error, setError] = useState<string>();
   const [submitting, setSubmitting] = useState(false);
   const id = heading === "Add rule" ? "new-rule" : `rule-${heading}`;
+  const isExistingRule = Boolean(onDelete);
+  const hasChanges = JSON.stringify(rule) !== JSON.stringify(initialWriteRule);
+  const canSubmit = isPublishableRule(rule) && (!isExistingRule || hasChanges);
 
   function update<K extends keyof PlaybookRuleWrite>(
     key: K,
@@ -108,21 +167,54 @@ function RuleForm({
       className="rounded-2xl border border-slate-200 bg-white p-5"
     >
       <h2 className="text-xl font-semibold" id={`${id}-heading`}>
-        {heading}
+        {heading === "Add rule" ? heading : `Edit rule: ${initialRule.title}`}
       </h2>
       <form className="mt-4 grid gap-4" noValidate onSubmit={submit}>
         <div className="grid gap-4 md:grid-cols-2">
           <label className="grid gap-1.5 text-sm font-medium">
             Clause type
-            <input
+            <FieldHelp>
+              Select the clause category the rule governs. Use Other only when
+              the approved taxonomy does not contain the clause.
+            </FieldHelp>
+            <select
+              aria-label="Clause type"
               aria-describedby={`${id}-requirements`}
               aria-invalid={Boolean(error && !rule.clause_type.trim())}
               className="rounded-lg border border-slate-300 px-3 py-2"
-              onChange={(event) => update("clause_type", event.target.value)}
+              onChange={(event) => {
+                if (event.target.value === "custom") {
+                  setCustomClauseType(true);
+                  update("clause_type", "");
+                  return;
+                }
+                setCustomClauseType(false);
+                update("clause_type", event.target.value);
+              }}
               required
-              value={rule.clause_type}
-            />
+              value={customClauseType ? "custom" : rule.clause_type}
+            >
+              <option value="">Select a clause type</option>
+              {clauseTypes.map(([value, label]) => (
+                <option key={value} value={value}>
+                  {label}
+                </option>
+              ))}
+              <option value="custom">Other / custom</option>
+            </select>
           </label>
+          {customClauseType ? (
+            <label className="grid gap-1.5 text-sm font-medium">
+              Custom clause type
+              <input
+                aria-describedby={`${id}-requirements`}
+                className="rounded-lg border border-slate-300 px-3 py-2"
+                onChange={(event) => update("clause_type", event.target.value)}
+                required
+                value={rule.clause_type}
+              />
+            </label>
+          ) : null}
           <label className="grid gap-1.5 text-sm font-medium">
             Rule title
             <input
@@ -135,8 +227,14 @@ function RuleForm({
             />
           </label>
           <label className="grid gap-1.5 text-sm font-medium">
-            Policy type
+            Rule type
+            <FieldHelp>
+              Required means approved language must be present; Prohibited means
+              the language must not be accepted; Preferred marks the target
+              position but allows a reviewed deviation.
+            </FieldHelp>
             <select
+              aria-label="Rule type"
               className="rounded-lg border border-slate-300 px-3 py-2"
               onChange={(event) =>
                 update(
@@ -153,7 +251,12 @@ function RuleForm({
           </label>
           <label className="grid gap-1.5 text-sm font-medium">
             Severity
+            <FieldHelp>
+              Choose the business and legal impact if this rule is not met: Low,
+              Medium, High, or Critical.
+            </FieldHelp>
             <select
+              aria-label="Severity"
               className="rounded-lg border border-slate-300 px-3 py-2"
               onChange={(event) =>
                 update(
@@ -173,6 +276,10 @@ function RuleForm({
         <label className="grid gap-1.5 text-sm font-medium">
           Preferred language{" "}
           {preferredLanguageRequired ? "(required)" : "(optional)"}
+          <FieldHelp>
+            The approved first-choice wording. It is required unless the rule
+            prohibits language rather than requiring it.
+          </FieldHelp>
           <textarea
             aria-describedby={`${id}-requirements`}
             aria-invalid={Boolean(
@@ -190,6 +297,10 @@ function RuleForm({
         </label>
         <label className="grid gap-1.5 text-sm font-medium">
           Approved fallback language (optional)
+          <FieldHelp>
+            An alternative position that a reviewer may accept without creating
+            an exception.
+          </FieldHelp>
           <textarea
             className="min-h-20 rounded-lg border border-slate-300 px-3 py-2"
             onChange={(event) =>
@@ -209,9 +320,35 @@ function RuleForm({
             value={rule.legal_rationale}
           />
         </label>
-        <label className="grid gap-1.5 text-sm font-medium">
-          Reviewer guidance
+        <div className="grid gap-1.5 text-sm font-medium">
+          <span>
+            Reviewer guidance
+            <FieldHelp>
+              The practical instruction shown to a human reviewer when the
+              clause is found. Choose a template to start, then tailor the text
+              for this rule.
+            </FieldHelp>
+          </span>
+          <select
+            aria-label="Guidance template"
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            defaultValue=""
+            onChange={(event) => {
+              const template = reviewerGuidanceTemplates.find(
+                ({ value }) => value === event.target.value,
+              );
+              if (template) update("reviewer_guidance", template.guidance);
+            }}
+          >
+            <option value="">Choose a guidance template (optional)</option>
+            {reviewerGuidanceTemplates.map(({ label, value }) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
           <textarea
+            aria-label="Reviewer guidance"
             aria-describedby={`${id}-requirements`}
             aria-invalid={Boolean(error && !rule.reviewer_guidance.trim())}
             className="min-h-20 rounded-lg border border-slate-300 px-3 py-2"
@@ -221,16 +358,24 @@ function RuleForm({
             required
             value={rule.reviewer_guidance}
           />
-        </label>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
           <label className="grid gap-1.5 text-sm font-medium">
             Evaluation method
+            <FieldHelp>
+              Deterministic uses repeatable policy checks. Semantic assessment
+              uses cited LLM-assisted meaning comparison for equivalent or
+              paraphrased wording.
+            </FieldHelp>
             <select
+              aria-label="Evaluation method"
               className="rounded-lg border border-slate-300 px-3 py-2"
               onChange={(event) =>
                 update("evaluation_config", {
                   ...rule.evaluation_config,
                   method: event.target.value as "deterministic" | "semantic",
+                  semantic_assessment_permitted:
+                    event.target.value === "semantic",
                 })
               }
               value={rule.evaluation_config.method}
@@ -239,32 +384,35 @@ function RuleForm({
               <option value="semantic">Semantic assessment</option>
             </select>
           </label>
-          <label className="flex items-center gap-2 text-sm font-medium">
-            <input
-              checked={rule.evaluation_config.semantic_assessment_permitted}
-              onChange={(event) =>
-                update("evaluation_config", {
-                  ...rule.evaluation_config,
-                  semantic_assessment_permitted: event.target.checked,
-                })
-              }
-              type="checkbox"
-            />
-            Permit semantic assessment
-          </label>
+          <p className="self-end text-sm text-slate-600">
+            {rule.evaluation_config.method === "semantic"
+              ? "Semantic assessment is enabled for this rule."
+              : "Semantic assessment is disabled for this rule."}
+          </p>
         </div>
         <p className="text-sm text-slate-600" id={`${id}-requirements`}>
           Required policy fields are marked above. A draft cannot be published
           until every rule is complete.
         </p>
         {error ? <p role="alert">{error}</p> : null}
-        <button
-          className="w-fit rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
-          disabled={submitting}
-          type="submit"
-        >
-          {submitting ? submittingLabel : submitLabel}
-        </button>
+        <div className="flex items-center justify-between gap-3">
+          <button
+            className="w-fit rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={submitting || !canSubmit}
+            type="submit"
+          >
+            {submitting ? submittingLabel : submitLabel}
+          </button>
+          {onDelete || onDiscard ? (
+            <button
+              className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-800"
+              onClick={onDelete ?? onDiscard}
+              type="button"
+            >
+              {onDelete ? "Delete rule" : "Discard rule"}
+            </button>
+          ) : null}
+        </div>
       </form>
     </section>
   );
@@ -332,6 +480,7 @@ export function PlaybookEditor({
   const router = useRouter();
   const [message, setMessage] = useState<string>();
   const [publishing, setPublishing] = useState(false);
+  const [addingRule, setAddingRule] = useState(playbook.rules.length === 0);
   const isDraft = playbook.status === "draft";
   const canPublish =
     isDraft &&
@@ -360,6 +509,7 @@ export function PlaybookEditor({
     setMessage(undefined);
     try {
       await deleteRuleAction(rule.id);
+      if (playbook.rules.length === 1) setAddingRule(true);
       router.refresh();
     } catch (error) {
       setMessage(messageFor(error));
@@ -406,25 +556,18 @@ export function PlaybookEditor({
           </h2>
           {playbook.rules.map((rule) =>
             isDraft && canManage ? (
-              <div className="space-y-3" key={rule.id}>
-                <RuleForm
-                  heading={rule.id}
-                  initialRule={rule}
-                  onSubmit={async (updatedRule) => {
-                    await updateRuleAction?.(rule.id, updatedRule);
-                    router.refresh();
-                  }}
-                  submitLabel="Save rule"
-                  submittingLabel="Saving…"
-                />
-                <button
-                  className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-800"
-                  onClick={() => void deleteRule(rule)}
-                  type="button"
-                >
-                  Delete rule
-                </button>
-              </div>
+              <RuleForm
+                heading={rule.id}
+                initialRule={rule}
+                key={rule.id}
+                onDelete={() => void deleteRule(rule)}
+                onSubmit={async (updatedRule) => {
+                  await updateRuleAction?.(rule.id, updatedRule);
+                  router.refresh();
+                }}
+                submitLabel="Save rule"
+                submittingLabel="Saving…"
+              />
             ) : (
               <PublishedRule key={rule.id} rule={rule} />
             ),
@@ -436,18 +579,32 @@ export function PlaybookEditor({
         </p>
       )}
 
+      {isDraft && canManage && playbook.rules.length > 0 && !addingRule ? (
+        <button
+          className="mt-2 rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:border-slate-500"
+          onClick={() => setAddingRule(true)}
+          type="button"
+        >
+          Add rule
+        </button>
+      ) : null}
+
       {isDraft && canManage ? (
         <>
-          <RuleForm
-            heading="Add rule"
-            initialRule={emptyRule}
-            onSubmit={async (rule) => {
-              await addRuleAction?.(rule);
-              router.refresh();
-            }}
-            submitLabel="Add rule"
-            submittingLabel="Adding…"
-          />
+          {addingRule ? (
+            <RuleForm
+              heading="Add rule"
+              initialRule={emptyRule}
+              onDiscard={() => setAddingRule(false)}
+              onSubmit={async (rule) => {
+                await addRuleAction?.(rule);
+                setAddingRule(false);
+                router.refresh();
+              }}
+              submitLabel="Add rule"
+              submittingLabel="Adding…"
+            />
+          ) : null}
           <section className="rounded-2xl border border-slate-200 bg-white p-5">
             <h2 className="text-xl font-semibold">Publish draft</h2>
             <p className="mt-2 text-sm text-slate-600">

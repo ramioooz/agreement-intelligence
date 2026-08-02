@@ -191,6 +191,39 @@ def test_published_playbook_rule_cannot_be_mutated(
     assert mutation.json() == {"detail": {"code": "published_playbook_immutable"}}
 
 
+def test_platform_admin_can_update_a_draft_rule_with_evaluation_configuration(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    client = client_for_session(administrator_id)
+    created = client.post(
+        "/playbooks",
+        params=_scope_query(organization, workspace),
+        json=_playbook_payload(),
+    ).json()
+
+    response = client.put(
+        f"/playbooks/{created['playbook_id']}/versions/{created['version']}/rules/"
+        f"{created['rules'][0]['id']}",
+        params=_scope_query(organization, workspace),
+        json=_rule_payload(
+            title="Updated limitation of liability",
+            evaluation_config={
+                "method": "semantic",
+                "semantic_assessment_permitted": True,
+            },
+        ),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["rules"][0]["title"] == "Updated limitation of liability"
+    assert response.json()["rules"][0]["evaluation_config"] == {
+        "method": "semantic",
+        "semantic_assessment_permitted": True,
+    }
+
+
 def test_publication_rejects_duplicate_clause_types_and_missing_policy_content(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],
