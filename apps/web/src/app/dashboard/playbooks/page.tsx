@@ -7,7 +7,10 @@ import { FieldHelp } from "@/components/field-help";
 import { PlaybookVersionList } from "@/components/playbook-version-list";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
+  archivePlaybook,
   createPlaybook,
+  deletePlaybook,
+  deletePlaybookVersion,
   listPlaybooks,
   type PlaybookVersion,
 } from "@/lib/playbook-api";
@@ -102,6 +105,43 @@ export default async function PlaybooksPage() {
     );
   }
 
+  async function archive(formData: FormData) {
+    "use server";
+
+    await archivePlaybook({
+      scope: configuredScope,
+      token: await getKeycloakAccessToken(await headers()),
+      playbookId: String(formData.get("playbookId") ?? ""),
+      reason: String(formData.get("reason") ?? "").trim() || undefined,
+    });
+    redirect("/dashboard/playbooks");
+  }
+
+  async function removeDraftVersion(formData: FormData) {
+    "use server";
+
+    await deletePlaybookVersion({
+      scope: configuredScope,
+      token: await getKeycloakAccessToken(await headers()),
+      playbookId: String(formData.get("playbookId") ?? ""),
+      version: Number(formData.get("version")),
+      reason: String(formData.get("reason") ?? "").trim() || undefined,
+    });
+    redirect("/dashboard/playbooks");
+  }
+
+  async function removePlaybook(formData: FormData) {
+    "use server";
+
+    await deletePlaybook({
+      scope: configuredScope,
+      token: await getKeycloakAccessToken(await headers()),
+      playbookId: String(formData.get("playbookId") ?? ""),
+      reason: String(formData.get("reason") ?? "").trim() || undefined,
+    });
+    redirect("/dashboard/playbooks");
+  }
+
   return (
     <main className="mx-auto max-w-7xl space-y-8 px-6 py-10">
       <Link
@@ -110,7 +150,13 @@ export default async function PlaybooksPage() {
       >
         Back to dashboard
       </Link>
-      <PlaybookVersionList playbooks={playbooks} />
+      <PlaybookVersionList
+        archiveAction={archive}
+        canManage={canManage}
+        deleteDraftVersionAction={removeDraftVersion}
+        deletePlaybookAction={removePlaybook}
+        playbooks={playbooks}
+      />
       {canManage ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="text-xl font-semibold">Create playbook draft</h2>
