@@ -85,6 +85,14 @@ export function AgreementDetail({
         <p className="mt-2 text-slate-600">
           Status: {agreement.status} · Processing: {agreement.processing_state}
         </p>
+        {analysis ? (
+          <Link
+            className="mt-4 inline-flex rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+            href={`/dashboard/agreements/${agreement.id}/review`}
+          >
+            Review playbook findings
+          </Link>
+        ) : null}
       </header>
       <div className="grid gap-6 lg:grid-cols-[1.4fr_0.8fr]">
         <section
