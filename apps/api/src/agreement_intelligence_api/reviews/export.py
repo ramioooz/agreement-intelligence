@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from os import environ
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unicodedata import bidirectional
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
 from fpdf import FPDF
+from pymupdf_fonts import fontbuffers  # type: ignore[import-untyped]
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
@@ -203,15 +207,16 @@ def _finding_lines(
 
 
 def _render_pdf(lines: list[str]) -> bytes:
-    pdf = FPDF(format="letter", unit="pt")
-    pdf.set_auto_page_break(auto=True, margin=36)
-    pdf.add_page()
-    pdf.add_font(family="ReviewReport", fname=str(_unicode_font_path()))
-    pdf.set_font(family="ReviewReport", size=10)
-    pdf.set_text_shaping(True)
-    for line in (part for source_line in lines for part in _directional_lines(source_line)):
-        pdf.multi_cell(w=0, h=14, text=line, new_x="LMARGIN", new_y="NEXT")
-    return bytes(pdf.output())
+    with _unicode_font_path() as font_path:
+        pdf = FPDF(format="letter", unit="pt")
+        pdf.set_auto_page_break(auto=True, margin=36)
+        pdf.add_page()
+        pdf.add_font(family="ReviewReport", fname=str(font_path))
+        pdf.set_font(family="ReviewReport", size=10)
+        pdf.set_text_shaping(True)
+        for line in (part for source_line in lines for part in _directional_lines(source_line)):
+            pdf.multi_cell(w=0, h=14, text=line, new_x="LMARGIN", new_y="NEXT")
+        return bytes(pdf.output())
 
 
 def _directional_lines(value: str) -> list[str]:
@@ -228,14 +233,15 @@ def _directional_lines(value: str) -> list[str]:
     return [value[:first_rtl].rstrip(), value[first_rtl:].lstrip()]
 
 
-def _unicode_font_path() -> Path:
+@contextmanager
+def _unicode_font_path() -> Iterator[Path]:
     configured = environ.get("REVIEW_REPORT_FONT_PATH")
-    candidates = (
-        *([Path(configured)] if configured else []),
-        Path("/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf"),
-        Path("/System/Library/Fonts/Supplemental/Arial Unicode.ttf"),
-    )
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise RuntimeError("No Unicode review-report font is installed; set REVIEW_REPORT_FONT_PATH")
+    if configured:
+        configured_path = Path(configured)
+        if configured_path.is_file():
+            yield configured_path
+            return
+    with TemporaryDirectory(prefix="review-report-font-") as directory:
+        packaged_font_path = Path(directory) / "FiraGO-Regular.ttf"
+        packaged_font_path.write_bytes(fontbuffers["figo"]())
+        yield packaged_font_path

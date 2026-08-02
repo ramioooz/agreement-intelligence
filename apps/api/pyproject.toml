@@ -8,6 +8,7 @@ dependencies = [
   "agreement-intelligence-worker>=0.1.0",
   "fastapi==0.140.0",
   "fpdf2==2.8.7",
+  "pymupdf-fonts==1.0.5",
   "psycopg[binary]==3.2.9",
   "pydantic==2.13.4",
   "python-multipart==0.0.32",

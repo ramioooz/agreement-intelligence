@@ -4,6 +4,7 @@ from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -19,6 +20,7 @@ from agreement_intelligence_api.playbooks.models import (
     PlaybookRuleRecord,
     PlaybookVersionRecord,
 )
+from agreement_intelligence_api.reviews.export import _render_pdf
 from agreement_intelligence_api.reviews.models import (
     PlaybookEvaluationRecord,
     PlaybookFindingRecord,
@@ -260,6 +262,34 @@ def test_database_rejects_decision_whose_workspace_does_not_match_finding(
     with pytest.raises(IntegrityError):
         session.flush()
     session.rollback()
+
+
+def test_pdf_renderer_uses_packaged_unicode_font_without_system_fonts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_is_file = Path.is_file
+    real_exists = Path.exists
+
+    def is_packaged_temporary_font(path: Path) -> bool:
+        return any(part.startswith("review-report-font-") for part in path.parts)
+
+    monkeypatch.delenv("REVIEW_REPORT_FONT_PATH", raising=False)
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: is_packaged_temporary_font(path) and real_is_file(path),
+    )
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda path: is_packaged_temporary_font(path) and real_exists(path),
+    )
+
+    content = _render_pdf(["Agreement: Supplier agreement – اتفاقية المورد"])
+    extracted_text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(content)).pages)
+
+    assert "Supplier agreement" in extracted_text
+    assert "اتفاقية المورد" in extracted_text
 
 
 @dataclass(frozen=True)
