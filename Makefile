@@ -97,19 +97,19 @@ stack-reset: check-container-toolchain
 
 format:
 	pnpm format
-	uv run ruff format apps/api apps/worker
+	uv run ruff format apps/api apps/mcp apps/worker
 
 format-check:
 	pnpm format:check
-	uv run ruff format --check apps/api apps/worker
+	uv run ruff format --check apps/api apps/mcp apps/worker
 
 lint:
 	pnpm --filter @agreement-intelligence/web lint
-	uv run ruff check apps/api apps/worker
+	uv run ruff check apps/api apps/mcp apps/worker
 
 typecheck:
 	pnpm --filter @agreement-intelligence/web typecheck
-	uv run mypy apps/api/src apps/api/tests apps/worker/src apps/worker/tests
+	uv run mypy apps/api/src apps/api/tests apps/mcp/src apps/mcp/tests apps/worker/src apps/worker/tests
 
 test:
 	pnpm --filter @agreement-intelligence/web test
@@ -120,6 +120,7 @@ test:
 build:
 	pnpm --filter @agreement-intelligence/web build
 	uv build --package agreement-intelligence-api --out-dir dist/api
+	uv build --package agreement-intelligence-mcp --out-dir dist/mcp
 	uv build --package agreement-intelligence-worker --out-dir dist/worker
 
 check:
