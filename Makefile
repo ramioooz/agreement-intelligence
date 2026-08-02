@@ -129,5 +129,8 @@ check:
 	$(MAKE) test
 	$(MAKE) build
 
+terraform-check:
+	./tests/infra/test-terraform-contract.sh
+
 provider-smoke:
 	uv run --env-file "$(STACK_ENV_FILE)" python -m agreement_intelligence_worker.provider_smoke
