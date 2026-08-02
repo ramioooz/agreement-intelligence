@@ -123,7 +123,7 @@ def archive_playbook(
     service: PlaybookServiceDependency,
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
-    reason: str = Query(min_length=1, max_length=1000),
+    reason: str | None = Query(default=None, min_length=1, max_length=1000),
 ) -> PlaybookVersionResponse:
     return service.archive(
         principal,
@@ -142,7 +142,7 @@ def delete_playbook(
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
     confirm: bool = False,
-    reason: str = Query(min_length=1, max_length=1000),
+    reason: str | None = Query(default=None, min_length=1, max_length=1000),
 ) -> Response:
     service.delete_playbook(
         principal,
@@ -257,6 +257,7 @@ def delete_playbook_version(
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
     confirm: bool = False,
+    reason: str | None = Query(default=None, min_length=1, max_length=1000),
 ) -> Response:
     service.delete_version(
         principal,
@@ -265,5 +266,6 @@ def delete_playbook_version(
         playbook_id=playbook_id,
         version_number=version_number,
         confirmed=confirm,
+        reason=reason,
     )
     return Response(status_code=204)

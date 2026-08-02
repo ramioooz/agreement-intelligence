@@ -344,6 +344,59 @@ def test_platform_admin_archives_a_published_playbook_and_retains_its_version(
     assert history[0]["audit_events"][-1]["action"] == "archived"
 
 
+def test_platform_admin_can_archive_a_published_playbook_without_a_reason(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    client = client_for_session(administrator_id)
+    created = client.post(
+        "/playbooks", params=_scope_query(organization, workspace), json=_playbook_payload()
+    ).json()
+    client.post(
+        f"/playbooks/{created['playbook_id']}/versions/1/publish",
+        params=_scope_query(organization, workspace),
+    )
+
+    archived = client.post(
+        f"/playbooks/{created['playbook_id']}/archive",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert archived.status_code == 200
+    assert archived.json()["status"] == "archived"
+    assert "reason" not in archived.json()["audit_events"][-1]["metadata"]
+
+
+def test_archive_requires_a_pending_draft_to_be_deleted_first(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    client = client_for_session(administrator_id)
+    created = client.post(
+        "/playbooks", params=_scope_query(organization, workspace), json=_playbook_payload()
+    ).json()
+    client.post(
+        f"/playbooks/{created['playbook_id']}/versions/1/publish",
+        params=_scope_query(organization, workspace),
+    )
+    draft = client.post(
+        f"/playbooks/{created['playbook_id']}/versions",
+        params=_scope_query(organization, workspace),
+        json={"source_version": 1},
+    )
+    assert draft.status_code == 201
+
+    archived = client.post(
+        f"/playbooks/{created['playbook_id']}/archive",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert archived.status_code == 409
+    assert archived.json() == {"detail": {"code": "draft_playbook_version_must_be_deleted"}}
+
+
 def test_publication_rejects_same_priority_routing_scope(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],

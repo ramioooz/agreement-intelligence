@@ -283,11 +283,13 @@ export async function archivePlaybook({
   fetcher = fetch,
 }: ScopedOptions & {
   playbookId: string;
-  reason: string;
+  reason?: string;
 }): Promise<PlaybookVersion> {
   return request<PlaybookVersion>(
     await fetcher(
-      endpoint(baseUrl, `/playbooks/${playbookId}/archive`, scope, { reason }),
+      endpoint(baseUrl, `/playbooks/${playbookId}/archive`, scope, {
+        ...(reason ? { reason } : {}),
+      }),
       { method: "POST", headers: headers(token) },
     ),
   );
@@ -346,11 +348,34 @@ export async function deletePlaybook({
   playbookId,
   reason,
   fetcher = fetch,
-}: ScopedOptions & { playbookId: string; reason: string }): Promise<void> {
+}: ScopedOptions & { playbookId: string; reason?: string }): Promise<void> {
   const response = await fetcher(
     endpoint(baseUrl, `/playbooks/${playbookId}`, scope, {
       confirm: "true",
-      reason,
+      ...(reason ? { reason } : {}),
+    }),
+    { method: "DELETE", headers: headers(token) },
+  );
+  if (!response.ok) await request<never>(response);
+}
+
+export async function deletePlaybookVersion({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  playbookId,
+  version,
+  reason,
+  fetcher = fetch,
+}: ScopedOptions & {
+  playbookId: string;
+  version: number;
+  reason?: string;
+}): Promise<void> {
+  const response = await fetcher(
+    endpoint(baseUrl, `/playbooks/${playbookId}/versions/${version}`, scope, {
+      confirm: "true",
+      ...(reason ? { reason } : {}),
     }),
     { method: "DELETE", headers: headers(token) },
   );

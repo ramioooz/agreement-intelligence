@@ -12,6 +12,7 @@ test("a platform administrator publishes an immutable client-agreement playbook"
   page,
 }) => {
   const priority = String(Date.now() % 1_000);
+  const name = `Client agreement ${Date.now()}`;
 
   await page.goto("/dashboard/playbooks");
   await page.getByRole("button", { name: "Continue with Keycloak" }).click();
@@ -25,7 +26,7 @@ test("a platform administrator publishes an immutable client-agreement playbook"
   await expect(
     page.getByRole("heading", { name: "Create playbook draft" }),
   ).toBeVisible();
-  await page.getByLabel("Playbook name").fill("Client Agreement");
+  await page.getByLabel("Playbook name").fill(name);
   await page.getByLabel("Agreement family").selectOption("client_agreement");
   await page.getByLabel("Routing priority").fill(priority);
   await page.getByRole("button", { name: "Create draft" }).click();
@@ -51,10 +52,32 @@ test("a platform administrator publishes an immutable client-agreement playbook"
   await expect(
     page.getByText("Published playbooks are immutable policy records."),
   ).toBeVisible();
+  await page.getByRole("button", { name: "Create next draft" }).click();
+  await expect(page.getByText(/^Draft · Version 2$/)).toBeVisible();
+  await page.getByRole("link", { name: "Back to playbooks" }).click();
+
+  const card = page.getByRole("article", { name: name });
+  await expect(
+    card.getByRole("button", { name: "Delete draft version 2" }),
+  ).toBeVisible();
+  await card.getByRole("button", { name: "Delete draft version 2" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Delete draft version 2?" }),
+  ).toBeVisible();
   await page
-    .getByLabel("Archive reason")
-    .fill("Automated browser test cleanup.");
-  await page.getByRole("button", { name: "Archive playbook" }).click();
+    .getByRole("dialog", { name: "Delete draft version 2?" })
+    .getByRole("button", { name: "Delete draft version" })
+    .click();
+  const archive = card.getByRole("button", { name: "Archive playbook" });
+  await expect(archive).toBeVisible();
+  await archive.click();
+  await expect(
+    page.getByRole("heading", { name: "Archive playbook?" }),
+  ).toBeVisible();
+  await page
+    .getByRole("dialog", { name: "Archive playbook?" })
+    .getByRole("button", { name: "Archive playbook" })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Legal playbooks" }),
   ).toBeVisible();
@@ -80,11 +103,16 @@ test("a platform administrator permanently deletes an unused draft playbook", as
     .selectOption("liquidity_provider_agreement");
   await page.getByRole("button", { name: "Create draft" }).click();
 
+  await page.getByRole("link", { name: "Back to playbooks" }).click();
+  const card = page.getByRole("article", { name });
+  await card.getByRole("button", { name: "Delete playbook" }).click();
   await expect(
-    page.getByRole("heading", { name: "Delete draft playbook" }),
+    page.getByRole("heading", { name: "Delete draft playbook?" }),
   ).toBeVisible();
-  await page.getByLabel("Deletion reason").fill("Automated browser cleanup.");
-  await page.getByRole("button", { name: "Delete draft" }).click();
+  await page
+    .getByRole("dialog", { name: "Delete draft playbook?" })
+    .getByRole("button", { name: "Delete playbook" })
+    .click();
 
   await expect(page).toHaveURL(/\/dashboard\/playbooks$/);
   await expect(

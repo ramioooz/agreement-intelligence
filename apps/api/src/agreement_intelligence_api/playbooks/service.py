@@ -411,6 +411,7 @@ class PlaybookService:
         playbook_id: UUID,
         version_number: int,
         confirmed: bool,
+        reason: str | None,
     ) -> None:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
         if not confirmed:
@@ -424,6 +425,7 @@ class PlaybookService:
             version=version,
             actor_id=principal.user_id,
             action="draft_deleted",
+            metadata=_reason_metadata(reason),
         )
         self._session.delete(version)
         self._session.commit()
@@ -435,10 +437,21 @@ class PlaybookService:
         organization_id: UUID,
         workspace_id: UUID,
         playbook_id: UUID,
-        reason: str,
+        reason: str | None,
     ) -> PlaybookVersionResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
         playbook = self._playbook_for_scope(playbook_id, organization_id, workspace_id)
+        has_draft = self._session.scalar(
+            select(PlaybookVersionRecord.id)
+            .where(PlaybookVersionRecord.playbook_id == playbook.id)
+            .where(PlaybookVersionRecord.status == "draft")
+            .limit(1)
+        )
+        if has_draft is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "draft_playbook_version_must_be_deleted"},
+            )
         if playbook.archived_at is None:
             playbook.archived_at = datetime.now(UTC)
             versions = list(playbook.versions)
@@ -448,7 +461,7 @@ class PlaybookService:
                     version=version,
                     actor_id=principal.user_id,
                     action="archived",
-                    metadata={"reason": reason},
+                    metadata=_reason_metadata(reason),
                 )
             self._session.flush()
             version = max(versions, key=lambda item: item.version)
@@ -472,7 +485,7 @@ class PlaybookService:
         workspace_id: UUID,
         playbook_id: UUID,
         confirmed: bool,
-        reason: str,
+        reason: str | None,
     ) -> None:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
         if not confirmed:
@@ -497,7 +510,7 @@ class PlaybookService:
                 version=version,
                 actor_id=principal.user_id,
                 action="draft_deleted",
-                metadata={"reason": reason},
+                metadata=_reason_metadata(reason),
             )
         version_ids = [version.id for version in versions]
         if version_ids:
@@ -742,6 +755,10 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def _reason_metadata(reason: str | None) -> dict[str, object]:
+    return {"reason": reason} if reason else {}
 
 
 def _required_aware_utc(value: datetime | None) -> datetime:

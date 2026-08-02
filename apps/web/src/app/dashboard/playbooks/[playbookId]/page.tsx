@@ -12,6 +12,7 @@ import {
   archivePlaybook,
   createPlaybookVersion,
   deletePlaybook,
+  deletePlaybookVersion,
   deletePlaybookRule,
   listPlaybooks,
   publishPlaybookVersion,
@@ -170,27 +171,36 @@ export default async function PlaybookDetailPage({
   async function archive(formData: FormData) {
     "use server";
 
-    const reason = String(formData.get("reason") ?? "").trim();
-    if (!reason) return;
     await archivePlaybook({
       scope: configuredScope,
       token: await requirePlaybookAccessToken(playbookId),
-      playbookId,
-      reason,
+      playbookId: String(formData.get("playbookId") ?? playbookId),
+      reason: String(formData.get("reason") ?? "").trim() || undefined,
     });
     redirect("/dashboard/playbooks");
   }
 
-  async function removeDraft(formData: FormData) {
+  async function removePlaybook(formData: FormData) {
     "use server";
 
-    const reason = String(formData.get("reason") ?? "").trim();
-    if (!reason) return;
     await deletePlaybook({
       scope: configuredScope,
       token: await requirePlaybookAccessToken(playbookId),
-      playbookId,
-      reason,
+      playbookId: String(formData.get("playbookId") ?? playbookId),
+      reason: String(formData.get("reason") ?? "").trim() || undefined,
+    });
+    redirect("/dashboard/playbooks");
+  }
+
+  async function removeDraftVersion(formData: FormData) {
+    "use server";
+
+    await deletePlaybookVersion({
+      scope: configuredScope,
+      token: await requirePlaybookAccessToken(playbookId),
+      playbookId: String(formData.get("playbookId") ?? playbookId),
+      version: Number(formData.get("version")),
+      reason: String(formData.get("reason") ?? "").trim() || undefined,
     });
     redirect("/dashboard/playbooks");
   }
@@ -204,7 +214,11 @@ export default async function PlaybookDetailPage({
         Back to playbooks
       </Link>
       <PlaybookVersionList
+        archiveAction={archive}
+        canManage={canManage}
         currentPlaybookId={playbookId}
+        deleteDraftVersionAction={removeDraftVersion}
+        deletePlaybookAction={removePlaybook}
         playbooks={versions}
       />
       <PlaybookEditor
@@ -225,55 +239,9 @@ export default async function PlaybookDetailPage({
               Create next draft
             </button>
           </form>
-          <form action={archive} className="grid gap-3 md:grid-cols-[1fr_auto]">
-            <label className="grid gap-1.5 text-sm font-medium">
-              Archive reason
-              <input
-                className="rounded-lg border border-slate-300 px-3 py-2"
-                name="reason"
-                required
-              />
-            </label>
-            <button
-              className="self-end rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
-              type="submit"
-            >
-              Archive playbook
-            </button>
-          </form>
           <p className="text-sm text-slate-600">
-            Archiving stops future routing but retains this version for prior
-            reviews and reports.
+            Lifecycle actions are available in the playbook list above.
           </p>
-        </section>
-      ) : canManage &&
-        playbook.status === "draft" &&
-        !versions.some((version) => version.status === "published") ? (
-        <section className="rounded-2xl border border-rose-200 bg-rose-50 p-5">
-          <h2 className="text-xl font-semibold">Delete draft playbook</h2>
-          <p className="mt-1 text-sm text-slate-700">
-            Draft playbooks are permanently removed. Published policies must be
-            archived instead.
-          </p>
-          <form
-            action={removeDraft}
-            className="mt-4 grid gap-3 md:grid-cols-[1fr_auto]"
-          >
-            <label className="grid gap-1.5 text-sm font-medium">
-              Deletion reason
-              <input
-                className="rounded-lg border border-rose-300 bg-white px-3 py-2"
-                name="reason"
-                required
-              />
-            </label>
-            <button
-              className="self-end rounded-full bg-rose-700 px-4 py-2 text-sm font-semibold text-white"
-              type="submit"
-            >
-              Delete draft
-            </button>
-          </form>
         </section>
       ) : null}
     </main>
