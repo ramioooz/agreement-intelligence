@@ -14,6 +14,11 @@ import {
 } from "@/lib/agreement-api";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
 import {
+  listEligiblePlaybooks,
+  recordPlaybookOverride,
+  type PlaybookVersion,
+} from "@/lib/playbook-api";
+import {
   getProcessingJob,
   requeueProcessingJob,
   retryProcessingJob,
@@ -74,6 +79,21 @@ async function loadProcessingJob(
   }
 }
 
+async function loadEligiblePlaybooks(
+  scope: AgreementScope,
+  agreementId: string,
+): Promise<PlaybookVersion[] | undefined> {
+  try {
+    return await listEligiblePlaybooks({
+      scope,
+      agreementId,
+      token: await getKeycloakAccessToken(await headers()),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
 export default async function AgreementDetailPage({
   params,
 }: {
@@ -91,6 +111,7 @@ export default async function AgreementDetailPage({
     ? await loadProcessingJob(scope, agreement.id, jobId)
     : undefined;
   const analysis = await loadDocumentAnalysis(scope, agreement.id);
+  const eligiblePlaybooks = await loadEligiblePlaybooks(scope, agreement.id);
   const retryScope = scope;
   const retryAgreementId = agreement.id;
 
@@ -128,6 +149,22 @@ export default async function AgreementDetailPage({
     revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
   }
 
+  async function overridePlaybookAction(formData: FormData) {
+    "use server";
+
+    const playbookVersionId = String(formData.get("playbookVersionId") ?? "");
+    const reason = String(formData.get("reason") ?? "").trim();
+    if (!playbookVersionId || !reason) return;
+    await recordPlaybookOverride({
+      scope: retryScope,
+      agreementId: retryAgreementId,
+      playbookVersionId,
+      reason,
+      token: await getKeycloakAccessToken(await headers()),
+    });
+    revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
       <AgreementDetail
@@ -147,6 +184,49 @@ export default async function AgreementDetailPage({
           !processingJob && file ? startAnalysisAction : undefined
         }
       />
+      {eligiblePlaybooks && eligiblePlaybooks.length > 0 ? (
+        <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5">
+          <h2 className="text-xl font-semibold">Override review playbook</h2>
+          <p className="mt-1 text-sm text-slate-600">
+            Use only for an exceptional agreement. The selected published
+            version and your reason are immutable audit evidence.
+          </p>
+          <form
+            action={overridePlaybookAction}
+            className="mt-4 grid gap-4 md:grid-cols-2"
+          >
+            <label className="grid gap-1.5 text-sm font-medium">
+              Eligible playbook
+              <select
+                className="rounded-lg border border-slate-300 px-3 py-2"
+                name="playbookVersionId"
+                required
+              >
+                {eligiblePlaybooks.map((playbook) => (
+                  <option key={playbook.id} value={playbook.id}>
+                    {playbook.name} · Version {playbook.version} ·{" "}
+                    {playbook.jurisdiction}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="grid gap-1.5 text-sm font-medium">
+              Override reason
+              <input
+                className="rounded-lg border border-slate-300 px-3 py-2"
+                name="reason"
+                required
+              />
+            </label>
+            <button
+              className="w-fit rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+              type="submit"
+            >
+              Record override
+            </button>
+          </form>
+        </section>
+      ) : null}
     </main>
   );
 }

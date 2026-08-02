@@ -4,7 +4,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
-PlaybookStatus = Literal["draft", "published"]
+PlaybookStatus = Literal["draft", "published", "archived"]
+DocumentDirection = Literal["any", "first_party", "counterparty"]
 PolicyType = Literal["required", "prohibited", "preferred"]
 Severity = Literal["low", "medium", "high", "critical"]
 EvaluationMethod = Literal["deterministic", "semantic"]
@@ -50,6 +51,9 @@ class CreatePlaybookRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=256)
     agreement_family: str = Field(min_length=1, max_length=100)
+    document_direction: DocumentDirection = "any"
+    jurisdiction: str = Field(default="any", min_length=2, max_length=16)
+    priority: int = Field(default=100, ge=0, le=1000)
     rules: list[PlaybookRuleWrite] = Field(default_factory=list)
 
 
@@ -57,6 +61,14 @@ class CreatePlaybookVersionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     source_version: int | None = Field(default=None, ge=1)
+
+
+class PlaybookOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agreement_id: UUID
+    playbook_version_id: UUID
+    reason: str = Field(min_length=1, max_length=1000)
 
 
 class PlaybookRuleResponse(BaseModel):
@@ -88,7 +100,11 @@ class PlaybookVersionResponse(BaseModel):
     version: int
     status: PlaybookStatus
     agreement_family: str
+    document_direction: DocumentDirection
+    jurisdiction: str
+    priority: int
     rules: list[PlaybookRuleResponse]
     audit_events: list[PlaybookAuditEventResponse]
     created_at: datetime
     published_at: datetime | None
+    archived_at: datetime | None

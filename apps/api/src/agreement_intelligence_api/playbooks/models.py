@@ -39,7 +39,11 @@ class LegalPlaybookRecord(Base):
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     name: Mapped[str] = mapped_column(String(256))
     agreement_family: Mapped[str] = mapped_column(String(100), index=True)
+    document_direction: Mapped[str] = mapped_column(String(32), default="any")
+    jurisdiction: Mapped[str] = mapped_column(String(16), default="any")
+    priority: Mapped[int] = mapped_column(Integer, default=100)
     created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     versions: Mapped[list["PlaybookVersionRecord"]] = relationship(
@@ -154,6 +158,7 @@ class PlaybookAuditEventRecord(Base):
     playbook_rule_id: Mapped[UUID | None] = mapped_column(
         Uuid(as_uuid=True), nullable=True, index=True
     )
+    agreement_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     action: Mapped[str] = mapped_column(String(64))
     actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)

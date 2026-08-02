@@ -17,10 +17,14 @@ const draft: PlaybookVersion = {
   version: 1,
   status: "draft",
   agreement_family: "client_agreement",
+  document_direction: "any",
+  jurisdiction: "any",
+  priority: 100,
   rules: [],
   audit_events: [],
   created_at: "2026-08-01T09:00:00Z",
   published_at: null,
+  archived_at: null,
 };
 
 const published: PlaybookVersion = {

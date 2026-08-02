@@ -26,7 +26,7 @@ export function PlaybookVersionList({
           Legal playbooks
         </h1>
         <p className="mt-2 text-slate-600">
-          Versioned policy rules for agreement-family review.
+          Versioned policy rules with explicit routing scope.
         </p>
       </div>
       {grouped.size === 0 ? (
@@ -49,6 +49,11 @@ export function PlaybookVersionList({
                   {newest.agreement_family.replaceAll("_", " ")}
                 </p>
                 <h2 className="mt-1 text-xl font-semibold">{newest.name}</h2>
+                <p className="mt-2 text-sm text-slate-600">
+                  Direction: {newest.document_direction.replaceAll("_", " ")} ·
+                  Jurisdiction: {newest.jurisdiction} · Priority:{" "}
+                  {newest.priority}
+                </p>
                 <ol
                   aria-label={`${newest.name} versions`}
                   className="mt-4 space-y-2"
@@ -75,12 +80,16 @@ export function PlaybookVersionList({
                           className={
                             version.status === "published"
                               ? "rounded-full bg-emerald-100 px-2.5 py-1 text-xs font-semibold text-emerald-900"
-                              : "rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900"
+                              : version.status === "archived"
+                                ? "rounded-full bg-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700"
+                                : "rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-900"
                           }
                         >
                           {version.status === "published"
                             ? "Published"
-                            : "Draft"}
+                            : version.status === "archived"
+                              ? "Archived"
+                              : "Draft"}
                         </span>
                       </li>
                     ))}

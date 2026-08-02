@@ -55,6 +55,26 @@ export function AgreementUploadForm({
           />
         </label>
         <label className="grid gap-1.5 text-sm font-medium">
+          Document direction
+          <select
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            defaultValue="any"
+            name="documentDirection"
+          >
+            <option value="any">Not specified</option>
+            <option value="first_party">Our paper</option>
+            <option value="counterparty">Counterparty paper</option>
+          </select>
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Jurisdiction
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            defaultValue="any"
+            name="jurisdiction"
+          />
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
           Original agreement file
           <input
             accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"

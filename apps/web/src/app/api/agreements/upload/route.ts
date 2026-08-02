@@ -25,6 +25,8 @@ export async function POST(request: NextRequest) {
   const form = await request.formData();
   const title = form.get("title");
   const agreementType = form.get("agreementType");
+  const documentDirection = form.get("documentDirection");
+  const jurisdiction = form.get("jurisdiction");
   const file = form.get("file");
   if (
     typeof title !== "string" ||
@@ -56,7 +58,15 @@ export async function POST(request: NextRequest) {
           },
         ],
         processing_state: "pending",
-        audit_metadata: { source: "repository-upload" },
+        audit_metadata: {
+          source: "repository-upload",
+          document_direction:
+            typeof documentDirection === "string" ? documentDirection : "any",
+          jurisdiction:
+            typeof jurisdiction === "string" && jurisdiction.trim()
+              ? jurisdiction.trim().toUpperCase()
+              : "any",
+        },
       },
     });
     const job = await submitProcessingJob({

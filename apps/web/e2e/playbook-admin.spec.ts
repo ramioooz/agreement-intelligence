@@ -48,4 +48,11 @@ test("a platform administrator publishes an immutable client-agreement playbook"
   await expect(
     page.getByText("Published playbooks are immutable policy records."),
   ).toBeVisible();
+  await page
+    .getByLabel("Archive reason")
+    .fill("Automated browser test cleanup.");
+  await page.getByRole("button", { name: "Archive playbook" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Legal playbooks" }),
+  ).toBeVisible();
 });

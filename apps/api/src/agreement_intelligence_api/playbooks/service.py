@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -21,7 +22,9 @@ from agreement_intelligence_api.playbooks.models import (
 from agreement_intelligence_api.playbooks.schemas import (
     CreatePlaybookRequest,
     CreatePlaybookVersionRequest,
+    DocumentDirection,
     PlaybookAuditEventResponse,
+    PlaybookOverrideRequest,
     PlaybookRuleResponse,
     PlaybookRuleWrite,
     PlaybookStatus,
@@ -52,6 +55,9 @@ class PlaybookService:
             workspace_id=workspace_id,
             name=request.name,
             agreement_family=request.agreement_family,
+            document_direction=request.document_direction,
+            jurisdiction=request.jurisdiction.upper(),
+            priority=request.priority,
             created_by=principal.user_id,
         )
         self._session.add(playbook)
@@ -159,6 +165,84 @@ class PlaybookService:
                     ) from error
                 raise
         raise RuntimeError("playbook version creation retry loop exhausted")
+
+    def override_for_agreement(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        request: PlaybookOverrideRequest,
+    ) -> PlaybookVersionResponse:
+        self._authorize_override(
+            principal, organization_id=organization_id, workspace_id=workspace_id
+        )
+        agreement = self._session.scalar(
+            select(AgreementRecord)
+            .where(AgreementRecord.id == request.agreement_id)
+            .where(AgreementRecord.organization_id == organization_id)
+            .where(AgreementRecord.workspace_id == workspace_id)
+        )
+        if agreement is None:
+            hide_resource()
+        version = self._session.scalar(
+            select(PlaybookVersionRecord)
+            .options(selectinload(PlaybookVersionRecord.playbook))
+            .where(PlaybookVersionRecord.id == request.playbook_version_id)
+            .where(PlaybookVersionRecord.organization_id == organization_id)
+            .where(PlaybookVersionRecord.workspace_id == workspace_id)
+            .where(PlaybookVersionRecord.status == "published")
+        )
+        if version is None or version.playbook.archived_at is not None:
+            hide_resource()
+        if version.playbook.agreement_family != agreement.agreement_type:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                detail={"code": "playbook_override_family_mismatch"},
+            )
+        self._audit(
+            playbook=version.playbook,
+            version=version,
+            actor_id=principal.user_id,
+            action="agreement_override_recorded",
+            agreement_id=agreement.id,
+            metadata={"reason": request.reason},
+        )
+        response = self._response(version, version.playbook)
+        self._session.commit()
+        return response
+
+    def eligible_for_agreement(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        agreement_id: UUID,
+    ) -> list[PlaybookVersionResponse]:
+        self._authorize_override(
+            principal, organization_id=organization_id, workspace_id=workspace_id
+        )
+        agreement = self._session.scalar(
+            select(AgreementRecord)
+            .where(AgreementRecord.id == agreement_id)
+            .where(AgreementRecord.organization_id == organization_id)
+            .where(AgreementRecord.workspace_id == workspace_id)
+        )
+        if agreement is None:
+            hide_resource()
+        versions = self._session.scalars(
+            select(PlaybookVersionRecord)
+            .join(PlaybookVersionRecord.playbook)
+            .options(selectinload(PlaybookVersionRecord.rules))
+            .where(PlaybookVersionRecord.organization_id == organization_id)
+            .where(PlaybookVersionRecord.workspace_id == workspace_id)
+            .where(PlaybookVersionRecord.status == "published")
+            .where(LegalPlaybookRecord.archived_at.is_(None))
+            .where(LegalPlaybookRecord.agreement_family == agreement.agreement_type)
+            .order_by(LegalPlaybookRecord.priority.desc(), PlaybookVersionRecord.id)
+        )
+        return [self._response(version, version.playbook) for version in versions]
 
     def add_rule(
         self,
@@ -288,6 +372,24 @@ class PlaybookService:
                 status_code=status.HTTP_409_CONFLICT,
                 detail={"code": "published_playbook_exists"},
             )
+        routing_conflict = self._session.scalar(
+            select(PlaybookVersionRecord.id)
+            .join(PlaybookVersionRecord.playbook)
+            .where(PlaybookVersionRecord.organization_id == organization_id)
+            .where(PlaybookVersionRecord.workspace_id == workspace_id)
+            .where(PlaybookVersionRecord.status == "published")
+            .where(PlaybookVersionRecord.playbook_id != playbook_id)
+            .where(LegalPlaybookRecord.archived_at.is_(None))
+            .where(LegalPlaybookRecord.agreement_family == version.playbook.agreement_family)
+            .where(LegalPlaybookRecord.document_direction == version.playbook.document_direction)
+            .where(LegalPlaybookRecord.jurisdiction == version.playbook.jurisdiction)
+            .where(LegalPlaybookRecord.priority == version.playbook.priority)
+        )
+        if routing_conflict is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "playbook_routing_conflict"},
+            )
         version.status = "published"
         version.published_at = datetime.now(UTC)
         self._audit(
@@ -326,6 +428,72 @@ class PlaybookService:
         self._session.delete(version)
         self._session.commit()
 
+    def archive(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        playbook_id: UUID,
+        reason: str,
+    ) -> PlaybookVersionResponse:
+        self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
+        playbook = self._playbook_for_scope(playbook_id, organization_id, workspace_id)
+        if playbook.archived_at is None:
+            playbook.archived_at = datetime.now(UTC)
+            versions = list(playbook.versions)
+            for version in versions:
+                self._audit(
+                    playbook=playbook,
+                    version=version,
+                    actor_id=principal.user_id,
+                    action="archived",
+                    metadata={"reason": reason},
+                )
+            self._session.flush()
+            version = max(versions, key=lambda item: item.version)
+            response = self._response(version, playbook)
+            self._session.commit()
+            return response
+        latest_version = self._session.scalar(
+            select(PlaybookVersionRecord)
+            .where(PlaybookVersionRecord.playbook_id == playbook.id)
+            .order_by(PlaybookVersionRecord.version.desc())
+        )
+        if latest_version is None:
+            raise RuntimeError("persisted playbook has no versions")
+        return self._response(latest_version, playbook)
+
+    def delete_playbook(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        playbook_id: UUID,
+        confirmed: bool,
+        reason: str,
+    ) -> None:
+        self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
+        if not confirmed:
+            self._confirmation_required()
+        playbook = self._playbook_for_scope(playbook_id, organization_id, workspace_id)
+        if any(version.status == "published" for version in playbook.versions):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={"code": "published_playbook_must_be_archived"},
+            )
+        for version in playbook.versions:
+            self._audit(
+                playbook=playbook,
+                version=version,
+                actor_id=principal.user_id,
+                action="draft_deleted",
+                metadata={"reason": reason},
+            )
+        self._session.delete(playbook)
+        self._session.commit()
+
     def list(
         self,
         principal: Principal,
@@ -333,6 +501,7 @@ class PlaybookService:
         organization_id: UUID,
         workspace_id: UUID,
         agreement_family: str | None,
+        include_archived: bool,
     ) -> list[PlaybookVersionResponse]:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
         statement = (
@@ -343,6 +512,8 @@ class PlaybookService:
             .where(PlaybookVersionRecord.workspace_id == workspace_id)
             .order_by(PlaybookVersionRecord.playbook_id, PlaybookVersionRecord.version)
         )
+        if not include_archived:
+            statement = statement.where(LegalPlaybookRecord.archived_at.is_(None))
         if agreement_family is not None:
             statement = statement.where(LegalPlaybookRecord.agreement_family == agreement_family)
         return [
@@ -358,6 +529,18 @@ class PlaybookService:
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.PLAYBOOKS_MANAGE,
+        )
+        if not allowed:
+            hide_resource()
+
+    def _authorize_override(
+        self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
+    ) -> None:
+        allowed = self._identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.REVIEWS_APPROVE,
         )
         if not allowed:
             hide_resource()
@@ -464,6 +647,8 @@ class PlaybookService:
         actor_id: UUID,
         action: str,
         rule: PlaybookRuleRecord | None = None,
+        metadata: dict[str, object] | None = None,
+        agreement_id: UUID | None = None,
     ) -> None:
         self._session.add(
             PlaybookAuditEventRecord(
@@ -472,9 +657,11 @@ class PlaybookService:
                 playbook_id=playbook.id,
                 playbook_version_id=version.id,
                 playbook_rule_id=rule.id if rule else None,
+                agreement_id=agreement_id,
                 action=action,
                 actor_id=actor_id,
-                metadata_json={"version": version.version},
+                metadata_json={"version": version.version, **(metadata or {})},
+                occurred_at=datetime.now(UTC),
             )
         )
         self._session.flush()
@@ -496,8 +683,11 @@ class PlaybookService:
             workspace_id=version.workspace_id,
             name=playbook.name,
             version=version.version,
-            status=cast(PlaybookStatus, version.status),
+            status=cast(PlaybookStatus, "archived" if playbook.archived_at else version.status),
             agreement_family=playbook.agreement_family,
+            document_direction=cast(DocumentDirection, playbook.document_direction),
+            jurisdiction=playbook.jurisdiction,
+            priority=playbook.priority,
             rules=[
                 PlaybookRuleResponse(
                     id=rule.id,
@@ -524,6 +714,7 @@ class PlaybookService:
             ],
             created_at=_required_aware_utc(version.created_at),
             published_at=_as_aware_utc(version.published_at),
+            archived_at=_as_aware_utc(playbook.archived_at),
         )
 
 

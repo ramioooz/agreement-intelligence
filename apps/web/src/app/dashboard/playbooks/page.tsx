@@ -81,6 +81,11 @@ export default async function PlaybooksPage() {
       scope: configuredScope,
       name,
       agreementFamily,
+      documentDirection: String(formData.get("documentDirection") ?? "any") as
+        "any" | "first_party" | "counterparty",
+      jurisdiction:
+        String(formData.get("jurisdiction") ?? "any").trim() || "any",
+      priority: Number(formData.get("priority") ?? 100),
       token: await getKeycloakAccessToken(await headers()),
     });
     redirect(
@@ -116,6 +121,37 @@ export default async function PlaybooksPage() {
                 defaultValue="client_agreement"
                 name="agreementFamily"
                 required
+              />
+            </label>
+            <label className="grid gap-1.5 text-sm font-medium">
+              Document direction
+              <select
+                className="rounded-lg border border-slate-300 px-3 py-2"
+                defaultValue="any"
+                name="documentDirection"
+              >
+                <option value="any">Any direction</option>
+                <option value="first_party">Our paper</option>
+                <option value="counterparty">Counterparty paper</option>
+              </select>
+            </label>
+            <label className="grid gap-1.5 text-sm font-medium">
+              Jurisdiction
+              <input
+                className="rounded-lg border border-slate-300 px-3 py-2"
+                defaultValue="any"
+                name="jurisdiction"
+              />
+            </label>
+            <label className="grid gap-1.5 text-sm font-medium">
+              Routing priority
+              <input
+                className="rounded-lg border border-slate-300 px-3 py-2"
+                defaultValue="100"
+                max="1000"
+                min="0"
+                name="priority"
+                type="number"
               />
             </label>
             <p className="text-sm text-slate-600 md:col-span-2">
