@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from agreement_intelligence_worker.playbook_evaluation import (
     SQLAlchemyPlaybookEvaluationSink,
@@ -160,3 +160,95 @@ def test_sink_selects_a_published_same_family_playbook_and_persists_provenance()
             "ai_generated": False,
         }
     ]
+
+
+def test_sink_prefers_the_most_specific_matching_playbook_and_persists_one_evaluation() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    worker_evaluation_metadata.create_all(engine)
+    organization_id = uuid4()
+    workspace_id = uuid4()
+    agreement_id = uuid4()
+    low_playbook_id = UUID(int=1)
+    high_playbook_id = UUID(int=2)
+    low_version_id = UUID(int=10)
+    high_version_id = UUID(int=20)
+    job = ProcessingJob(
+        id=uuid4(),
+        agreement_id=agreement_id,
+        state="processing",
+        attempt_count=1,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            worker_evaluation_metadata.tables["agreements"]
+            .insert()
+            .values(
+                id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_type="client_agreement",
+                audit_metadata={"document_direction": "counterparty", "jurisdiction": "UAE"},
+            )
+        )
+        for playbook_id, version_id, direction, jurisdiction in (
+            (low_playbook_id, low_version_id, "any", "any"),
+            (high_playbook_id, high_version_id, "counterparty", "UAE"),
+        ):
+            connection.execute(
+                worker_evaluation_metadata.tables["legal_playbooks"]
+                .insert()
+                .values(
+                    id=playbook_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agreement_family="client_agreement",
+                    document_direction=direction,
+                    jurisdiction=jurisdiction,
+                    priority=100,
+                )
+            )
+            connection.execute(
+                worker_evaluation_metadata.tables["playbook_versions"]
+                .insert()
+                .values(
+                    id=version_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    playbook_id=playbook_id,
+                    status="published",
+                )
+            )
+            connection.execute(
+                worker_evaluation_metadata.tables["playbook_rules"]
+                .insert()
+                .values(
+                    id=uuid4(),
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    playbook_version_id=version_id,
+                    clause_type="governing_law",
+                    policy_type="required",
+                    preferred_language="UAE law",
+                    fallback_language=None,
+                    severity="high",
+                    evaluation_config={"method": "deterministic"},
+                )
+            )
+
+    class Storage:
+        def read(self, _: str) -> bytes:
+            return json.dumps({"schema_version": "document-analysis.v1", "clauses": []}).encode()
+
+    SQLAlchemyPlaybookEvaluationSink(engine, Storage()).completed(
+        job, CompletedArtifact(job_id=job.id, key="analysis/manifest.json")
+    )
+
+    with engine.connect() as connection:
+        evaluation = (
+            connection.execute(select(worker_evaluation_metadata.tables["playbook_evaluations"]))
+            .mappings()
+            .one()
+        )
+    assert evaluation["playbook_version_id"] == high_version_id

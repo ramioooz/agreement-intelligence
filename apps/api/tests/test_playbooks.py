@@ -2,6 +2,7 @@ from collections.abc import Callable, Generator
 from typing import Any
 from uuid import UUID, uuid4
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.models import Base, Organization, Workspace
@@ -252,3 +253,139 @@ def test_version_cannot_reference_playbook_in_another_workspace(
         session.flush()
 
     session.rollback()
+
+
+def test_platform_admin_can_delete_a_draft_playbook_with_an_audit_event(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    client = client_for_session(administrator_id)
+    created = client.post(
+        "/playbooks", params=_scope_query(organization, workspace), json=_playbook_payload()
+    ).json()
+
+    deleted = client.delete(
+        f"/playbooks/{created['playbook_id']}",
+        params={
+            **_scope_query(organization, workspace),
+            "confirm": "true",
+            "reason": "Created in error",
+        },
+    )
+
+    assert deleted.status_code == 204
+    assert client.get("/playbooks", params=_scope_query(organization, workspace)).json() == []
+
+
+def test_platform_admin_archives_a_published_playbook_and_retains_its_version(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    client = client_for_session(administrator_id)
+    created = client.post(
+        "/playbooks", params=_scope_query(organization, workspace), json=_playbook_payload()
+    ).json()
+    client.post(
+        f"/playbooks/{created['playbook_id']}/versions/1/publish",
+        params=_scope_query(organization, workspace),
+    )
+
+    archived = client.post(
+        f"/playbooks/{created['playbook_id']}/archive",
+        params={**_scope_query(organization, workspace), "reason": "Replaced by regional policy"},
+    )
+
+    assert archived.status_code == 200
+    assert archived.json()["status"] == "archived"
+    assert client.get("/playbooks", params=_scope_query(organization, workspace)).json() == []
+    history = client.get(
+        "/playbooks", params={**_scope_query(organization, workspace), "include_archived": "true"}
+    ).json()
+    assert history[0]["status"] == "archived"
+    assert history[0]["audit_events"][-1]["action"] == "archived"
+
+
+def test_publication_rejects_same_priority_routing_scope(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    administrator_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    client = client_for_session(administrator_id)
+    first = client.post(
+        "/playbooks",
+        params=_scope_query(organization, workspace),
+        json={**_playbook_payload(), "name": "Client baseline A", "priority": 100},
+    ).json()
+    second = client.post(
+        "/playbooks",
+        params=_scope_query(organization, workspace),
+        json={**_playbook_payload(), "name": "Client baseline B", "priority": 100},
+    ).json()
+    assert (
+        client.post(
+            f"/playbooks/{first['playbook_id']}/versions/1/publish",
+            params=_scope_query(organization, workspace),
+        ).status_code
+        == 200
+    )
+
+    duplicate = client.post(
+        f"/playbooks/{second['playbook_id']}/versions/1/publish",
+        params=_scope_query(organization, workspace),
+    )
+
+    assert duplicate.status_code == 409
+    assert duplicate.json() == {"detail": {"code": "playbook_routing_conflict"}}
+
+
+def test_legal_admin_can_record_a_reasoned_playbook_override(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    platform_admin_id, organization, workspace = _create_scope(session, RoleKey.PLATFORM_ADMIN)
+    legal_admin_id, _, _ = _create_scope(session, RoleKey.LEGAL_ADMIN)
+    identity = IdentityService(session)
+    legal_membership = identity.grant_membership(
+        organization_id=organization.id,
+        user_id=legal_admin_id,
+        role_key=RoleKey.LEGAL_ADMIN,
+    )
+    identity.grant_workspace_membership(
+        organization_id=organization.id,
+        membership_id=legal_membership.id,
+        workspace_id=workspace.id,
+    )
+    agreement = AgreementRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        title="Client agreement",
+        agreement_type="client_agreement",
+        status="draft",
+        processing_state="pending",
+    )
+    session.add(agreement)
+    session.commit()
+    created = (
+        client_for_session(platform_admin_id)
+        .post("/playbooks", params=_scope_query(organization, workspace), json=_playbook_payload())
+        .json()
+    )
+    client_for_session(platform_admin_id).post(
+        f"/playbooks/{created['playbook_id']}/versions/1/publish",
+        params=_scope_query(organization, workspace),
+    )
+
+    override = client_for_session(legal_admin_id).post(
+        "/playbooks/overrides",
+        params=_scope_query(organization, workspace),
+        json={
+            "agreement_id": str(agreement.id),
+            "playbook_version_id": created["id"],
+            "reason": "UAE client requires the regional policy.",
+        },
+    )
+
+    assert override.status_code == 201
+    assert override.json()["audit_events"][-1]["action"] == "agreement_override_recorded"

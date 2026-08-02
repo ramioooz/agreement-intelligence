@@ -6,12 +6,13 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
     Column,
+    Connection,
     DateTime,
     Engine,
     Float,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     String,
     Table,
     Uuid,
+    case,
     select,
     text,
 )
@@ -48,6 +50,7 @@ agreements = Table(
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("agreement_type", String(100), nullable=False),
+    Column("audit_metadata", JSON, nullable=False, server_default="{}"),
 )
 legal_playbooks = Table(
     "legal_playbooks",
@@ -56,6 +59,10 @@ legal_playbooks = Table(
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("agreement_family", String(100), nullable=False),
+    Column("document_direction", String(32), nullable=False, server_default="any"),
+    Column("jurisdiction", String(16), nullable=False, server_default="any"),
+    Column("priority", Float, nullable=False, server_default="100"),
+    Column("archived_at", DateTime(timezone=True), nullable=True),
 )
 playbook_versions = Table(
     "playbook_versions",
@@ -65,6 +72,17 @@ playbook_versions = Table(
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("playbook_id", Uuid(as_uuid=True), nullable=False),
     Column("status", String(16), nullable=False),
+)
+playbook_audit_events = Table(
+    "playbook_audit_events",
+    worker_evaluation_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
+    Column("playbook_version_id", Uuid(as_uuid=True), nullable=True),
+    Column("agreement_id", Uuid(as_uuid=True), nullable=True),
+    Column("action", String(64), nullable=False),
+    Column("occurred_at", DateTime(timezone=True), nullable=False),
 )
 playbook_rules = Table(
     "playbook_rules",
@@ -150,6 +168,61 @@ class EvaluatedFinding:
 
 
 SemanticAssessor = Callable[[PlaybookRule, Mapping[str, object]], FindingResult]
+
+
+def _select_routed_playbook_version(
+    connection: Connection,
+    job: object,
+    agreement: Mapping[str, Any],
+) -> Mapping[str, object] | None:
+    """Select one active base policy using explicit, reproducible routing fields."""
+    organization_id = getattr(job, "organization_id", None)
+    workspace_id = getattr(job, "workspace_id", None)
+    agreement_id = getattr(job, "agreement_id", None)
+    override = (
+        select(playbook_audit_events.c.playbook_version_id)
+        .join(
+            playbook_versions,
+            playbook_audit_events.c.playbook_version_id == playbook_versions.c.id,
+        )
+        .join(legal_playbooks, playbook_versions.c.playbook_id == legal_playbooks.c.id)
+        .where(playbook_audit_events.c.organization_id == organization_id)
+        .where(playbook_audit_events.c.workspace_id == workspace_id)
+        .where(playbook_audit_events.c.agreement_id == agreement_id)
+        .where(playbook_audit_events.c.action == "agreement_override_recorded")
+        .where(playbook_versions.c.status == "published")
+        .where(legal_playbooks.c.archived_at.is_(None))
+        .order_by(playbook_audit_events.c.occurred_at.desc(), playbook_audit_events.c.id.desc())
+        .limit(1)
+    )
+    override_version_id = connection.execute(override).scalar_one_or_none()
+    if override_version_id is not None:
+        return {"id": override_version_id}
+    metadata = agreement.get("audit_metadata")
+    route_metadata = metadata if isinstance(metadata, dict) else {}
+    direction = _string(route_metadata.get("document_direction"), "any")
+    jurisdiction = _string(route_metadata.get("jurisdiction"), "any").upper()
+    statement = (
+        select(playbook_versions.c.id)
+        .join(legal_playbooks, playbook_versions.c.playbook_id == legal_playbooks.c.id)
+        .where(playbook_versions.c.organization_id == organization_id)
+        .where(playbook_versions.c.workspace_id == workspace_id)
+        .where(playbook_versions.c.status == "published")
+        .where(legal_playbooks.c.organization_id == organization_id)
+        .where(legal_playbooks.c.workspace_id == workspace_id)
+        .where(legal_playbooks.c.archived_at.is_(None))
+        .where(legal_playbooks.c.agreement_family == agreement["agreement_type"])
+        .where(legal_playbooks.c.document_direction.in_(("any", direction)))
+        .where(legal_playbooks.c.jurisdiction.in_(("any", jurisdiction)))
+        .order_by(
+            legal_playbooks.c.priority.desc(),
+            case((legal_playbooks.c.document_direction != "any", 1), else_=0).desc(),
+            case((legal_playbooks.c.jurisdiction != "any", 1), else_=0).desc(),
+            playbook_versions.c.id,
+        )
+        .limit(1)
+    )
+    return cast(Mapping[str, object] | None, connection.execute(statement).mappings().one_or_none())
 
 
 def evaluate_playbook(
@@ -405,7 +478,7 @@ class SQLAlchemyPlaybookEvaluationSink:
                 )
             agreement = (
                 connection.execute(
-                    select(agreements.c.agreement_type)
+                    select(agreements.c.agreement_type, agreements.c.audit_metadata)
                     .where(agreements.c.id == job.agreement_id)
                     .where(agreements.c.organization_id == job.organization_id)
                     .where(agreements.c.workspace_id == job.workspace_id)
@@ -415,21 +488,8 @@ class SQLAlchemyPlaybookEvaluationSink:
             )
             if agreement is None:
                 return
-            version = (
-                connection.execute(
-                    select(playbook_versions.c.id)
-                    .join(legal_playbooks, playbook_versions.c.playbook_id == legal_playbooks.c.id)
-                    .where(playbook_versions.c.organization_id == job.organization_id)
-                    .where(playbook_versions.c.workspace_id == job.workspace_id)
-                    .where(playbook_versions.c.status == "published")
-                    .where(legal_playbooks.c.organization_id == job.organization_id)
-                    .where(legal_playbooks.c.workspace_id == job.workspace_id)
-                    .where(legal_playbooks.c.agreement_family == agreement["agreement_type"])
-                    .order_by(playbook_versions.c.id)
-                    .limit(1)
-                )
-                .mappings()
-                .one_or_none()
+            version = _select_routed_playbook_version(
+                connection, job, cast(Mapping[str, Any], agreement)
             )
             if version is None:
                 return

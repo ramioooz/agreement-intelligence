@@ -10,6 +10,7 @@ from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.playbooks.schemas import (
     CreatePlaybookRequest,
     CreatePlaybookVersionRequest,
+    PlaybookOverrideRequest,
     PlaybookRuleWrite,
     PlaybookVersionResponse,
     UpdatePlaybookRuleRequest,
@@ -47,6 +48,38 @@ def create_playbook(
     )
 
 
+@router.post("/overrides", response_model=PlaybookVersionResponse, status_code=201)
+def record_playbook_override(
+    request: PlaybookOverrideRequest,
+    principal: PrincipalDependency,
+    service: PlaybookServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> PlaybookVersionResponse:
+    return service.override_for_agreement(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        request=request,
+    )
+
+
+@router.get("/eligible", response_model=list[PlaybookVersionResponse])
+def list_eligible_playbooks(
+    agreement_id: UUID,
+    principal: PrincipalDependency,
+    service: PlaybookServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> list[PlaybookVersionResponse]:
+    return service.eligible_for_agreement(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+    )
+
+
 @router.post("/{playbook_id}/versions", response_model=PlaybookVersionResponse, status_code=201)
 def create_playbook_version(
     playbook_id: UUID,
@@ -72,13 +105,54 @@ def list_playbooks(
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
     agreement_family: str | None = Query(default=None, min_length=1, max_length=100),
+    include_archived: bool = False,
 ) -> list[PlaybookVersionResponse]:
     return service.list(
         principal,
         organization_id=organization_id,
         workspace_id=workspace_id,
         agreement_family=agreement_family,
+        include_archived=include_archived,
     )
+
+
+@router.post("/{playbook_id}/archive", response_model=PlaybookVersionResponse)
+def archive_playbook(
+    playbook_id: UUID,
+    principal: PrincipalDependency,
+    service: PlaybookServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+    reason: str = Query(min_length=1, max_length=1000),
+) -> PlaybookVersionResponse:
+    return service.archive(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        playbook_id=playbook_id,
+        reason=reason,
+    )
+
+
+@router.delete("/{playbook_id}", status_code=204)
+def delete_playbook(
+    playbook_id: UUID,
+    principal: PrincipalDependency,
+    service: PlaybookServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+    confirm: bool = False,
+    reason: str = Query(min_length=1, max_length=1000),
+) -> Response:
+    service.delete_playbook(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        playbook_id=playbook_id,
+        confirmed=confirm,
+        reason=reason,
+    )
+    return Response(status_code=204)
 
 
 @router.post(

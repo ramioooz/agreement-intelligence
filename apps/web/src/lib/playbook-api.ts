@@ -1,6 +1,7 @@
 import { ApiRequestError, type AgreementScope } from "@/lib/agreement-api";
 
-export type PlaybookStatus = "draft" | "published";
+export type PlaybookStatus = "draft" | "published" | "archived";
+export type PlaybookDocumentDirection = "any" | "first_party" | "counterparty";
 export type PlaybookPolicyType = "required" | "prohibited" | "preferred";
 export type PlaybookSeverity = "low" | "medium" | "high" | "critical";
 
@@ -30,6 +31,9 @@ export type PlaybookVersion = {
   version: number;
   status: PlaybookStatus;
   agreement_family: string;
+  document_direction: PlaybookDocumentDirection;
+  jurisdiction: string;
+  priority: number;
   rules: PlaybookRule[];
   audit_events: Array<{
     action: string;
@@ -39,6 +43,7 @@ export type PlaybookVersion = {
   }>;
   created_at: string;
   published_at: string | null;
+  archived_at: string | null;
 };
 
 type ClientOptions = {
@@ -109,16 +114,28 @@ export async function createPlaybook({
   token,
   name,
   agreementFamily,
+  documentDirection = "any",
+  jurisdiction = "any",
+  priority = 100,
   fetcher = fetch,
 }: ScopedOptions & {
   name: string;
   agreementFamily: string;
+  documentDirection?: PlaybookDocumentDirection;
+  jurisdiction?: string;
+  priority?: number;
 }): Promise<PlaybookVersion> {
   return request<PlaybookVersion>(
     await fetcher(endpoint(baseUrl, "/playbooks", scope), {
       method: "POST",
       headers: { ...headers(token), "Content-Type": "application/json" },
-      body: JSON.stringify({ name, agreement_family: agreementFamily }),
+      body: JSON.stringify({
+        name,
+        agreement_family: agreementFamily,
+        document_direction: documentDirection,
+        jurisdiction,
+        priority,
+      }),
     }),
   );
 }
@@ -252,4 +269,87 @@ export async function publishPlaybookVersion({
       { method: "POST", headers: headers(token) },
     ),
   );
+}
+
+export async function archivePlaybook({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  playbookId,
+  reason,
+  fetcher = fetch,
+}: ScopedOptions & {
+  playbookId: string;
+  reason: string;
+}): Promise<PlaybookVersion> {
+  return request<PlaybookVersion>(
+    await fetcher(
+      endpoint(baseUrl, `/playbooks/${playbookId}/archive`, scope, { reason }),
+      { method: "POST", headers: headers(token) },
+    ),
+  );
+}
+
+export async function listEligiblePlaybooks({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  agreementId,
+  fetcher = fetch,
+}: ScopedOptions & { agreementId: string }): Promise<PlaybookVersion[]> {
+  return request<PlaybookVersion[]>(
+    await fetcher(
+      endpoint(baseUrl, "/playbooks/eligible", scope, {
+        agreement_id: agreementId,
+      }),
+      {
+        cache: "no-store",
+        headers: headers(token),
+      },
+    ),
+  );
+}
+
+export async function recordPlaybookOverride({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  agreementId,
+  playbookVersionId,
+  reason,
+  fetcher = fetch,
+}: ScopedOptions & {
+  agreementId: string;
+  playbookVersionId: string;
+  reason: string;
+}): Promise<PlaybookVersion> {
+  return request<PlaybookVersion>(
+    await fetcher(endpoint(baseUrl, "/playbooks/overrides", scope), {
+      method: "POST",
+      headers: { ...headers(token), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agreement_id: agreementId,
+        playbook_version_id: playbookVersionId,
+        reason,
+      }),
+    }),
+  );
+}
+
+export async function deletePlaybook({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  playbookId,
+  reason,
+  fetcher = fetch,
+}: ScopedOptions & { playbookId: string; reason: string }): Promise<void> {
+  const response = await fetcher(
+    endpoint(baseUrl, `/playbooks/${playbookId}`, scope, {
+      confirm: "true",
+      reason,
+    }),
+    { method: "DELETE", headers: headers(token) },
+  );
+  if (!response.ok) await request<never>(response);
 }
