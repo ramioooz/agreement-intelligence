@@ -25,6 +25,7 @@ apps/web/test-results/
 .env.local
 .env.*.local
 .env.stack-test
+local-models/
 
 # Editors and operating systems
 .DS_Store

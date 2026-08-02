@@ -143,6 +143,30 @@ file as the stack (`STACK_ENV_FILE=.env` by default). It is deliberately exclude
 it makes one bounded provider request and prints only the configured model,
 latency, usage metadata, and validation status.
 
+### Optional local model endpoint
+
+The worker uses the hosted provider by default. To run a user-supplied GGUF model
+through the optional `llama.cpp` profile, set these ignored `.env` values:
+
+```dotenv
+LLAMA_CPP_MODEL_DIR=/absolute/path/to/your/models
+LLAMA_CPP_GGUF_FILE=your-model.gguf
+MODEL_GATEWAY_MODE=openai-compatible
+MODEL_GATEWAY_MODEL=your-model.gguf
+MODEL_GATEWAY_BASE_URL=http://llama-cpp:8080/v1
+```
+
+Then start the profile with `docker compose --profile local-model up --build`.
+The `/models` mount is read-only and the profile neither downloads nor includes
+model weights. Set `MODEL_GATEWAY_FALLBACK_MODE=openai` only when an
+`OPENAI_API_KEY` is configured and a hosted fallback is explicitly desired.
+
+The gateway records provider, endpoint kind, model, configuration version,
+latency, usage/cost metadata, retry/fallback outcome, and safe failure reason
+with provider-backed analysis artifacts. Embedding and grounded-question
+contracts share the same typed gateway boundary; Anthropic and Gemini adapters
+remain intentionally future work rather than runtime dependencies.
+
 See the
 [monorepo foundation design](docs/plans/2026-07-27-monorepo-foundation-design.md)
 for the accepted scope and boundaries.

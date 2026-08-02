@@ -78,6 +78,13 @@ class Provenance(TypedDict):
     output_tokens: int | None
     latency_ms: int
     provider: NotRequired[str]
+    endpoint_kind: NotRequired[str]
+    configuration_version: NotRequired[str]
+    total_tokens: NotRequired[int | None]
+    cost_usd: NotRequired[float | None]
+    retry_outcome: NotRequired[str]
+    fallback_outcome: NotRequired[str]
+    safe_failure_reason: NotRequired[str | None]
 
 
 @dataclass(frozen=True)
@@ -198,12 +205,32 @@ def _provenance(analysis: ProviderAnalysis) -> Provenance:
     input_tokens = _optional_nonnegative_integer(analysis.input_tokens, "input tokens")
     output_tokens = _optional_nonnegative_integer(analysis.output_tokens, "output tokens")
     latency_ms = _nonnegative_integer(analysis.latency_ms, "latency")
-    return {
+    provenance: Provenance = {
         "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "latency_ms": latency_ms,
     }
+    gateway = analysis.gateway_provenance
+    if gateway is None:
+        return provenance
+    provenance.update(
+        {
+            "model": gateway.model,
+            "input_tokens": gateway.input_tokens,
+            "output_tokens": gateway.output_tokens,
+            "latency_ms": gateway.latency_ms,
+            "provider": gateway.provider,
+            "endpoint_kind": gateway.endpoint_kind,
+            "configuration_version": gateway.configuration_version,
+            "total_tokens": gateway.total_tokens,
+            "cost_usd": gateway.cost_usd,
+            "retry_outcome": gateway.retry_outcome,
+            "fallback_outcome": gateway.fallback_outcome,
+            "safe_failure_reason": gateway.safe_failure_reason,
+        }
+    )
+    return provenance
 
 
 def _claims[Claim](

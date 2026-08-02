@@ -160,6 +160,13 @@ services:
       SQS_PROCESSING_QUEUE: ${SQS_PROCESSING_QUEUE:?required}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5.4-mini}
+      MODEL_GATEWAY_MODE: ${MODEL_GATEWAY_MODE:-openai}
+      MODEL_GATEWAY_MODEL: ${MODEL_GATEWAY_MODEL:-}
+      MODEL_GATEWAY_BASE_URL: ${MODEL_GATEWAY_BASE_URL:-}
+      MODEL_GATEWAY_API_KEY: ${MODEL_GATEWAY_API_KEY:-}
+      MODEL_GATEWAY_CONFIG_VERSION: ${MODEL_GATEWAY_CONFIG_VERSION:-model-gateway.v1}
+      MODEL_GATEWAY_FALLBACK_MODE: ${MODEL_GATEWAY_FALLBACK_MODE:-}
+      MODEL_GATEWAY_FALLBACK_MODEL: ${MODEL_GATEWAY_FALLBACK_MODEL:-}
     depends_on:
       postgres:
         condition: service_healthy
@@ -169,6 +176,35 @@ services:
         condition: service_completed_successfully
     stop_grace_period: 15s
     init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  llama-cpp:
+    image: ghcr.io/ggml-org/llama.cpp:server-b9445
+    profiles: ["local-model"]
+    command:
+      - -m
+      - /models/${LLAMA_CPP_GGUF_FILE:-provide-a-model.gguf}
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+    ports:
+      - "127.0.0.1:${LLAMA_CPP_PORT:-8081}:8080"
+    volumes:
+      - type: bind
+        source: ${LLAMA_CPP_MODEL_DIR:-./local-models}
+        target: /models
+        read_only: true
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
     security_opt:
       - no-new-privileges:true
     cap_drop:
