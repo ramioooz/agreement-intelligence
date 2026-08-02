@@ -132,4 +132,21 @@ describe("PlaybookEditor", () => {
       screen.getByRole("heading", { name: "Add rule" }),
     ).toBeInTheDocument();
   });
+
+  it("lets an administrator discard an unsaved additional rule", () => {
+    render(
+      <PlaybookEditor
+        canManage
+        playbook={{ ...draft, rules: published.rules }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    fireEvent.click(screen.getByRole("button", { name: "Discard rule" }));
+
+    expect(
+      screen.queryByRole("heading", { name: "Add rule" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add rule" })).toBeVisible();
+  });
 });

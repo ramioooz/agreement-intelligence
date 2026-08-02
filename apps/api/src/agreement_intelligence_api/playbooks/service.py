@@ -297,9 +297,7 @@ class PlaybookService:
         if rule is None:
             hide_resource()
         for field, value in request.model_dump(exclude_unset=True).items():
-            setattr(
-                rule, field, value.model_dump() if field == "evaluation_config" and value else value
-            )
+            setattr(rule, field, value)
         rule.updated_at = datetime.now(UTC)
         self._audit(
             playbook=version.playbook,

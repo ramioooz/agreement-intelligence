@@ -86,13 +86,22 @@ function messageFor(error: unknown): string {
     : "The playbook change could not be saved. Please try again.";
 }
 
+function editableRule(
+  rule: PlaybookRuleWrite | PlaybookRule,
+): PlaybookRuleWrite {
+  const ruleWrite = { ...rule } as PlaybookRuleWrite & { id?: string };
+  delete ruleWrite.id;
+  return ruleWrite;
+}
+
 type RuleFormProps = {
   heading: string;
-  initialRule: PlaybookRuleWrite;
+  initialRule: PlaybookRuleWrite | PlaybookRule;
   submitLabel: string;
   submittingLabel: string;
   onSubmit: (rule: PlaybookRuleWrite) => Promise<void>;
   onDelete?: () => void;
+  onDiscard?: () => void;
 };
 
 function RuleForm({
@@ -102,8 +111,10 @@ function RuleForm({
   submittingLabel,
   onSubmit,
   onDelete,
+  onDiscard,
 }: RuleFormProps) {
-  const [rule, setRule] = useState<PlaybookRuleWrite>(initialRule);
+  const initialWriteRule = editableRule(initialRule);
+  const [rule, setRule] = useState<PlaybookRuleWrite>(initialWriteRule);
   const [customClauseType, setCustomClauseType] = useState(
     Boolean(
       initialRule.clause_type &&
@@ -114,7 +125,7 @@ function RuleForm({
   const [submitting, setSubmitting] = useState(false);
   const id = heading === "Add rule" ? "new-rule" : `rule-${heading}`;
   const isExistingRule = Boolean(onDelete);
-  const hasChanges = JSON.stringify(rule) !== JSON.stringify(initialRule);
+  const hasChanges = JSON.stringify(rule) !== JSON.stringify(initialWriteRule);
   const canSubmit = isPublishableRule(rule) && (!isExistingRule || hasChanges);
 
   function update<K extends keyof PlaybookRuleWrite>(
@@ -392,13 +403,13 @@ function RuleForm({
           >
             {submitting ? submittingLabel : submitLabel}
           </button>
-          {onDelete ? (
+          {onDelete || onDiscard ? (
             <button
               className="rounded-full border border-rose-300 px-4 py-2 text-sm font-semibold text-rose-800"
-              onClick={onDelete}
+              onClick={onDelete ?? onDiscard}
               type="button"
             >
-              Delete rule
+              {onDelete ? "Delete rule" : "Discard rule"}
             </button>
           ) : null}
         </div>
@@ -584,6 +595,7 @@ export function PlaybookEditor({
             <RuleForm
               heading="Add rule"
               initialRule={emptyRule}
+              onDiscard={() => setAddingRule(false)}
               onSubmit={async (rule) => {
                 await addRuleAction?.(rule);
                 setAddingRule(false);

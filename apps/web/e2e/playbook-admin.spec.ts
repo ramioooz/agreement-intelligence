@@ -50,6 +50,20 @@ test("a platform administrator publishes an immutable client-agreement playbook"
     .fill("Escalate uncapped liability to legal review.");
   await page.getByRole("button", { name: "Add rule" }).click();
 
+  await page.waitForTimeout(500);
+  const ruleTitle = page.getByLabel("Rule title");
+  await expect(ruleTitle).toHaveValue("Limitation of liability");
+  await ruleTitle.fill("Updated limitation of liability");
+  await page.getByRole("button", { name: "Save rule" }).click();
+  await expect(
+    page.getByText("An error occurred in the Server Components render"),
+  ).not.toBeVisible();
+  await page.waitForTimeout(500);
+  await page.reload();
+  await expect(page.getByLabel("Rule title")).toHaveValue(
+    "Updated limitation of liability",
+  );
+
   const publish = page.getByRole("button", { name: "Publish version" });
   await expect(publish).toBeEnabled();
   await publish.click();
