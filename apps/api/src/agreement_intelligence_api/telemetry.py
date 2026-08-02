@@ -31,11 +31,7 @@ _SENSITIVE_KEYS = frozenset(
 def redact_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
     """Return attributes safe for telemetry exporters."""
 
-    return {
-        key: value
-        for key, value in attributes.items()
-        if key.lower() not in _SENSITIVE_KEYS
-    }
+    return {key: value for key, value in attributes.items() if key.lower() not in _SENSITIVE_KEYS}
 
 
 @contextmanager
