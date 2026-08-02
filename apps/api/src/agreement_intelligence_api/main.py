@@ -27,6 +27,7 @@ from agreement_intelligence_api.processing.service import (
     IdempotencyKeyConflictError,
     RetryNotPermittedError,
 )
+from agreement_intelligence_api.reviews.routes import decision_router
 from agreement_intelligence_api.reviews.routes import router as reviews_router
 
 app = FastAPI(
@@ -48,3 +49,4 @@ app.include_router(documents_router)
 app.include_router(processing_router)
 app.include_router(playbooks_router)
 app.include_router(reviews_router)
+app.include_router(decision_router)

@@ -114,6 +114,8 @@ def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
                 "model_explanation": None,
             },
             "fallback_suggestions": [],
+            "decision_events": [],
+            "current_decision": None,
         }
     ]
     assert listed.status_code == 200

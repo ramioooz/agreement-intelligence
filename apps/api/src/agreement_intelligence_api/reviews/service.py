@@ -28,6 +28,7 @@ from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
     ProcessingJobRecord,
 )
+from agreement_intelligence_api.reviews.decisions import decision_history_response
 from agreement_intelligence_api.reviews.models import (
     PlaybookEvaluationRecord,
     PlaybookFindingRecord,
@@ -74,7 +75,11 @@ class PlaybookEvaluationService:
         processing_job_id, artifact_key = artifact
         existing = self._session.scalar(
             select(PlaybookEvaluationRecord)
-            .options(selectinload(PlaybookEvaluationRecord.findings))
+            .options(
+                selectinload(PlaybookEvaluationRecord.findings).selectinload(
+                    PlaybookFindingRecord.decisions
+                )
+            )
             .where(PlaybookEvaluationRecord.organization_id == organization_id)
             .where(PlaybookEvaluationRecord.workspace_id == workspace_id)
             .where(PlaybookEvaluationRecord.agreement_id == agreement_id)
@@ -157,7 +162,11 @@ class PlaybookEvaluationService:
         records = list(
             self._session.scalars(
                 select(PlaybookEvaluationRecord)
-                .options(selectinload(PlaybookEvaluationRecord.findings))
+                .options(
+                    selectinload(PlaybookEvaluationRecord.findings).selectinload(
+                        PlaybookFindingRecord.decisions
+                    )
+                )
                 .where(PlaybookEvaluationRecord.organization_id == organization_id)
                 .where(PlaybookEvaluationRecord.workspace_id == workspace_id)
                 .where(PlaybookEvaluationRecord.agreement_id == agreement_id)
@@ -286,6 +295,8 @@ class PlaybookEvaluationService:
                         playbook_version_id,
                         rules_by_id.get(finding.rule_id),
                     ),
+                    decision_events=decision_history_response(finding).events,
+                    current_decision=decision_history_response(finding).current,
                 )
                 for finding in record.findings
             ],

@@ -20,7 +20,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13.14-slim-bookworm AS runtime
 ENV PATH=/workspace/.venv/bin:$PATH
 ENV PYTHONUNBUFFERED=1
-RUN groupadd --gid 10001 app \
+RUN apt-get update \
+    && apt-get install --no-install-recommends --yes fonts-noto-core \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid app --no-create-home app
 WORKDIR /workspace
 COPY --from=build --chown=app:app /workspace/.venv /workspace/.venv

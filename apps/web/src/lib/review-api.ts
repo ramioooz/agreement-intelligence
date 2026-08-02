@@ -5,6 +5,29 @@ import { ApiRequestError, type AgreementScope } from "@/lib/agreement-api";
 export type FindingResult =
   "satisfied" | "missing" | "non_compliant" | "needs_review";
 
+export type ReviewDecisionAction = "accepted" | "rejected" | "edited";
+
+export type ReviewDecisionEvent = {
+  id: string;
+  finding_id: string;
+  action: ReviewDecisionAction;
+  original_result: FindingResult;
+  rationale: string;
+  edited_result: FindingResult | null;
+  edited_severity: string | null;
+  actor_id: string;
+  occurred_at: string;
+};
+
+export type CurrentReviewDecision = {
+  action: ReviewDecisionAction;
+  result: FindingResult;
+  severity: string;
+  rationale: string;
+  actor_id: string;
+  decided_at: string;
+};
+
 export type RiskPayload = {
   version: "playbook-risk.v1";
   severity: string;
@@ -43,6 +66,8 @@ export type PlaybookFindingResponse = {
   review_state: string;
   risk: RiskPayload;
   fallback_suggestions: FallbackSuggestion[];
+  decision_events: ReviewDecisionEvent[];
+  current_decision: CurrentReviewDecision | null;
 };
 
 export type PlaybookEvaluationResponse = {
