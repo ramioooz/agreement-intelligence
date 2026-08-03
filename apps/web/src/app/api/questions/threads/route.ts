@@ -22,10 +22,30 @@ export async function POST(request: NextRequest) {
       { status: 401 },
     );
   }
+
+  const payload: unknown = await request.json().catch(() => ({}));
+  const agreementIds =
+    typeof payload === "object" &&
+    payload !== null &&
+    "agreement_ids" in payload
+      ? payload.agreement_ids
+      : undefined;
+  if (
+    agreementIds !== undefined &&
+    (!Array.isArray(agreementIds) ||
+      agreementIds.some((agreementId) => typeof agreementId !== "string"))
+  ) {
+    return Response.json(
+      { message: "agreement_ids must be an array of strings." },
+      { status: 400 },
+    );
+  }
+
   try {
     const thread: QuestionThread = await createQuestionThread({
       scope,
       token: session.accessToken,
+      agreementIds,
     });
     return applyRefreshedKeycloakSession(
       Response.json(thread, { status: 201 }),

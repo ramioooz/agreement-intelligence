@@ -52,6 +52,17 @@ function answerState(turn: QuestionTurn): QuestionAnswerState {
   };
 }
 
+function normalizedAgreementIds(value: string): string[] {
+  return [
+    ...new Set(
+      value
+        .split(",")
+        .map((id) => id.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
 export function SearchWorkspace({
   initialQuery,
   initialFilters = {},
@@ -95,12 +106,11 @@ export function SearchWorkspace({
     if (updatedBefore) params.set("updated_before", updatedBefore);
     if (sourceVersion.trim())
       params.set("source_version", sourceVersion.trim());
-    for (const agreementId of agreementIds.split(",")) {
-      const normalizedAgreementId = agreementId.trim();
-      if (normalizedAgreementId) {
-        params.append("agreement_id", normalizedAgreementId);
-      }
+    for (const agreementId of normalizedAgreementIds(agreementIds)) {
+      params.append("agreement_id", agreementId);
     }
+    setThreadId(undefined);
+    setQuestionState(undefined);
     router.push(
       normalized ? `/dashboard/search?${params}` : "/dashboard/search",
     );
@@ -117,6 +127,10 @@ export function SearchWorkspace({
       if (!activeThreadId) {
         const threadResponse = await fetch("/api/questions/threads", {
           method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            agreement_ids: normalizedAgreementIds(agreementIds),
+          }),
         });
         if (!threadResponse.ok) throw new Error("thread unavailable");
         const createdThread = (await threadResponse.json()) as Pick<

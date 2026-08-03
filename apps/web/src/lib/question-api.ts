@@ -76,12 +76,15 @@ export async function createQuestionThread({
   token,
   baseUrl = defaultBaseUrl,
   fetcher = fetch,
-}: ClientOptions): Promise<QuestionThread> {
+  agreementIds,
+}: ClientOptions & { agreementIds?: string[] }): Promise<QuestionThread> {
   return decode<QuestionThread>(
     await fetcher(endpoint(baseUrl, "/questions/threads", scope), {
       method: "POST",
       headers: headers(token),
-      body: JSON.stringify({}),
+      body: JSON.stringify(
+        agreementIds?.length ? { agreement_ids: agreementIds } : {},
+      ),
     }),
   );
 }
