@@ -136,6 +136,7 @@ def test_retrieval_evaluation_command_emits_a_versioned_baseline_report(
     result = run(
         [
             "make",
+            "--no-print-directory",
             "retrieval-eval",
             f"RETRIEVAL_EVAL_RESULTS={results_path}",
         ],
@@ -146,7 +147,10 @@ def test_retrieval_evaluation_command_emits_a_versioned_baseline_report(
     )
 
     assert result.returncode == 0, result.stderr
-    report = json.loads(result.stdout.splitlines()[-1])
+    report_line = next(
+        line for line in reversed(result.stdout.splitlines()) if line.lstrip().startswith("{")
+    )
+    report = json.loads(report_line)
     assert report["dataset_version"] == "1.0"
     assert report["metrics"] == {
         "citation_precision": 1.0,
