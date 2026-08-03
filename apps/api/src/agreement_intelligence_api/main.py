@@ -29,6 +29,7 @@ from agreement_intelligence_api.processing.service import (
 )
 from agreement_intelligence_api.reviews.routes import decision_router
 from agreement_intelligence_api.reviews.routes import router as reviews_router
+from agreement_intelligence_api.search.routes import router as search_router
 
 app = FastAPI(
     title="Agreement Intelligence API",
@@ -50,3 +51,4 @@ app.include_router(processing_router)
 app.include_router(playbooks_router)
 app.include_router(reviews_router)
 app.include_router(decision_router)
+app.include_router(search_router)
