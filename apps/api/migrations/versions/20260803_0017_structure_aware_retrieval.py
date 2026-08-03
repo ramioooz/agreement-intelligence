@@ -17,6 +17,12 @@ depends_on: str | None = None
 
 
 def upgrade() -> None:
+    with op.batch_alter_table("agreements") as batch_op:
+        batch_op.create_unique_constraint(
+            "uq_agreements_scope",
+            ["id", "organization_id", "workspace_id"],
+        )
+
     op.create_table(
         "retrieval_index_builds",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -38,7 +44,15 @@ def upgrade() -> None:
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
         ),
-        sa.ForeignKeyConstraint(["agreement_id"], ["agreements.id"]),
+        sa.ForeignKeyConstraint(
+            ["agreement_id", "organization_id", "workspace_id"],
+            [
+                "agreements.id",
+                "agreements.organization_id",
+                "agreements.workspace_id",
+            ],
+            name="fk_retrieval_index_builds_agreement_scope",
+        ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(
             "agreement_id",
@@ -137,3 +151,5 @@ def downgrade() -> None:
     op.drop_index("uq_retrieval_index_builds_active_scope", table_name="retrieval_index_builds")
     op.drop_index("ix_retrieval_index_builds_scope_active", table_name="retrieval_index_builds")
     op.drop_table("retrieval_index_builds")
+    with op.batch_alter_table("agreements") as batch_op:
+        batch_op.drop_constraint("uq_agreements_scope", type_="unique")

@@ -2,7 +2,17 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, ForeignKeyConstraint, Index, String, Uuid, func
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agreement_intelligence_api.identity.models import Base
@@ -14,6 +24,12 @@ class AgreementRecord(Base):
         ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "workspace_id",
+            name="uq_agreements_scope",
         ),
         Index("ix_agreements_scope_created", "organization_id", "workspace_id", "created_at"),
     )

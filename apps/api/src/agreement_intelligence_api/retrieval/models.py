@@ -27,6 +27,15 @@ class RetrievalIndexBuildRecord(Base):
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
         ),
+        ForeignKeyConstraint(
+            ["agreement_id", "organization_id", "workspace_id"],
+            [
+                "agreements.id",
+                "agreements.organization_id",
+                "agreements.workspace_id",
+            ],
+            name="fk_retrieval_index_builds_agreement_scope",
+        ),
         UniqueConstraint(
             "agreement_id",
             "source_checksum",
@@ -60,7 +69,7 @@ class RetrievalIndexBuildRecord(Base):
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
-    agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     source_checksum: Mapped[str] = mapped_column(String(255))
     chunker_version: Mapped[str] = mapped_column(String(100))
     state: Mapped[str] = mapped_column(String(32))
