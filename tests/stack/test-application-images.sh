@@ -30,7 +30,7 @@ RUN test ! -e /context/$secret_probe \
     && test ! -e /context/dist
 EOF
 
-for service in web api worker; do
+for service in web api worker mcp; do
   dockerfile="apps/$service/Dockerfile"
   test -f "$dockerfile" || {
     echo "Missing $dockerfile"

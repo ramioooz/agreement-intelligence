@@ -22,13 +22,14 @@ from agreement_intelligence_api.reviews.models import (
     PlaybookEvaluationRecord,
     PlaybookFindingRecord,
 )
-from opentelemetry import propagate, trace
 from opentelemetry.context.context import Context as OtelContext
+from opentelemetry.propagate import extract
+from opentelemetry.trace import get_current_span, get_tracer
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 _MAX_CITATION_EXCERPT_CHARACTERS = 2_000
-_tracer = trace.get_tracer("agreement_intelligence.mcp")
+_tracer = get_tracer("agreement_intelligence.mcp")
 
 
 class ArtifactStorage(Protocol):
@@ -46,7 +47,7 @@ class ToolCallContext:
 
     @classmethod
     def from_headers(cls, tool_name: str, headers: Mapping[str, str]) -> ToolCallContext:
-        return cls(tool_name=tool_name, parent_context=propagate.extract(dict(headers)))
+        return cls(tool_name=tool_name, parent_context=extract(dict(headers)))
 
 
 class McpReadService:
@@ -221,7 +222,7 @@ class McpReadService:
         ) as span:
             span_context = span.get_span_context()
             if not span_context.is_valid:
-                span_context = trace.get_current_span(context.parent_context).get_span_context()
+                span_context = get_current_span(context.parent_context).get_span_context()
             try:
                 self._authorize(principal, organization_id, workspace_id)
                 yield

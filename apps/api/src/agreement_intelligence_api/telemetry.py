@@ -11,7 +11,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, cast
 
-from opentelemetry import trace
+from opentelemetry.trace import get_tracer
 
 _SENSITIVE_KEYS = frozenset(
     {
@@ -38,7 +38,7 @@ def redact_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
 def operation_span(name: str, attributes: Mapping[str, object] | None = None) -> Iterator[None]:
     """Create a short-lived span with only redacted operational metadata."""
 
-    tracer = trace.get_tracer("agreement-intelligence.api")
+    tracer = get_tracer("agreement-intelligence.api")
     with tracer.start_as_current_span(
         name, attributes=cast(Any, redact_attributes(attributes or {}))
     ):
