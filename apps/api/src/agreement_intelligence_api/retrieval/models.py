@@ -8,10 +8,12 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    PrimaryKeyConstraint,
     String,
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -31,12 +33,27 @@ class RetrievalIndexBuildRecord(Base):
             "chunker_version",
             name="uq_retrieval_index_build_source",
         ),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "workspace_id",
+            "agreement_id",
+            name="uq_retrieval_index_build_scope",
+        ),
         Index(
             "ix_retrieval_index_builds_scope_active",
             "organization_id",
             "workspace_id",
             "agreement_id",
             "state",
+        ),
+        Index(
+            "uq_retrieval_index_builds_active_scope",
+            "organization_id",
+            "workspace_id",
+            "agreement_id",
+            unique=True,
+            postgresql_where=text("state = 'active'"),
         ),
     )
 
@@ -58,6 +75,17 @@ class RetrievalChunkRecord(Base):
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
         ),
+        ForeignKeyConstraint(
+            ["build_id", "organization_id", "workspace_id", "agreement_id"],
+            [
+                "retrieval_index_builds.id",
+                "retrieval_index_builds.organization_id",
+                "retrieval_index_builds.workspace_id",
+                "retrieval_index_builds.agreement_id",
+            ],
+            name="fk_retrieval_chunks_build_scope",
+        ),
+        PrimaryKeyConstraint("agreement_id", "build_id", "chunk_id", name="pk_retrieval_chunks"),
         Index(
             "ix_retrieval_chunks_scope_build",
             "organization_id",
@@ -67,7 +95,7 @@ class RetrievalChunkRecord(Base):
         ),
     )
 
-    chunk_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    chunk_id: Mapped[str] = mapped_column(String(80))
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)

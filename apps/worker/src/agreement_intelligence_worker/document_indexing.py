@@ -13,11 +13,14 @@ from sqlalchemy import (
     Column,
     DateTime,
     Engine,
+    ForeignKeyConstraint,
     Index,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     String,
     Table,
+    UniqueConstraint,
     Uuid,
     delete,
     select,
@@ -28,6 +31,8 @@ from sqlalchemy import (
 from agreement_intelligence_worker.processing import CompletedArtifact, ProcessingJob
 
 STRUCTURE_AWARE_CHUNKER_VERSION = "structure-aware.v1"
+MAX_CHUNK_TOKENS = 1_000
+CHUNK_OVERLAP_TOKENS = 100
 
 
 @dataclass(frozen=True)
@@ -56,6 +61,13 @@ retrieval_index_builds = Table(
     Column("state", String(32), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("activated_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint(
+        "id",
+        "organization_id",
+        "workspace_id",
+        "agreement_id",
+        name="uq_retrieval_index_build_scope",
+    ),
     Index(
         "uq_retrieval_index_build_source",
         "agreement_id",
@@ -70,11 +82,20 @@ retrieval_index_builds = Table(
         "agreement_id",
         "state",
     ),
+    Index(
+        "uq_retrieval_index_builds_active_scope",
+        "organization_id",
+        "workspace_id",
+        "agreement_id",
+        unique=True,
+        sqlite_where=text("state = 'active'"),
+        postgresql_where=text("state = 'active'"),
+    ),
 )
 retrieval_chunks = Table(
     "retrieval_chunks",
     worker_index_metadata,
-    Column("chunk_id", String(80), primary_key=True),
+    Column("chunk_id", String(80), nullable=False),
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("agreement_id", Uuid(as_uuid=True), nullable=False),
@@ -85,6 +106,22 @@ retrieval_chunks = Table(
     Column("heading_path", JSON, nullable=False),
     Column("anchor_ids", JSON, nullable=False),
     Column("content", String, nullable=False),
+    PrimaryKeyConstraint(
+        "agreement_id",
+        "build_id",
+        "chunk_id",
+        name="pk_retrieval_chunks",
+    ),
+    ForeignKeyConstraint(
+        ["build_id", "organization_id", "workspace_id", "agreement_id"],
+        [
+            "retrieval_index_builds.id",
+            "retrieval_index_builds.organization_id",
+            "retrieval_index_builds.workspace_id",
+            "retrieval_index_builds.agreement_id",
+        ],
+        name="fk_retrieval_chunks_build_scope",
+    ),
     Index(
         "ix_retrieval_chunks_scope_build",
         "organization_id",
@@ -181,17 +218,18 @@ class SQLAlchemyDocumentIndexSink:
                 .scalars()
                 .all()
             )
-            connection.execute(
-                update(retrieval_index_builds)
-                .where(retrieval_index_builds.c.id == build_id)
-                .values(state="active", activated_at=now)
-            )
             if stale_ids:
                 connection.execute(
                     update(retrieval_index_builds)
                     .where(retrieval_index_builds.c.id.in_(stale_ids))
                     .values(state="stale")
                 )
+            connection.execute(
+                update(retrieval_index_builds)
+                .where(retrieval_index_builds.c.id == build_id)
+                .values(state="active", activated_at=now)
+            )
+            if stale_ids:
                 connection.execute(
                     delete(retrieval_chunks).where(retrieval_chunks.c.build_id.in_(stale_ids))
                 )
@@ -214,18 +252,80 @@ def structural_chunks_from_manifest(manifest: Mapping[str, object]) -> tuple[Ret
         else:
             groups.append((current_heading_path, [(_required_string(block, "anchor_id"), text)]))
     chunks: list[RetrievalChunk] = []
-    for ordinal, (heading_path, entries) in enumerate(groups):
+    for heading_path, entries in groups:
+        chunks.extend(_chunks_for_group(checksum, heading_path, entries, len(chunks)))
+    return tuple(chunks)
+
+
+def _chunks_for_group(
+    checksum: str,
+    heading_path: tuple[str, ...],
+    entries: list[tuple[str, str]],
+    starting_ordinal: int,
+) -> list[RetrievalChunk]:
+    group_text = "\n".join(entry_text for _, entry_text in entries)
+    if _token_count(group_text) <= MAX_CHUNK_TOKENS:
         anchor_ids = tuple(anchor for anchor, _ in entries)
-        chunks.append(
+        return [
             RetrievalChunk(
-                chunk_id=_chunk_id(checksum, anchor_ids),
-                ordinal=ordinal,
+                chunk_id=_chunk_id(checksum, anchor_ids, 0),
+                ordinal=starting_ordinal,
                 heading_path=heading_path,
                 anchor_ids=anchor_ids,
-                text="\n".join(text for _, text in entries),
+                text=group_text,
+            )
+        ]
+
+    source_tokens = [
+        (anchor_id, token) for anchor_id, entry_text in entries for token in entry_text.split()
+    ]
+    chunks: list[RetrievalChunk] = []
+    current_tokens: list[tuple[str, str]] = []
+    start_token = 0
+    for source_anchor, token in source_tokens:
+        if current_tokens and len(current_tokens) == MAX_CHUNK_TOKENS:
+            chunks.append(
+                _chunk_from_tokens(
+                    checksum,
+                    heading_path,
+                    current_tokens,
+                    starting_ordinal + len(chunks),
+                    start_token,
+                )
+            )
+            overlap = current_tokens[-CHUNK_OVERLAP_TOKENS:]
+            start_token += MAX_CHUNK_TOKENS - len(overlap)
+            current_tokens = [*overlap, (source_anchor, token)]
+        else:
+            current_tokens.append((source_anchor, token))
+    if current_tokens:
+        chunks.append(
+            _chunk_from_tokens(
+                checksum,
+                heading_path,
+                current_tokens,
+                starting_ordinal + len(chunks),
+                start_token,
             )
         )
-    return tuple(chunks)
+    return chunks
+
+
+def _chunk_from_tokens(
+    checksum: str,
+    heading_path: tuple[str, ...],
+    tokens: list[tuple[str, str]],
+    ordinal: int,
+    start_token: int,
+) -> RetrievalChunk:
+    anchor_ids = tuple(dict.fromkeys(anchor_id for anchor_id, _ in tokens))
+    return RetrievalChunk(
+        chunk_id=_chunk_id(checksum, anchor_ids, start_token),
+        ordinal=ordinal,
+        heading_path=heading_path,
+        anchor_ids=anchor_ids,
+        text=" ".join(token for _, token in tokens),
+    )
 
 
 def _manifest_from_artifact(storage: ArtifactStorage, key: str) -> Mapping[str, object]:
@@ -264,12 +364,17 @@ def _required_string(value: Mapping[str, object], key: str) -> str:
     return result
 
 
-def _chunk_id(checksum: str, anchor_ids: tuple[str, ...]) -> str:
+def _token_count(value: str) -> int:
+    return len(value.split())
+
+
+def _chunk_id(checksum: str, anchor_ids: tuple[str, ...], start_token: int) -> str:
     payload = json.dumps(
         {
             "anchor_ids": anchor_ids,
             "chunker_version": STRUCTURE_AWARE_CHUNKER_VERSION,
             "source_checksum": checksum,
+            "start_token": start_token,
         },
         separators=(",", ":"),
         sort_keys=True,

@@ -46,11 +46,26 @@ def upgrade() -> None:
             "chunker_version",
             name="uq_retrieval_index_build_source",
         ),
+        sa.UniqueConstraint(
+            "id",
+            "organization_id",
+            "workspace_id",
+            "agreement_id",
+            name="uq_retrieval_index_build_scope",
+        ),
     )
     op.create_index(
         "ix_retrieval_index_builds_scope_active",
         "retrieval_index_builds",
         ["organization_id", "workspace_id", "agreement_id", "state"],
+    )
+    op.create_index(
+        "uq_retrieval_index_builds_active_scope",
+        "retrieval_index_builds",
+        ["organization_id", "workspace_id", "agreement_id"],
+        unique=True,
+        postgresql_where=sa.text("state = 'active'"),
+        sqlite_where=sa.text("state = 'active'"),
     )
     op.create_table(
         "retrieval_chunks",
@@ -72,7 +87,17 @@ def upgrade() -> None:
         ),
         sa.ForeignKeyConstraint(["agreement_id"], ["agreements.id"]),
         sa.ForeignKeyConstraint(["build_id"], ["retrieval_index_builds.id"]),
-        sa.PrimaryKeyConstraint("chunk_id"),
+        sa.PrimaryKeyConstraint("agreement_id", "build_id", "chunk_id", name="pk_retrieval_chunks"),
+        sa.ForeignKeyConstraint(
+            ["build_id", "organization_id", "workspace_id", "agreement_id"],
+            [
+                "retrieval_index_builds.id",
+                "retrieval_index_builds.organization_id",
+                "retrieval_index_builds.workspace_id",
+                "retrieval_index_builds.agreement_id",
+            ],
+            name="fk_retrieval_chunks_build_scope",
+        ),
     )
     op.create_index(
         "ix_retrieval_chunks_scope_build",
@@ -109,5 +134,6 @@ def downgrade() -> None:
             op.execute(f"ALTER TABLE {table_name} DISABLE ROW LEVEL SECURITY")
     op.drop_index("ix_retrieval_chunks_scope_build", table_name="retrieval_chunks")
     op.drop_table("retrieval_chunks")
+    op.drop_index("uq_retrieval_index_builds_active_scope", table_name="retrieval_index_builds")
     op.drop_index("ix_retrieval_index_builds_scope_active", table_name="retrieval_index_builds")
     op.drop_table("retrieval_index_builds")

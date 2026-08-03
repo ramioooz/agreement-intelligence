@@ -258,7 +258,8 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
     assert runtime is not None
     assert captured["analysis_provider"] is configured_provider
     assert captured["fallback_model_comparator"] is configured_comparator
-    assert captured["completion_handler"].handlers == (configured_sink, configured_index_sink)
+    completion_handler = cast(Any, captured["completion_handler"])
+    assert completion_handler.handlers == (configured_sink, configured_index_sink)
 
 
 def _processor_input() -> tuple[InMemoryObjectStorage, ProcessingJob]:
