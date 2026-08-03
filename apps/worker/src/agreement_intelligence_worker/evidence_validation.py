@@ -15,7 +15,7 @@ AnswerStatus = Literal[
     "answered",
     "insufficient_evidence",
     "conflicting_evidence",
-    "partial_answer",
+    "partial",
     "model_unavailable",
 ]
 
@@ -130,7 +130,7 @@ def answer_question(
         )
     if rejected:
         return GroundedAnswer(
-            status="partial_answer",
+            status="partial",
             claims=tuple(accepted),
             message="Only the supported portion of the answer is shown.",
         )

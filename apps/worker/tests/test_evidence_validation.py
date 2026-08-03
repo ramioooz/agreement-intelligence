@@ -151,7 +151,7 @@ def test_returns_only_supported_claims_when_a_candidate_is_partial() -> None:
         ),
     )
 
-    assert result.status == "partial_answer"
+    assert result.status == "partial"
     assert [claim.text for claim in result.claims] == [
         "Either party may terminate this agreement on 30 days written notice."
     ]
