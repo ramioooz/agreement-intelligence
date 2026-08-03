@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol, cast
 from uuid import UUID, uuid4
@@ -31,11 +31,19 @@ class QuestionThread:
 
 
 @dataclass(frozen=True)
+class CitationSource:
+    agreement_id: UUID
+    source_checksum: str
+    source_version: str
+
+
+@dataclass(frozen=True)
 class QuestionTurn:
     id: UUID
     question: str
     answer: GroundedAnswer
     created_at: datetime
+    citation_sources: dict[str, CitationSource] = field(default_factory=dict)
 
 
 @dataclass
@@ -141,9 +149,10 @@ class GroundedQuestionService:
             workspace_id=persisted.workspace_id,
             filters=SearchFilters(query=question, agreement_ids=persisted.agreement_ids),
         )
+        citation_sources = _citation_sources_from_search(results)
         answer = answer_question(
             question=question,
-            authorized_evidence=_evidence_from_search(results),
+            authorized_evidence=_evidence_from_search(results, citation_sources),
             answerer=lambda request: self._answerer(
                 replace(
                     request,
@@ -152,7 +161,11 @@ class GroundedQuestionService:
             ),
         )
         turn = QuestionTurn(
-            id=uuid4(), question=question, answer=answer, created_at=datetime.now(UTC)
+            id=uuid4(),
+            question=question,
+            answer=answer,
+            created_at=datetime.now(UTC),
+            citation_sources=citation_sources,
         )
         self._turns.setdefault(persisted.id, []).append(turn)
         if self._repository is not None:
@@ -166,7 +179,10 @@ class GroundedQuestionService:
                     answer_status=turn.answer.status,
                     answer_message=turn.answer.message,
                     claims=_claims_payload(turn.answer),
-                    retrieval_provenance={"result_count": len(results.items)},
+                    retrieval_provenance={
+                        "result_count": len(results.items),
+                        "citation_sources": _citation_sources_payload(citation_sources),
+                    },
                 )
             )
         return turn
@@ -220,10 +236,34 @@ class GroundedQuestionService:
             raise PermissionError("question thread is not available")
 
 
-def _evidence_from_search(results: SearchResponse) -> tuple[EvidenceSnippet, ...]:
+def _citation_sources_from_search(results: SearchResponse) -> dict[str, CitationSource]:
+    sources: dict[str, CitationSource] = {}
+    ambiguous_anchor_ids: set[str] = set()
+    for result in results.items:
+        source = CitationSource(
+            agreement_id=result.agreement_id,
+            source_checksum=result.citation.source_checksum,
+            source_version=result.citation.source_version,
+        )
+        for anchor_id in result.citation.anchor_ids:
+            existing = sources.get(anchor_id)
+            if existing is None:
+                sources[anchor_id] = source
+            elif existing != source:
+                ambiguous_anchor_ids.add(anchor_id)
+    for anchor_id in ambiguous_anchor_ids:
+        sources.pop(anchor_id, None)
+    return sources
+
+
+def _evidence_from_search(
+    results: SearchResponse, citation_sources: dict[str, CitationSource]
+) -> tuple[EvidenceSnippet, ...]:
     evidence: list[EvidenceSnippet] = []
     for result in results.items:
         for anchor_id in result.citation.anchor_ids:
+            if anchor_id not in citation_sources:
+                continue
             evidence.append(
                 EvidenceSnippet(
                     anchor=EvidenceAnchor(
@@ -237,6 +277,47 @@ def _evidence_from_search(results: SearchResponse) -> tuple[EvidenceSnippet, ...
                 )
             )
     return tuple(evidence)
+
+
+def _citation_sources_payload(
+    citation_sources: dict[str, CitationSource],
+) -> dict[str, dict[str, str]]:
+    return {
+        anchor_id: {
+            "agreement_id": str(source.agreement_id),
+            "source_checksum": source.source_checksum,
+            "source_version": source.source_version,
+        }
+        for anchor_id, source in citation_sources.items()
+    }
+
+
+def _citation_sources_from_payload(payload: dict[str, object]) -> dict[str, CitationSource]:
+    raw_sources = payload.get("citation_sources")
+    if not isinstance(raw_sources, dict):
+        return {}
+    sources: dict[str, CitationSource] = {}
+    for anchor_id, raw_source in raw_sources.items():
+        if not isinstance(anchor_id, str) or not isinstance(raw_source, dict):
+            continue
+        agreement_id = raw_source.get("agreement_id")
+        source_checksum = raw_source.get("source_checksum")
+        source_version = raw_source.get("source_version")
+        if not (
+            isinstance(agreement_id, str)
+            and isinstance(source_checksum, str)
+            and isinstance(source_version, str)
+        ):
+            continue
+        try:
+            sources[anchor_id] = CitationSource(
+                agreement_id=UUID(agreement_id),
+                source_checksum=source_checksum,
+                source_version=source_version,
+            )
+        except ValueError:
+            continue
+    return sources
 
 
 def _claims_payload(answer: GroundedAnswer) -> list[dict[str, object]]:
@@ -279,6 +360,7 @@ def _turn_from_record(record: QuestionTurnRecord) -> QuestionTurn:
             message=record.answer_message,
         ),
         created_at=record.created_at,
+        citation_sources=_citation_sources_from_payload(record.retrieval_provenance),
     )
 
 

@@ -1,10 +1,16 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.qa.repository import SQLAlchemyQuestionRepository
+from agreement_intelligence_api.qa.routes import _turn_response
 from agreement_intelligence_api.qa.schemas import CreateQuestionThreadRequest
-from agreement_intelligence_api.qa.service import GroundedQuestionService
+from agreement_intelligence_api.qa.service import (
+    CitationSource,
+    GroundedQuestionService,
+    QuestionTurn,
+)
 from agreement_intelligence_api.search.schemas import (
     SearchCitation,
     SearchIndexProvenance,
@@ -15,6 +21,7 @@ from agreement_intelligence_api.search.schemas import (
 from agreement_intelligence_worker.evidence_validation import (
     AnswerCandidate,
     Citation,
+    GroundedAnswer,
     GroundedClaim,
 )
 from sqlalchemy import create_engine
@@ -196,3 +203,41 @@ def test_persisted_thread_reloads_its_cited_turns() -> None:
 
     assert reloaded is not None
     assert reloaded.turns[0].answer.claims[0].citations[0].anchor_id == "source:page:1:block:1"
+
+
+def test_question_turn_response_identifies_the_agreement_for_each_citation() -> None:
+    agreement_id = uuid4()
+    turn = QuestionTurn(
+        id=uuid4(),
+        question="When may termination occur?",
+        answer=GroundedAnswer(
+            status="answered",
+            message="Grounded answer generated.",
+            claims=(
+                GroundedClaim(
+                    text="Termination is permitted after material breach.",
+                    citations=(
+                        Citation(
+                            anchor_id="source:page:1:block:1",
+                            supporting_quote="Termination is permitted after material breach.",
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        created_at=datetime.now(UTC),
+        citation_sources={
+            "source:page:1:block:1": CitationSource(
+                agreement_id=agreement_id,
+                source_checksum="sha256:source",
+                source_version="sha256:source",
+            )
+        },
+    )
+
+    response = _turn_response(turn)
+
+    citation = response.answer.claims[0].citations[0]
+    assert citation.agreement_id == agreement_id
+    assert citation.source_checksum == "sha256:source"
+    assert citation.source_version == "sha256:source"

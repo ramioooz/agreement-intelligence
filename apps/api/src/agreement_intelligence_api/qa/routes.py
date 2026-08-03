@@ -203,8 +203,12 @@ def _turn_response(turn: QuestionTurn) -> QuestionTurnResponse:
                         CitationResponse(
                             anchor_id=citation.anchor_id,
                             supporting_quote=citation.supporting_quote,
+                            agreement_id=source.agreement_id,
+                            source_checksum=source.source_checksum,
+                            source_version=source.source_version,
                         )
                         for citation in claim.citations
+                        if (source := turn.citation_sources.get(citation.anchor_id)) is not None
                     ],
                 )
                 for claim in turn.answer.claims

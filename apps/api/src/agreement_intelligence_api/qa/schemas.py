@@ -15,6 +15,9 @@ class QuestionRequest(BaseModel):
 class CitationResponse(BaseModel):
     anchor_id: str
     supporting_quote: str
+    agreement_id: UUID
+    source_checksum: str
+    source_version: str
 
 
 class ClaimResponse(BaseModel):
