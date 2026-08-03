@@ -27,6 +27,7 @@ from agreement_intelligence_api.processing.service import (
     IdempotencyKeyConflictError,
     RetryNotPermittedError,
 )
+from agreement_intelligence_api.qa.routes import router as questions_router
 from agreement_intelligence_api.reviews.routes import decision_router
 from agreement_intelligence_api.reviews.routes import router as reviews_router
 from agreement_intelligence_api.search.routes import router as search_router
@@ -52,3 +53,4 @@ app.include_router(playbooks_router)
 app.include_router(reviews_router)
 app.include_router(decision_router)
 app.include_router(search_router)
+app.include_router(questions_router)
