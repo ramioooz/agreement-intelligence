@@ -9,6 +9,7 @@ from agreement_intelligence_worker.analysis_provider import (
     fallback_comparator_from_environment,
     provider_from_environment,
 )
+from agreement_intelligence_worker.document_indexing import SQLAlchemyDocumentIndexSink
 from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
     S3ObjectStorage,
@@ -17,6 +18,7 @@ from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
 from agreement_intelligence_worker.playbook_evaluation import SQLAlchemyPlaybookEvaluationSink
 from agreement_intelligence_worker.processing import (
+    CompletionHandlerFanout,
     JobProcessor,
     SQLAlchemyProcessingJobRepository,
     SQSProcessingMessageReceiver,
@@ -84,10 +86,15 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
             storage,
             analysis_provider=provider_from_environment(),
         ),
-        completion_handler=SQLAlchemyPlaybookEvaluationSink(
-            engine,
-            storage,
-            fallback_model_comparator=fallback_comparator_from_environment(),
+        completion_handler=CompletionHandlerFanout(
+            handlers=(
+                SQLAlchemyPlaybookEvaluationSink(
+                    engine,
+                    storage,
+                    fallback_model_comparator=fallback_comparator_from_environment(),
+                ),
+                SQLAlchemyDocumentIndexSink(engine, storage),
+            )
         ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)

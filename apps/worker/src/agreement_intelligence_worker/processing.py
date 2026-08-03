@@ -149,6 +149,15 @@ class CompletionHandler(Protocol):
 
 
 @dataclass(frozen=True)
+class CompletionHandlerFanout:
+    handlers: tuple[CompletionHandler, ...]
+
+    def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+        for handler in self.handlers:
+            handler.completed(job, artifact)
+
+
+@dataclass(frozen=True)
 class RetryPolicy:
     max_attempts: int = 3
     base_delay_seconds: int = 2

@@ -17,9 +17,10 @@ from agreement_intelligence_api.processing.models import (
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from pytest import fixture
-from sqlalchemy import create_engine
+from pytest import fixture, raises
+from sqlalchemy import create_engine, text
 from sqlalchemy import inspect as inspect_database
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 AUTH_CORRELATION_ID = "11111111-1111-4111-8111-111111111111"
@@ -578,3 +579,87 @@ def test_agreement_migration_creates_repository_tables(tmp_path: Path) -> None:
         create_engine(f"sqlite+pysqlite:///{database_path}")
     ).get_table_names()
     assert "agreements" in table_names
+
+
+def test_retrieval_index_build_migration_rejects_an_agreement_from_another_scope(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "retrieval-index-scope.db"
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+pysqlite:///{database_path}")
+    command.upgrade(config, "head")
+
+    organization_a, organization_b = uuid4().hex, uuid4().hex
+    workspace_a, workspace_b = uuid4().hex, uuid4().hex
+    agreement_a = uuid4().hex
+    engine = create_engine(f"sqlite+pysqlite:///{database_path}")
+    try:
+        with engine.begin() as connection:
+            connection.execute(text("PRAGMA foreign_keys = ON"))
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO organizations (id, name, slug) VALUES
+                    (:organization_a, 'Organization A', 'organization-a'),
+                    (:organization_b, 'Organization B', 'organization-b')
+                    """
+                ),
+                {"organization_a": organization_a, "organization_b": organization_b},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO workspaces (id, organization_id, name, slug) VALUES
+                    (:workspace_a, :organization_a, 'Workspace A', 'workspace-a'),
+                    (:workspace_b, :organization_b, 'Workspace B', 'workspace-b')
+                    """
+                ),
+                {
+                    "workspace_a": workspace_a,
+                    "organization_a": organization_a,
+                    "workspace_b": workspace_b,
+                    "organization_b": organization_b,
+                },
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO agreements (
+                        id, organization_id, workspace_id, title, agreement_type, status,
+                        parties, files, processing_state, audit_metadata, audit_events
+                    ) VALUES (
+                        :agreement_a, :organization_a, :workspace_a, 'Agreement A', 'client',
+                        'draft', '[]', '[]', 'queued', '{}', '[]'
+                    )
+                    """
+                ),
+                {
+                    "agreement_a": agreement_a,
+                    "organization_a": organization_a,
+                    "workspace_a": workspace_a,
+                },
+            )
+
+            with raises(IntegrityError):
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO retrieval_index_builds (
+                            id, organization_id, workspace_id, agreement_id, source_checksum,
+                            chunker_version, state
+                        ) VALUES (
+                            :build_id, :organization_b, :workspace_b, :agreement_a,
+                            :source_checksum, 'structure-aware.v1', 'building'
+                        )
+                        """
+                    ),
+                    {
+                        "build_id": uuid4().hex,
+                        "organization_b": organization_b,
+                        "workspace_b": workspace_b,
+                        "agreement_a": agreement_a,
+                        "source_checksum": "a" * 64,
+                    },
+                )
+    finally:
+        engine.dispose()
