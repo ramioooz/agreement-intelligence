@@ -169,12 +169,15 @@ contracts share the same typed gateway boundary; Anthropic and Gemini adapters
 remain intentionally future work rather than runtime dependencies.
 
 Retrieval embeddings use separately versioned settings: `EMBEDDING_MODEL`,
-`EMBEDDING_DIMENSIONS`, and `EMBEDDING_INDEX_VERSION`. The default is
-`text-embedding-3-small` at 1,536 dimensions. Each chunk records provider,
-model, dimension, configuration/index versions, latency, token/cost estimate,
-and safe failure state. If no provider is configured, indexing records an
-unavailable embedding state and later search safely falls back to PostgreSQL
-lexical retrieval rather than blocking repository access.
+`EMBEDDING_FALLBACK_MODEL`, `EMBEDDING_DIMENSIONS`, and
+`EMBEDDING_INDEX_VERSION`. The default is `text-embedding-3-small` at 1,536
+dimensions. When hosted fallback is enabled, it uses
+`EMBEDDING_FALLBACK_MODEL` or `EMBEDDING_MODEL`; it never uses the generation
+model or its fallback. Each chunk records provider, model, dimension,
+configuration/index versions, latency, token/cost estimate, and safe failure
+state. If no provider is configured, indexing records an unavailable embedding
+state and later search safely falls back to PostgreSQL lexical retrieval rather
+than blocking repository access.
 
 See the
 [monorepo foundation design](docs/plans/2026-07-27-monorepo-foundation-design.md)

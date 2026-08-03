@@ -12,9 +12,10 @@ from agreement_intelligence_worker.model_gateway import (
     ModelGatewayConfiguration,
     OpenAIModelGateway,
     embedding_configuration_from_environment,
+    embedding_gateway_from_environment,
     model_gateway_from_environment,
 )
-from pytest import raises
+from pytest import mark, raises
 
 
 class _Response:
@@ -88,6 +89,34 @@ def test_environment_selects_an_openai_compatible_endpoint(monkeypatch: MonkeyPa
     assert gateway.configuration.mode == "openai-compatible"
     assert gateway.configuration.endpoint_kind == "openai-compatible"
     assert gateway.configuration.base_url == "http://llama-cpp:8080/v1"
+
+
+@mark.parametrize(
+    ("embedding_fallback_model", "expected_fallback_model"),
+    [(None, "embedding-model"), ("embedding-fallback-model", "embedding-fallback-model")],
+)
+def test_compatible_embedding_gateway_uses_a_dedicated_embedding_model_for_hosted_fallback(
+    monkeypatch: MonkeyPatch,
+    embedding_fallback_model: str | None,
+    expected_fallback_model: str,
+) -> None:
+    monkeypatch.setenv("MODEL_GATEWAY_MODE", "openai-compatible")
+    monkeypatch.setenv("MODEL_GATEWAY_BASE_URL", "http://llama-cpp:8080/v1")
+    monkeypatch.setenv("MODEL_GATEWAY_FALLBACK_MODE", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "hosted-key")
+    monkeypatch.setenv("OPENAI_MODEL", "generation-model")
+    monkeypatch.setenv("MODEL_GATEWAY_FALLBACK_MODEL", "generation-fallback-model")
+    monkeypatch.setenv("EMBEDDING_MODEL", "embedding-model")
+    if embedding_fallback_model is None:
+        monkeypatch.delenv("EMBEDDING_FALLBACK_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("EMBEDDING_FALLBACK_MODEL", embedding_fallback_model)
+
+    gateway = embedding_gateway_from_environment(client_factory=lambda **_: object())
+
+    assert gateway is not None
+    assert gateway.configuration.model == "embedding-model"
+    assert gateway.configuration.fallback_model == expected_fallback_model
 
 
 def test_unavailable_compatible_endpoint_uses_configured_hosted_fallback() -> None:

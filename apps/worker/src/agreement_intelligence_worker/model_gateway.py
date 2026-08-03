@@ -360,6 +360,7 @@ def model_gateway_from_environment(
     client_factory: Callable[..., Any] = OpenAI,
     model_override: str | None = None,
     configuration_version_override: str | None = None,
+    fallback_model_override: str | None = None,
 ) -> OpenAIModelGateway | None:
     mode = cast(GatewayMode, os.environ.get("MODEL_GATEWAY_MODE", "openai"))
     if mode not in {"openai", "openai-compatible"}:
@@ -403,7 +404,8 @@ def model_gateway_from_environment(
         api_key=os.environ.get("MODEL_GATEWAY_API_KEY", "not-required"),
         configuration_version=version,
         fallback_model=(
-            os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL", os.environ.get("OPENAI_MODEL", model))
+            fallback_model_override
+            or os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL", os.environ.get("OPENAI_MODEL", model))
             if fallback_key
             else None
         ),
@@ -444,6 +446,7 @@ def embedding_gateway_from_environment(
         client_factory=client_factory,
         model_override=configuration.model,
         configuration_version_override=configuration.configuration_version,
+        fallback_model_override=os.environ.get("EMBEDDING_FALLBACK_MODEL") or configuration.model,
     )
 
 
