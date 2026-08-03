@@ -8,7 +8,7 @@ COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STA
 
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
-	format format-check lint typecheck test build check provider-smoke
+	format format-check lint typecheck test build check provider-smoke retrieval-eval
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -28,6 +28,7 @@ help:
 	@echo "  make build          Build every application"
 	@echo "  make check          Run all pre-review source checks"
 	@echo "  make provider-smoke Run an opt-in configured-provider smoke check"
+	@echo "  make retrieval-eval Evaluate retrieval and grounded-answer results"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -135,3 +136,9 @@ terraform-check:
 
 provider-smoke:
 	uv run --env-file "$(STACK_ENV_FILE)" python -m agreement_intelligence_worker.provider_smoke
+
+retrieval-eval:
+	@[ -n "$(RETRIEVAL_EVAL_RESULTS)" ] || { \
+		echo "RETRIEVAL_EVAL_RESULTS must name an evaluation results JSON file."; exit 1; \
+	}
+	uv run --package agreement-intelligence-worker python -m agreement_intelligence_worker.retrieval_evaluation --results "$(RETRIEVAL_EVAL_RESULTS)"
