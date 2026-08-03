@@ -5,10 +5,12 @@ from typing import Any
 
 from _pytest.monkeypatch import MonkeyPatch
 from agreement_intelligence_worker.model_gateway import (
+    EmbeddingConfiguration,
     GatewayConfigurationError,
     GatewayUnavailableError,
     ModelGatewayConfiguration,
     OpenAIModelGateway,
+    embedding_configuration_from_environment,
     model_gateway_from_environment,
 )
 from pytest import raises
@@ -40,6 +42,30 @@ def test_environment_selects_openai_by_default(monkeypatch: MonkeyPatch) -> None
     assert gateway is not None
     assert gateway.configuration.mode == "openai"
     assert gateway.configuration.endpoint_kind == "hosted"
+
+
+def test_embedding_configuration_is_independent_from_generation_configuration(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "generation-model")
+    monkeypatch.setenv("EMBEDDING_MODEL", "embedding-model")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1536")
+    monkeypatch.setenv("EMBEDDING_INDEX_VERSION", "embedding-v1")
+    monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "2")
+    monkeypatch.setenv("EMBEDDING_MAX_RETRIES", "3")
+
+    configuration = embedding_configuration_from_environment()
+
+    assert configuration == EmbeddingConfiguration(
+        model="embedding-model",
+        dimensions=1536,
+        index_version="embedding-v1",
+        batch_size=2,
+        max_retries=3,
+        configuration_version="embedding-gateway.v1",
+        input_cost_per_million_tokens=0.02,
+    )
 
 
 def test_compatible_mode_requires_an_endpoint(monkeypatch: MonkeyPatch) -> None:

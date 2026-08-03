@@ -42,6 +42,19 @@ class ModelGatewayConfiguration:
 
 
 @dataclass(frozen=True)
+class EmbeddingConfiguration:
+    """Versioned embedding settings, deliberately separate from generation settings."""
+
+    model: str
+    dimensions: int
+    index_version: str
+    batch_size: int
+    max_retries: int
+    configuration_version: str
+    input_cost_per_million_tokens: float
+
+
+@dataclass(frozen=True)
 class GatewayProvenance:
     provider: str
     endpoint_kind: EndpointKind
@@ -67,6 +80,7 @@ class GatewayJsonResponse:
 class EmbeddingRequest:
     inputs: Sequence[str]
     model: str | None = None
+    dimensions: int | None = None
 
 
 @dataclass(frozen=True)
@@ -163,9 +177,14 @@ class OpenAIModelGateway:
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         started_at = perf_counter()
         try:
+            request_options: dict[str, object] = {
+                "model": request.model or self.configuration.model,
+                "input": list(request.inputs),
+            }
+            if request.dimensions is not None:
+                request_options["dimensions"] = request.dimensions
             response = self._client.embeddings.create(
-                model=request.model or self.configuration.model,
-                input=list(request.inputs),
+                **request_options,
             )
         except Exception as error:
             raise _gateway_error(error) from error
@@ -281,13 +300,20 @@ class OpenAIModelGateway:
 
 
 def model_gateway_from_environment(
-    *, client_factory: Callable[..., Any] = OpenAI
+    *,
+    client_factory: Callable[..., Any] = OpenAI,
+    model_override: str | None = None,
+    configuration_version_override: str | None = None,
 ) -> OpenAIModelGateway | None:
     mode = cast(GatewayMode, os.environ.get("MODEL_GATEWAY_MODE", "openai"))
     if mode not in {"openai", "openai-compatible"}:
         raise GatewayConfigurationError("MODEL_GATEWAY_MODE must be openai or openai-compatible")
-    model = os.environ.get("MODEL_GATEWAY_MODEL", os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"))
-    version = os.environ.get("MODEL_GATEWAY_CONFIG_VERSION", "model-gateway.v1")
+    model = model_override or os.environ.get(
+        "MODEL_GATEWAY_MODEL", os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+    )
+    version = configuration_version_override or os.environ.get(
+        "MODEL_GATEWAY_CONFIG_VERSION", "model-gateway.v1"
+    )
     if mode == "openai":
         api_key = os.environ.get("MODEL_GATEWAY_API_KEY", os.environ.get("OPENAI_API_KEY"))
         if not api_key:
@@ -331,6 +357,37 @@ def model_gateway_from_environment(
         configuration,
         client=client_factory(api_key=configuration.api_key, base_url=base_url),
         fallback_client=client_factory(api_key=fallback_key) if fallback_key else None,
+    )
+
+
+def embedding_configuration_from_environment() -> EmbeddingConfiguration:
+    """Read explicit, independently-versioned embedding configuration."""
+
+    dimensions = _positive_environment_integer("EMBEDDING_DIMENSIONS", 1536)
+    batch_size = _positive_environment_integer("EMBEDDING_BATCH_SIZE", 32)
+    max_retries = _non_negative_environment_integer("EMBEDDING_MAX_RETRIES", 2)
+    input_cost = _non_negative_environment_float("EMBEDDING_INPUT_COST_PER_MILLION_TOKENS", 0.02)
+    return EmbeddingConfiguration(
+        model=os.environ.get("EMBEDDING_MODEL", "text-embedding-3-small"),
+        dimensions=dimensions,
+        index_version=os.environ.get("EMBEDDING_INDEX_VERSION", "embedding-v1"),
+        batch_size=batch_size,
+        max_retries=max_retries,
+        configuration_version=os.environ.get("EMBEDDING_CONFIG_VERSION", "embedding-gateway.v1"),
+        input_cost_per_million_tokens=input_cost,
+    )
+
+
+def embedding_gateway_from_environment(
+    *, client_factory: Callable[..., Any] = OpenAI
+) -> OpenAIModelGateway | None:
+    """Build an embedding gateway without inheriting the generation-model choice."""
+
+    configuration = embedding_configuration_from_environment()
+    return model_gateway_from_environment(
+        client_factory=client_factory,
+        model_override=configuration.model,
+        configuration_version_override=configuration.configuration_version,
     )
 
 
@@ -433,3 +490,40 @@ def _usage_integer(usage: object, *names: str) -> int | None:
         if isinstance(value, int) and value >= 0:
             return value
     return None
+
+
+def _positive_environment_integer(name: str, default: int) -> int:
+    value = _environment_integer(name, default)
+    if value < 1:
+        raise GatewayConfigurationError(f"{name} must be a positive integer")
+    return value
+
+
+def _non_negative_environment_integer(name: str, default: int) -> int:
+    value = _environment_integer(name, default)
+    if value < 0:
+        raise GatewayConfigurationError(f"{name} must be zero or a positive integer")
+    return value
+
+
+def _environment_integer(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError as error:
+        raise GatewayConfigurationError(f"{name} must be an integer") from error
+
+
+def _non_negative_environment_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise GatewayConfigurationError(f"{name} must be a number") from error
+    if value < 0:
+        raise GatewayConfigurationError(f"{name} must be zero or positive")
+    return value
