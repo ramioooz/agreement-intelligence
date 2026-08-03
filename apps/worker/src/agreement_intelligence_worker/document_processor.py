@@ -256,4 +256,17 @@ def _provider_provenance(enriched: ValidatedAnalysis) -> dict[str, object]:
         provenance["input_tokens"] = enriched.provenance["input_tokens"]
     if enriched.provenance["output_tokens"] is not None:
         provenance["output_tokens"] = enriched.provenance["output_tokens"]
+    for key in (
+        "endpoint_kind",
+        "configuration_version",
+        "total_tokens",
+        "cost_usd",
+        "retry_outcome",
+        "fallback_outcome",
+        "safe_failure_reason",
+    ):
+        if key in enriched.provenance:
+            provenance[key] = enriched.provenance[key]
+    if "provider" in enriched.provenance:
+        provenance["provider"] = enriched.provenance["provider"]
     return provenance

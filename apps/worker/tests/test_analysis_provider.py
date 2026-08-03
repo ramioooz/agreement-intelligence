@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import json
 from importlib import import_module
-from typing import Any
+from typing import Any, cast
 
 from _pytest.monkeypatch import MonkeyPatch
 from agreement_intelligence_worker.analysis_provider import (
     HostedAnalysisProvider,
     provider_from_environment,
+)
+from agreement_intelligence_worker.model_gateway import (
+    GatewayJsonResponse,
+    GatewayProvenance,
+    ModelGateway,
 )
 
 VALID_RESPONSE = json.dumps(
@@ -58,6 +63,43 @@ def test_provider_is_disabled_without_an_api_key(monkeypatch: MonkeyPatch) -> No
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     assert provider_from_environment() is None
+
+
+def test_analysis_provider_preserves_gateway_provenance() -> None:
+    provenance = GatewayProvenance(
+        provider="openai-compatible",
+        endpoint_kind="openai-compatible",
+        model="local-model.gguf",
+        configuration_version="model-gateway.v1",
+        latency_ms=27,
+        input_tokens=10,
+        output_tokens=5,
+        total_tokens=15,
+        cost_usd=None,
+        retry_outcome="not_retried",
+        fallback_outcome="not_needed",
+        safe_failure_reason=None,
+    )
+    provider = HostedAnalysisProvider(
+        gateway=cast(
+            ModelGateway,
+            _GatewayRecordingClient(GatewayJsonResponse(json.loads(VALID_RESPONSE), provenance)),
+        )
+    )
+
+    analysis = provider.analyze([("citation-a", "Termination is permitted on notice.")])
+
+    assert analysis.gateway_provenance == provenance
+    assert analysis.model == "local-model.gguf"
+    assert analysis.input_tokens == 10
+
+
+class _GatewayRecordingClient:
+    def __init__(self, response: GatewayJsonResponse) -> None:
+        self.response = response
+
+    def generate_json(self, **kwargs: Any) -> GatewayJsonResponse:
+        return self.response
 
 
 def test_provider_receives_only_anchor_ids_and_extracted_blocks() -> None:

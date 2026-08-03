@@ -9,6 +9,7 @@ from uuid import uuid4
 import boto3
 from agreement_intelligence_worker.analysis_provider import ProviderAnalysis
 from agreement_intelligence_worker.document_processor import DocumentUnderstandingProcessor
+from agreement_intelligence_worker.model_gateway import GatewayProvenance
 from agreement_intelligence_worker.processing import ProcessingJob, TransientProcessingError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -32,6 +33,30 @@ class InMemoryObjectStorage:
 class FakeProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
         return _valid_provider_response(blocks[0][0])
+
+
+class ProvenancedProvider:
+    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+        response = _valid_provider_response(blocks[0][0])
+        return ProviderAnalysis(
+            **{
+                **response.__dict__,
+                "gateway_provenance": GatewayProvenance(
+                    provider="openai-compatible",
+                    endpoint_kind="openai-compatible",
+                    model="local-model.gguf",
+                    configuration_version="model-gateway.v1",
+                    latency_ms=42,
+                    input_tokens=10,
+                    output_tokens=20,
+                    total_tokens=30,
+                    cost_usd=None,
+                    retry_outcome="not_retried",
+                    fallback_outcome="hosted_fallback_succeeded",
+                    safe_failure_reason="compatible_endpoint_unavailable",
+                ),
+            }
+        )
 
 
 class FailingProvider:
@@ -96,6 +121,31 @@ def test_processor_publishes_validated_provider_enrichment() -> None:
         "latency_ms": 30,
         "input_tokens": 10,
         "output_tokens": 20,
+    }
+
+
+def test_processor_records_gateway_provider_outcome_in_provenance() -> None:
+    storage, job = _processor_input()
+    processor = DocumentUnderstandingProcessor(storage, analysis_provider=ProvenancedProvider())
+
+    manifest = _process_manifest(processor, storage, job)
+
+    assert manifest["analysis_provenance"] == {
+        "mode": "hybrid",
+        "provider": "openai-compatible",
+        "endpoint_kind": "openai-compatible",
+        "model": "local-model.gguf",
+        "configuration_version": "model-gateway.v1",
+        "schema_version": "agreement-analysis.v1",
+        "prompt_version": "agreement-analysis.v1",
+        "latency_ms": 42,
+        "input_tokens": 10,
+        "output_tokens": 20,
+        "total_tokens": 30,
+        "cost_usd": None,
+        "retry_outcome": "not_retried",
+        "fallback_outcome": "hosted_fallback_succeeded",
+        "safe_failure_reason": "compatible_endpoint_unavailable",
     }
 
 

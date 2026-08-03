@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-import json
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Any, Protocol, cast
-
-from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
 
 from agreement_intelligence_worker.fallback_suggestions import (
     FallbackModelComparator,
     FallbackSuggestionRequest,
 )
+from agreement_intelligence_worker.model_gateway import (
+    GatewayProvenance,
+    GatewayResponseError,
+    GatewayUnavailableError,
+    ModelGateway,
+    ModelGatewayConfiguration,
+    OpenAIModelGateway,
+    model_gateway_from_environment,
+)
 
 MAX_BLOCKS = 100
 MAX_CHARACTERS_PER_BLOCK = 4_000
-_RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
 _ANALYSIS_INSTRUCTION = (
     "Analyze only the supplied agreement blocks. Return classification using families "
     "client_agreement, "
@@ -47,6 +50,7 @@ class ProviderAnalysis:
     input_tokens: int | None
     output_tokens: int | None
     latency_ms: int
+    gateway_provenance: GatewayProvenance | None = None
 
 
 class AnalysisProvider(Protocol):
@@ -62,113 +66,110 @@ class ProviderPermanentError(Exception):
 
 
 class HostedAnalysisProvider:
-    def __init__(self, *, client: Any, model: str) -> None:
-        self._client = client
-        self._model = model
+    def __init__(
+        self,
+        *,
+        gateway: ModelGateway | None = None,
+        client: Any | None = None,
+        model: str | None = None,
+    ) -> None:
+        if gateway is not None:
+            self._gateway = gateway
+            return
+        if client is None or model is None:
+            raise ValueError("gateway or client and model are required")
+        self._gateway = OpenAIModelGateway(
+            ModelGatewayConfiguration(
+                mode="openai",
+                model=model,
+                endpoint_kind="hosted",
+                base_url=None,
+                api_key="injected-client",
+            ),
+            client=client,
+        )
 
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
-        started_at = perf_counter()
         try:
-            response = self._client.responses.create(
-                model=self._model,
-                input=[
-                    {
-                        "role": "system",
-                        "content": [{"type": "input_text", "text": _ANALYSIS_INSTRUCTION}],
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": json.dumps({"blocks": _bounded_blocks(blocks)}),
-                            }
-                        ],
-                    },
-                ],
-                text={"format": _response_format()},
+            response = self._gateway.generate_json(
+                instruction=_ANALYSIS_INSTRUCTION,
+                payload={"blocks": _bounded_blocks(blocks)},
+                schema=cast(dict[str, object], _response_format()["schema"]),
             )
-        except APIStatusError as error:
-            if error.status_code in _RETRYABLE_STATUS_CODES or error.status_code >= 500:
-                raise ProviderTransientError("Provider returned a retryable response") from error
-            raise ProviderPermanentError("Provider rejected the analysis request") from error
-        except (APIConnectionError, APIError) as error:
+        except GatewayUnavailableError as error:
             raise ProviderTransientError("Provider connection was unavailable") from error
-        except OpenAIError as error:
+        except GatewayResponseError as error:
             raise ProviderPermanentError("Provider rejected the analysis request") from error
-        parsed = cast(object, json.loads(response.output_text))
-        payload = _analysis_payload(parsed)
-        usage = getattr(response, "usage", None)
+        payload = _analysis_payload(response.payload)
+        provenance = response.provenance
         return ProviderAnalysis(
             classification=payload["classification"],
             clauses=payload["clauses"],
             risks=payload["risks"],
             summaries=payload["summaries"],
-            model=self._model,
-            input_tokens=getattr(usage, "input_tokens", None),
-            output_tokens=getattr(usage, "output_tokens", None),
-            latency_ms=round((perf_counter() - started_at) * 1_000),
+            model=provenance.model,
+            input_tokens=provenance.input_tokens,
+            output_tokens=provenance.output_tokens,
+            latency_ms=provenance.latency_ms,
+            gateway_provenance=provenance,
         )
 
 
 class HostedFallbackComparator:
     """Optional worker-only comparison provider that cannot select policy wording."""
 
-    def __init__(self, *, client: Any, model: str) -> None:
-        self._client = client
-        self._model = model
+    def __init__(
+        self,
+        *,
+        gateway: ModelGateway | None = None,
+        client: Any | None = None,
+        model: str | None = None,
+    ) -> None:
+        if gateway is not None:
+            self._gateway = gateway
+            return
+        if client is None or model is None:
+            raise ValueError("gateway or client and model are required")
+        self._gateway = OpenAIModelGateway(
+            ModelGatewayConfiguration(
+                mode="openai",
+                model=model,
+                endpoint_kind="hosted",
+                base_url=None,
+                api_key="injected-client",
+            ),
+            client=client,
+        )
 
     def __call__(self, request: FallbackSuggestionRequest) -> Mapping[str, object]:
         approved_language = _approved_language(request)
         if approved_language is None or not request.cited_clause_text:
             return {}
-        response = self._client.responses.create(
-            model=self._model,
-            input=[
-                {
-                    "role": "system",
-                    "content": [{"type": "input_text", "text": _FALLBACK_COMPARISON_INSTRUCTION}],
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": json.dumps(
-                                {
-                                    "citation_ids": request.citation_ids,
-                                    "cited_clause_text": request.cited_clause_text,
-                                    "approved_language": approved_language,
-                                }
-                            ),
-                        }
-                    ],
-                },
-            ],
-            text={"format": _fallback_comparison_response_format()},
+        response = self._gateway.generate_json(
+            instruction=_FALLBACK_COMPARISON_INSTRUCTION,
+            payload={
+                "citation_ids": request.citation_ids,
+                "cited_clause_text": request.cited_clause_text,
+                "approved_language": approved_language,
+            },
+            schema=cast(dict[str, object], _fallback_comparison_response_format()["schema"]),
         )
-        payload = cast(object, json.loads(response.output_text))
+        payload = cast(object, response.payload)
         return payload if isinstance(payload, dict) else {}
 
 
 def provider_from_environment() -> AnalysisProvider | None:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    gateway = model_gateway_from_environment()
+    if gateway is None:
         return None
-    return HostedAnalysisProvider(
-        client=OpenAI(api_key=api_key),
-        model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
-    )
+    return HostedAnalysisProvider(gateway=gateway)
 
 
 def fallback_comparator_from_environment() -> FallbackModelComparator | None:
-    api_key = os.environ.get("OPENAI_API_KEY")
-    if not api_key:
+    gateway = model_gateway_from_environment()
+    if gateway is None:
         return None
-    return HostedFallbackComparator(
-        client=OpenAI(api_key=api_key),
-        model=os.environ.get("OPENAI_MODEL", "gpt-5.4-mini"),
-    )
+    return HostedFallbackComparator(gateway=gateway)
 
 
 def _approved_language(request: FallbackSuggestionRequest) -> str | None:

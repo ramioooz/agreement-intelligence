@@ -12,8 +12,9 @@ test -f compose.yaml || {
 env_file=$(mktemp)
 config_file=$(mktemp)
 json_file=$(mktemp)
+profile_json_file=$(mktemp)
 cleanup() {
-  rm -f "$env_file" "$config_file" "$json_file"
+  rm -f "$env_file" "$config_file" "$json_file" "$profile_json_file"
 }
 trap cleanup EXIT INT TERM
 
@@ -23,10 +24,13 @@ docker compose --project-name agreement-intelligence \
   --env-file "$env_file" config >"$config_file"
 docker compose --project-name agreement-intelligence \
   --env-file "$env_file" config --format json >"$json_file"
+docker compose --project-name agreement-intelligence --profile local-model \
+  --env-file "$env_file" config --format json >"$profile_json_file"
 
-node - "$json_file" <<'NODE'
+node - "$json_file" "$profile_json_file" <<'NODE'
 const fs = require("node:fs");
 const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+const profileConfig = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
 
 for (const serviceName of ["postgres", "localstack", "keycloak"]) {
   if (!config.services?.[serviceName]?.healthcheck?.test?.length) {
@@ -41,6 +45,21 @@ if (config.services?.keycloak?.depends_on?.postgres?.condition !== "service_heal
 const workerHealthcheck = config.services?.worker?.healthcheck?.test?.join(" ") ?? "";
 if (workerHealthcheck.includes("kill -0 1")) {
   throw new Error("Worker Compose healthcheck must not replace the image heartbeat check");
+}
+
+const localModel = profileConfig.services?.["llama-cpp"];
+if (!localModel?.profiles?.includes("local-model")) {
+  throw new Error("llama.cpp must remain behind the local-model profile");
+}
+if (!localModel?.image?.startsWith("ghcr.io/ggml-org/llama.cpp:server-")) {
+  throw new Error("llama.cpp must use a pinned server image");
+}
+const modelMount = localModel?.volumes?.find((volume) => volume.target === "/models");
+if (!modelMount || modelMount.read_only !== true || modelMount.type !== "bind") {
+  throw new Error("llama.cpp must use a read-only user-supplied GGUF mount");
+}
+if ((localModel?.command ?? []).join(" ").includes("curl") || (localModel?.command ?? []).join(" ").includes("wget")) {
+  throw new Error("llama.cpp must not download model weights during startup");
 }
 
 if (!config.volumes?.["postgres-data"]) {
