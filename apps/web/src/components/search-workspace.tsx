@@ -10,6 +10,7 @@ import type {
   QuestionTurn,
 } from "@/lib/question-api";
 import type { SearchResult } from "@/lib/search-api";
+import type { SearchFilters } from "@/lib/search-api";
 
 export type QuestionAnswerState = {
   state:
@@ -28,6 +29,7 @@ export type QuestionAnswerState = {
 
 type SearchWorkspaceProps = {
   initialQuery: string;
+  initialFilters?: SearchFilters;
   results?: SearchResult[];
   qaState?: QuestionAnswerState;
   thread?: QuestionThread;
@@ -52,12 +54,30 @@ function answerState(turn: QuestionTurn): QuestionAnswerState {
 
 export function SearchWorkspace({
   initialQuery,
+  initialFilters = {},
   results = [],
   qaState,
   thread,
 }: SearchWorkspaceProps) {
   const router = useRouter();
   const [query, setQuery] = useState(initialQuery);
+  const [agreementType, setAgreementType] = useState(
+    initialFilters.agreementType ?? "",
+  );
+  const [party, setParty] = useState(initialFilters.party ?? "");
+  const [status, setStatus] = useState(initialFilters.status ?? "");
+  const [updatedAfter, setUpdatedAfter] = useState(
+    initialFilters.updatedAfter ?? "",
+  );
+  const [updatedBefore, setUpdatedBefore] = useState(
+    initialFilters.updatedBefore ?? "",
+  );
+  const [sourceVersion, setSourceVersion] = useState(
+    initialFilters.sourceVersion ?? "",
+  );
+  const [agreementIds, setAgreementIds] = useState(
+    initialFilters.agreementIds?.join(", ") ?? "",
+  );
   const [question, setQuestion] = useState("");
   const [questionState, setQuestionState] = useState(qaState);
   const [threadId, setThreadId] = useState(thread?.id);
@@ -66,7 +86,21 @@ export function SearchWorkspace({
   function submitSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const normalized = query.trim();
-    const params = new URLSearchParams({ q: normalized });
+    const params = new URLSearchParams();
+    if (normalized) params.set("q", normalized);
+    if (agreementType) params.set("agreement_type", agreementType);
+    if (party.trim()) params.set("party", party.trim());
+    if (status) params.set("status", status);
+    if (updatedAfter) params.set("updated_after", updatedAfter);
+    if (updatedBefore) params.set("updated_before", updatedBefore);
+    if (sourceVersion.trim())
+      params.set("source_version", sourceVersion.trim());
+    for (const agreementId of agreementIds.split(",")) {
+      const normalizedAgreementId = agreementId.trim();
+      if (normalizedAgreementId) {
+        params.append("agreement_id", normalizedAgreementId);
+      }
+    }
     router.push(
       normalized ? `/dashboard/search?${params}` : "/dashboard/search",
     );
@@ -141,7 +175,7 @@ export function SearchWorkspace({
 
       <form
         aria-label="Portfolio search"
-        className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-[1fr_auto]"
+        className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-2"
         onSubmit={submitSearch}
       >
         <label className="grid gap-1.5 text-sm font-medium">
@@ -155,8 +189,84 @@ export function SearchWorkspace({
             value={query}
           />
         </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Agreement type
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            onChange={(event) => setAgreementType(event.target.value)}
+            placeholder="For example, client_agreement"
+            value={agreementType}
+          />
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Party
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            onChange={(event) => setParty(event.target.value)}
+            placeholder="Party name"
+            value={party}
+          />
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Status
+          <select
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            onChange={(event) => setStatus(event.target.value)}
+            value={status}
+          >
+            <option value="">All statuses</option>
+            <option value="draft">Draft</option>
+            <option value="active">Active</option>
+            <option value="expired">Expired</option>
+            <option value="terminated">Terminated</option>
+          </select>
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Updated after
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            onChange={(event) => setUpdatedAfter(event.target.value)}
+            type="date"
+            value={updatedAfter}
+          />
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Updated before
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            onChange={(event) => setUpdatedBefore(event.target.value)}
+            type="date"
+            value={updatedBefore}
+          />
+        </label>
+        <label className="grid gap-1.5 text-sm font-medium">
+          Source version
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            onChange={(event) => setSourceVersion(event.target.value)}
+            placeholder="For example, v3"
+            value={sourceVersion}
+          />
+        </label>
+        <div className="grid gap-1.5 text-sm font-medium md:col-span-2">
+          <label htmlFor="agreement-ids">Agreement IDs</label>
+          <input
+            aria-describedby="agreement-ids-help"
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            id="agreement-ids"
+            onChange={(event) => setAgreementIds(event.target.value)}
+            placeholder="Comma-separated agreement IDs"
+            value={agreementIds}
+          />
+          <span
+            className="text-xs font-normal text-slate-600"
+            id="agreement-ids-help"
+          >
+            Optional. Limit results to specific authorized agreements.
+          </span>
+        </div>
         <button
-          className="self-end rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+          className="w-fit rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
           type="submit"
         >
           Search
@@ -222,6 +332,20 @@ export function SearchWorkspace({
           </ol>
         </section>
       ) : null}
+
+      <section
+        aria-labelledby="reviewer-approved-heading"
+        className="rounded-2xl border border-slate-200 bg-white p-5"
+      >
+        <h2 className="text-xl font-semibold" id="reviewer-approved-heading">
+          Reviewer-approved information
+        </h2>
+        <p className="mt-1 text-sm text-slate-600" role="status">
+          No reviewer-approved information is available for this search yet.
+          Approval decisions will appear here when the review workflow is
+          delivered in Sprint 6.
+        </p>
+      </section>
 
       <section
         aria-labelledby="question-answer-heading"

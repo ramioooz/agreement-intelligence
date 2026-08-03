@@ -82,6 +82,48 @@ describe("SearchWorkspace", () => {
     expect(push).toHaveBeenCalledWith("/dashboard/search?q=termination+rights");
   });
 
+  it("exposes portfolio filters and preserves their values in the search URL", () => {
+    render(<SearchWorkspace initialQuery="termination rights" />);
+
+    fireEvent.change(screen.getByLabelText("Agreement type"), {
+      target: { value: "client_agreement" },
+    });
+    fireEvent.change(screen.getByLabelText("Party"), {
+      target: { value: "Example Counterparty" },
+    });
+    fireEvent.change(screen.getByLabelText("Status"), {
+      target: { value: "active" },
+    });
+    fireEvent.change(screen.getByLabelText("Updated after"), {
+      target: { value: "2026-01-01" },
+    });
+    fireEvent.change(screen.getByLabelText("Updated before"), {
+      target: { value: "2026-01-31" },
+    });
+    fireEvent.change(screen.getByLabelText("Source version"), {
+      target: { value: "v3" },
+    });
+    fireEvent.change(screen.getByLabelText("Agreement IDs"), {
+      target: {
+        value:
+          "55555555-5555-5555-5555-555555555555, 66666666-6666-6666-6666-666666666666",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+
+    expect(push).toHaveBeenLastCalledWith(
+      "/dashboard/search?q=termination+rights&agreement_type=client_agreement&party=Example+Counterparty&status=active&updated_after=2026-01-01&updated_before=2026-01-31&source_version=v3&agreement_id=55555555-5555-5555-5555-555555555555&agreement_id=66666666-6666-6666-6666-666666666666",
+    );
+  });
+
+  it("states honestly when no reviewer-approved information is available", () => {
+    render(<SearchWorkspace initialQuery="termination rights" />);
+
+    expect(
+      screen.getByText(/No reviewer-approved information is available/),
+    ).toBeInTheDocument();
+  });
+
   it("submits a question through the scoped thread adapter", async () => {
     const fetcher = vi
       .spyOn(globalThis, "fetch")
