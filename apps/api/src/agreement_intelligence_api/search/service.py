@@ -4,6 +4,12 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from agreement_intelligence_worker.model_gateway import (
+    EmbeddingConfiguration,
+    EmbeddingRequest,
+    EmbeddingResponse,
+)
+
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -78,6 +84,68 @@ class SemanticCandidateProvider(Protocol):
         filters: SearchFilters,
         limit: int,
     ) -> list[RankedChunk]: ...
+
+
+class EmbeddingQueryGateway(Protocol):
+    def embed(self, request: EmbeddingRequest) -> EmbeddingResponse: ...
+
+
+class SemanticSearchRepository(Protocol):
+    def semantic_candidates(
+        self,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        filters: SearchFilters,
+        query_embedding: list[float],
+        index_version: str,
+        dimensions: int,
+        limit: int,
+    ) -> list[RankedChunk]: ...
+
+
+class SQLAlchemySemanticCandidateProvider:
+    """Embed the query then retrieve ready vectors from one active index space."""
+
+    def __init__(
+        self,
+        repository: SemanticSearchRepository,
+        *,
+        gateway: EmbeddingQueryGateway | None,
+        configuration: EmbeddingConfiguration,
+    ) -> None:
+        self._repository = repository
+        self._gateway = gateway
+        self._configuration = configuration
+
+    def candidates(
+        self,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        filters: SearchFilters,
+        limit: int,
+    ) -> list[RankedChunk]:
+        if self._gateway is None:
+            return []
+        response = self._gateway.embed(
+            EmbeddingRequest(
+                inputs=(filters.query,),
+                model=self._configuration.model,
+                dimensions=self._configuration.dimensions,
+            )
+        )
+        if len(response.vectors) != 1 or len(response.vectors[0]) != self._configuration.dimensions:
+            return []
+        return self._repository.semantic_candidates(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            filters=filters,
+            query_embedding=response.vectors[0],
+            index_version=self._configuration.index_version,
+            dimensions=self._configuration.dimensions,
+            limit=limit,
+        )
 
 
 class UnavailableSemanticCandidateProvider:

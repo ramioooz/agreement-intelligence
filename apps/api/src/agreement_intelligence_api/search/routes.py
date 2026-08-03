@@ -2,6 +2,10 @@ from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
+from agreement_intelligence_worker.model_gateway import (
+    embedding_configuration_from_environment,
+    embedding_gateway_from_environment,
+)
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
@@ -16,6 +20,7 @@ from agreement_intelligence_api.search.service import (
     MAX_RESULT_LIMIT,
     HybridSearchService,
     SearchNotAuthorizedError,
+    SQLAlchemySemanticCandidateProvider,
 )
 
 router = APIRouter(prefix="/search", tags=["search"])
@@ -25,7 +30,16 @@ PrincipalDependency = Annotated[Principal, Depends(current_principal)]
 
 
 def get_service(session: SessionDependency) -> HybridSearchService:
-    return HybridSearchService(SQLAlchemySearchRepository(session), IdentityService(session))
+    repository = SQLAlchemySearchRepository(session)
+    return HybridSearchService(
+        repository,
+        IdentityService(session),
+        SQLAlchemySemanticCandidateProvider(
+            repository,
+            gateway=embedding_gateway_from_environment(),
+            configuration=embedding_configuration_from_environment(),
+        ),
+    )
 
 
 SearchServiceDependency = Annotated[HybridSearchService, Depends(get_service)]
