@@ -178,6 +178,7 @@ def test_runtime_response_adapter_preserves_real_search_and_grounded_answer_evid
         search_response={
             "items": [
                 {
+                    "agreement_id": "11111111-1111-1111-1111-111111111111",
                     "citation": {"anchor_ids": ["msa-termination"]},
                 }
             ]
@@ -185,10 +186,18 @@ def test_runtime_response_adapter_preserves_real_search_and_grounded_answer_evid
         answer_response={
             "status": "answered",
             "claims": [
-                {"citations": [{"anchor_id": "msa-termination", "supporting_quote": "90 days"}]}
+                {
+                    "citations": [
+                        {
+                            "anchor_id": "msa-termination",
+                            "agreement_id": "11111111-1111-1111-1111-111111111111",
+                            "supporting_quote": "90 days",
+                        }
+                    ]
+                }
             ],
         },
-        authorized_anchor_ids={"msa-termination"},
+        authorized_anchor_ids={"11111111-1111-1111-1111-111111111111:msa-termination"},
         latency_ms=11,
         cost_usd=0.01,
     )
@@ -207,3 +216,57 @@ def test_runtime_response_adapter_preserves_real_search_and_grounded_answer_evid
         "latency_ms": 11.0,
         "cost_usd": 0.01,
     }
+
+
+def test_runtime_adapter_rejects_a_citation_from_a_different_agreement() -> None:
+    dataset = EvaluationDataset(
+        version="1.0",
+        questions={
+            "termination-notice": {
+                "expected_retrieval_anchor_ids": ["msa-termination"],
+                "expected_citation_anchor_ids": ["msa-termination"],
+                "expected_claims": [
+                    {
+                        "claim_id": "termination-notice",
+                        "citation_anchor_ids": ["msa-termination"],
+                    }
+                ],
+            }
+        },
+        baseline={},
+    )
+
+    observation = observation_from_runtime_responses(
+        dataset=dataset,
+        question_id="termination-notice",
+        search_response={
+            "items": [
+                {
+                    "agreement_id": "11111111-1111-1111-1111-111111111111",
+                    "citation": {"anchor_ids": ["msa-termination"]},
+                }
+            ]
+        },
+        answer_response={
+            "status": "partial",
+            "claims": [
+                {
+                    "citations": [
+                        {
+                            "anchor_id": "msa-termination",
+                            "agreement_id": "22222222-2222-2222-2222-222222222222",
+                            "supporting_quote": "90 days",
+                        }
+                    ]
+                }
+            ],
+        },
+        authorized_anchor_ids={"11111111-1111-1111-1111-111111111111:msa-termination"},
+        latency_ms=11,
+        cost_usd=0.01,
+    )
+
+    assert observation["citation_anchor_ids"] == []
+    assert observation["accepted_claims"] == [
+        {"claim_id": "runtime-claim-1", "citation_anchor_ids": []}
+    ]

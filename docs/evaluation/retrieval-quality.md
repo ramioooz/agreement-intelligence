@@ -31,9 +31,11 @@ The result file must have the dataset `version` and one observation per question
 The retrieval adapter (#30) must provide ranked candidate anchor IDs after
 tenant/workspace authorization and list every candidate that failed that
 authorization in `unauthorized_retrieved_anchor_ids`. The answer adapter (#31)
-must provide accepted material-claim IDs and their source anchor IDs. The
-evaluator deliberately does not call either adapter, model gateway, or a
-provider.
+must provide each `CitationResponse` anchor together with its agreement ID. The
+runtime adapter verifies that every cited `(agreement_id, anchor_id)` pair was
+actually retrieved; identical anchor IDs from different agreements are never
+treated as the same source. The evaluator deliberately does not call either
+adapter, model gateway, or a provider.
 
 The report measures recall@5, citation precision and recall, unsupported
 accepted claims (and rate), unauthorized retrieval count, p95 latency, and

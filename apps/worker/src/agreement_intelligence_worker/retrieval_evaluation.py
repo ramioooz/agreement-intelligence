@@ -182,9 +182,20 @@ def observation_from_runtime_responses(
     if question is None:
         raise ValueError(f"Unknown evaluation question id: {question_id}")
 
-    retrieved_anchor_ids = _search_anchor_ids(search_response)
-    citation_anchor_ids, accepted_claims = _answer_claims(answer_response, question)
-    unauthorized = sorted(set(retrieved_anchor_ids) - authorized_anchor_ids)
+    retrieved_anchor_ids, retrieved_source_ids = _search_sources(search_response)
+    citation_anchor_ids, accepted_claims = _answer_claims(
+        answer_response,
+        question,
+        retrieved_source_ids,
+    )
+    unauthorized = sorted(
+        anchor_id
+        for anchor_id, source_ids in retrieved_source_ids.items()
+        if not any(
+            _source_is_authorized(source_id, anchor_id, authorized_anchor_ids)
+            for source_id in source_ids
+        )
+    )
     return {
         "question_id": question_id,
         "retrieved_anchor_ids": retrieved_anchor_ids,
@@ -275,17 +286,23 @@ def _claims(value: object, label: str) -> list[AcceptedClaim]:
     return claims
 
 
-def _search_anchor_ids(search_response: Mapping[str, object]) -> list[str]:
+def _search_sources(search_response: Mapping[str, object]) -> tuple[list[str], dict[str, set[str]]]:
     anchor_ids: list[str] = []
+    source_ids: dict[str, set[str]] = {}
     for item in _list(search_response.get("items"), "search response items"):
         result = _object(item, "search response item")
+        agreement_id = _string(result.get("agreement_id"), "search response agreement_id")
         citation = _object(result.get("citation"), "search response citation")
-        anchor_ids.extend(_string_list(citation.get("anchor_ids"), "search response anchors"))
-    return _ordered_unique(anchor_ids)
+        for anchor_id in _string_list(citation.get("anchor_ids"), "search response anchors"):
+            anchor_ids.append(anchor_id)
+            source_ids.setdefault(anchor_id, set()).add(_source_id(agreement_id, anchor_id))
+    return _ordered_unique(anchor_ids), source_ids
 
 
 def _answer_claims(
-    answer_response: Mapping[str, object], question: Mapping[str, object]
+    answer_response: Mapping[str, object],
+    question: Mapping[str, object],
+    retrieved_source_ids: Mapping[str, set[str]],
 ) -> tuple[list[str], list[AcceptedClaim]]:
     status = _string(answer_response.get("status"), "answer response status")
     if status not in {"answered", "partial"}:
@@ -298,13 +315,14 @@ def _answer_claims(
     for index, item in enumerate(claims, start=1):
         claim = _object(item, "answer response claim")
         citations = _list(claim.get("citations"), "answer response citations")
-        anchors = _ordered_unique(
-            _string(
-                _object(citation, "answer response citation").get("anchor_id"),
-                "citation anchor",
-            )
-            for citation in citations
-        )
+        anchors: list[str] = []
+        for citation in citations:
+            payload = _object(citation, "answer response citation")
+            anchor_id = _string(payload.get("anchor_id"), "citation anchor")
+            agreement_id = _string(payload.get("agreement_id"), "citation agreement_id")
+            if _source_id(agreement_id, anchor_id) in retrieved_source_ids.get(anchor_id, set()):
+                anchors.append(anchor_id)
+        anchors = _ordered_unique(anchors)
         citation_anchor_ids.extend(anchors)
         accepted_claims.append(
             {
@@ -323,6 +341,16 @@ def _expected_claim_id(
         if anchors == set(claim["citation_anchor_ids"]):
             return claim["claim_id"]
     return f"runtime-claim-{index}"
+
+
+def _source_id(agreement_id: str, anchor_id: str) -> str:
+    """Keep identical anchors from different agreements distinguishable."""
+    return f"{agreement_id}:{anchor_id}"
+
+
+def _source_is_authorized(source_id: str, anchor_id: str, authorized_source_ids: set[str]) -> bool:
+    """Accept source-scoped authorisation, with bare anchors for legacy fixtures."""
+    return source_id in authorized_source_ids or anchor_id in authorized_source_ids
 
 
 def _ordered_unique(values: Iterable[str]) -> list[str]:
