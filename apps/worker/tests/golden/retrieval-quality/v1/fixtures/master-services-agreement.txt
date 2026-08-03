@@ -1,0 +1,5 @@
+MASTER SERVICES AGREEMENT
+
+[msa-termination] Either party may terminate this Agreement for convenience on thirty days' written notice.
+[msa-liability] Except for confidentiality breaches, each party's aggregate liability is limited to fees paid in the prior twelve months.
+[msa-security] Supplier will maintain reasonable administrative, technical, and physical safeguards.
