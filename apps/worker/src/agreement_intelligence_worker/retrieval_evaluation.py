@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -160,6 +160,42 @@ def evaluate_retrieval_quality(
     }
 
 
+def observation_from_runtime_responses(
+    *,
+    dataset: EvaluationDataset,
+    question_id: str,
+    search_response: Mapping[str, object],
+    answer_response: Mapping[str, object],
+    authorized_anchor_ids: set[str],
+    latency_ms: float,
+    cost_usd: float,
+) -> EvaluationObservation:
+    """Normalize the public search and grounded-answer response shapes.
+
+    The evaluator deliberately consumes JSON-shaped API responses rather than
+    importing API classes. That keeps the benchmark executable from the worker
+    package while binding it to the same citation fields exposed to clients.
+    Only ``answered`` and ``partial`` answers may contribute accepted claims;
+    every other answer state is measured as an abstention.
+    """
+    question = dataset.questions.get(question_id)
+    if question is None:
+        raise ValueError(f"Unknown evaluation question id: {question_id}")
+
+    retrieved_anchor_ids = _search_anchor_ids(search_response)
+    citation_anchor_ids, accepted_claims = _answer_claims(answer_response, question)
+    unauthorized = sorted(set(retrieved_anchor_ids) - authorized_anchor_ids)
+    return {
+        "question_id": question_id,
+        "retrieved_anchor_ids": retrieved_anchor_ids,
+        "citation_anchor_ids": citation_anchor_ids,
+        "accepted_claims": accepted_claims,
+        "unauthorized_retrieved_anchor_ids": unauthorized,
+        "latency_ms": _non_negative_number(latency_ms, "runtime latency_ms"),
+        "cost_usd": _non_negative_number(cost_usd, "runtime cost_usd"),
+    }
+
+
 def load_observations(path: Path, dataset_version: str) -> list[EvaluationObservation]:
     payload = _object(json.loads(path.read_text()), "results")
     if _string(payload.get("dataset_version"), "results dataset version") != dataset_version:
@@ -237,6 +273,60 @@ def _claims(value: object, label: str) -> list[AcceptedClaim]:
             }
         )
     return claims
+
+
+def _search_anchor_ids(search_response: Mapping[str, object]) -> list[str]:
+    anchor_ids: list[str] = []
+    for item in _list(search_response.get("items"), "search response items"):
+        result = _object(item, "search response item")
+        citation = _object(result.get("citation"), "search response citation")
+        anchor_ids.extend(_string_list(citation.get("anchor_ids"), "search response anchors"))
+    return _ordered_unique(anchor_ids)
+
+
+def _answer_claims(
+    answer_response: Mapping[str, object], question: Mapping[str, object]
+) -> tuple[list[str], list[AcceptedClaim]]:
+    status = _string(answer_response.get("status"), "answer response status")
+    if status not in {"answered", "partial"}:
+        return [], []
+
+    expected_claims = _claims(question.get("expected_claims"), "evaluation question")
+    citation_anchor_ids: list[str] = []
+    accepted_claims: list[AcceptedClaim] = []
+    claims = _list(answer_response.get("claims"), "answer response claims")
+    for index, item in enumerate(claims, start=1):
+        claim = _object(item, "answer response claim")
+        citations = _list(claim.get("citations"), "answer response citations")
+        anchors = _ordered_unique(
+            _string(
+                _object(citation, "answer response citation").get("anchor_id"),
+                "citation anchor",
+            )
+            for citation in citations
+        )
+        citation_anchor_ids.extend(anchors)
+        accepted_claims.append(
+            {
+                "claim_id": _expected_claim_id(expected_claims, anchors, index),
+                "citation_anchor_ids": anchors,
+            }
+        )
+    return _ordered_unique(citation_anchor_ids), accepted_claims
+
+
+def _expected_claim_id(
+    expected_claims: list[AcceptedClaim], citation_anchor_ids: list[str], index: int
+) -> str:
+    anchors = set(citation_anchor_ids)
+    for claim in expected_claims:
+        if anchors == set(claim["citation_anchor_ids"]):
+            return claim["claim_id"]
+    return f"runtime-claim-{index}"
+
+
+def _ordered_unique(values: Iterable[str]) -> list[str]:
+    return list(dict.fromkeys(values))
 
 
 def _object(value: object, label: str) -> Mapping[str, object]:

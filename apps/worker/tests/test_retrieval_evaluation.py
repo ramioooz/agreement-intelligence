@@ -7,6 +7,7 @@ from subprocess import run
 from agreement_intelligence_worker.retrieval_evaluation import (
     EvaluationDataset,
     evaluate_retrieval_quality,
+    observation_from_runtime_responses,
 )
 
 
@@ -150,4 +151,59 @@ def test_retrieval_evaluation_fails_when_recall_exceeds_the_allowed_baseline_reg
     assert report["baseline"] == {
         "passed": False,
         "failures": ["retrieval_recall_at_5 exceeds the allowed accepted-baseline regression"],
+    }
+
+
+def test_runtime_response_adapter_preserves_real_search_and_grounded_answer_evidence() -> None:
+    dataset = EvaluationDataset(
+        version="1.0",
+        questions={
+            "termination-notice": {
+                "expected_retrieval_anchor_ids": ["msa-termination"],
+                "expected_citation_anchor_ids": ["msa-termination"],
+                "expected_claims": [
+                    {
+                        "claim_id": "termination-notice",
+                        "citation_anchor_ids": ["msa-termination"],
+                    }
+                ],
+            }
+        },
+        baseline={},
+    )
+
+    observation = observation_from_runtime_responses(
+        dataset=dataset,
+        question_id="termination-notice",
+        search_response={
+            "items": [
+                {
+                    "citation": {"anchor_ids": ["msa-termination"]},
+                }
+            ]
+        },
+        answer_response={
+            "status": "answered",
+            "claims": [
+                {"citations": [{"anchor_id": "msa-termination", "supporting_quote": "90 days"}]}
+            ],
+        },
+        authorized_anchor_ids={"msa-termination"},
+        latency_ms=11,
+        cost_usd=0.01,
+    )
+
+    assert observation == {
+        "question_id": "termination-notice",
+        "retrieved_anchor_ids": ["msa-termination"],
+        "citation_anchor_ids": ["msa-termination"],
+        "accepted_claims": [
+            {
+                "claim_id": "termination-notice",
+                "citation_anchor_ids": ["msa-termination"],
+            }
+        ],
+        "unauthorized_retrieved_anchor_ids": [],
+        "latency_ms": 11.0,
+        "cost_usd": 0.01,
     }
