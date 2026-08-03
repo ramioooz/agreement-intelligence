@@ -30,7 +30,7 @@ from agreement_intelligence_mcp.service import (
     ToolCallContext,
 )
 from fastapi import HTTPException
-from opentelemetry import trace
+from opentelemetry.trace import get_current_span
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -342,4 +342,4 @@ def test_traceparent_is_propagated_to_the_audit_event(session: Session) -> None:
     event = session.scalar(select(McpAuditEventRecord))
     assert event is not None
     assert event.trace_id == trace_id
-    assert trace.get_current_span().get_span_context().is_valid is False
+    assert get_current_span().get_span_context().is_valid is False

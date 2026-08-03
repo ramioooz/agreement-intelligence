@@ -37,3 +37,10 @@ apps/worker/*
 !apps/worker/pyproject.toml
 !apps/worker/src/
 !apps/worker/src/**
+
+!apps/mcp/
+apps/mcp/*
+!apps/mcp/Dockerfile
+!apps/mcp/pyproject.toml
+!apps/mcp/src/
+!apps/mcp/src/**
