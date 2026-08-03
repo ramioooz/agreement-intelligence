@@ -5,13 +5,17 @@ from typing import Any
 
 from _pytest.monkeypatch import MonkeyPatch
 from agreement_intelligence_worker.model_gateway import (
+    EmbeddingConfiguration,
+    EmbeddingRequest,
     GatewayConfigurationError,
     GatewayUnavailableError,
     ModelGatewayConfiguration,
     OpenAIModelGateway,
+    embedding_configuration_from_environment,
+    embedding_gateway_from_environment,
     model_gateway_from_environment,
 )
-from pytest import raises
+from pytest import mark, raises
 
 
 class _Response:
@@ -42,6 +46,30 @@ def test_environment_selects_openai_by_default(monkeypatch: MonkeyPatch) -> None
     assert gateway.configuration.endpoint_kind == "hosted"
 
 
+def test_embedding_configuration_is_independent_from_generation_configuration(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "generation-model")
+    monkeypatch.setenv("EMBEDDING_MODEL", "embedding-model")
+    monkeypatch.setenv("EMBEDDING_DIMENSIONS", "1536")
+    monkeypatch.setenv("EMBEDDING_INDEX_VERSION", "embedding-v1")
+    monkeypatch.setenv("EMBEDDING_BATCH_SIZE", "2")
+    monkeypatch.setenv("EMBEDDING_MAX_RETRIES", "3")
+
+    configuration = embedding_configuration_from_environment()
+
+    assert configuration == EmbeddingConfiguration(
+        model="embedding-model",
+        dimensions=1536,
+        index_version="embedding-v1",
+        batch_size=2,
+        max_retries=3,
+        configuration_version="embedding-gateway.v1",
+        input_cost_per_million_tokens=0.02,
+    )
+
+
 def test_compatible_mode_requires_an_endpoint(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("MODEL_GATEWAY_MODE", "openai-compatible")
     monkeypatch.delenv("MODEL_GATEWAY_BASE_URL", raising=False)
@@ -61,6 +89,34 @@ def test_environment_selects_an_openai_compatible_endpoint(monkeypatch: MonkeyPa
     assert gateway.configuration.mode == "openai-compatible"
     assert gateway.configuration.endpoint_kind == "openai-compatible"
     assert gateway.configuration.base_url == "http://llama-cpp:8080/v1"
+
+
+@mark.parametrize(
+    ("embedding_fallback_model", "expected_fallback_model"),
+    [(None, "embedding-model"), ("embedding-fallback-model", "embedding-fallback-model")],
+)
+def test_compatible_embedding_gateway_uses_a_dedicated_embedding_model_for_hosted_fallback(
+    monkeypatch: MonkeyPatch,
+    embedding_fallback_model: str | None,
+    expected_fallback_model: str,
+) -> None:
+    monkeypatch.setenv("MODEL_GATEWAY_MODE", "openai-compatible")
+    monkeypatch.setenv("MODEL_GATEWAY_BASE_URL", "http://llama-cpp:8080/v1")
+    monkeypatch.setenv("MODEL_GATEWAY_FALLBACK_MODE", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "hosted-key")
+    monkeypatch.setenv("OPENAI_MODEL", "generation-model")
+    monkeypatch.setenv("MODEL_GATEWAY_FALLBACK_MODEL", "generation-fallback-model")
+    monkeypatch.setenv("EMBEDDING_MODEL", "embedding-model")
+    if embedding_fallback_model is None:
+        monkeypatch.delenv("EMBEDDING_FALLBACK_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("EMBEDDING_FALLBACK_MODEL", embedding_fallback_model)
+
+    gateway = embedding_gateway_from_environment(client_factory=lambda **_: object())
+
+    assert gateway is not None
+    assert gateway.configuration.model == "embedding-model"
+    assert gateway.configuration.fallback_model == expected_fallback_model
 
 
 def test_unavailable_compatible_endpoint_uses_configured_hosted_fallback() -> None:
@@ -94,6 +150,36 @@ def test_unavailable_compatible_endpoint_uses_configured_hosted_fallback() -> No
     assert response.provenance.cost_usd is None
 
 
+def test_embedding_falls_back_to_hosted_provider_when_compatible_endpoint_is_unavailable() -> None:
+    configuration = ModelGatewayConfiguration(
+        mode="openai-compatible",
+        model="local-embedding-model.gguf",
+        endpoint_kind="openai-compatible",
+        base_url="http://llama:8080/v1",
+        api_key="local-key",
+        fallback_model="text-embedding-3-small",
+        fallback_api_key="hosted-key",
+    )
+    local_client = _FailingEmbeddingClient()
+    hosted_client = _EmbeddingClient(vectors=[[0.25, 0.75]])
+    gateway = OpenAIModelGateway(
+        configuration,
+        client=local_client,
+        fallback_client=hosted_client,
+    )
+
+    response = gateway.embed(EmbeddingRequest(inputs=("termination rights",), dimensions=2))
+
+    assert response.vectors == [[0.25, 0.75]]
+    assert local_client.calls == 1
+    assert hosted_client.calls == 1
+    assert response.provenance.provider == "openai"
+    assert response.provenance.endpoint_kind == "hosted"
+    assert response.provenance.model == "text-embedding-3-small"
+    assert response.provenance.fallback_outcome == "hosted_fallback_succeeded"
+    assert response.provenance.safe_failure_reason == "compatible_endpoint_unavailable"
+
+
 def test_unavailable_compatible_endpoint_has_a_safe_failure_reason_without_fallback() -> None:
     gateway = OpenAIModelGateway(
         ModelGatewayConfiguration(
@@ -118,3 +204,28 @@ class _FailingCompatibleClient:
             @staticmethod
             def create(**kwargs: Any) -> object:
                 raise ConnectionError("connection refused")
+
+
+class _FailingEmbeddingClient:
+    def __init__(self) -> None:
+        self.embeddings = self
+        self.calls = 0
+
+    def create(self, **kwargs: Any) -> object:
+        del kwargs
+        self.calls += 1
+        raise ConnectionError("connection refused")
+
+
+class _EmbeddingClient:
+    def __init__(self, *, vectors: list[list[float]]) -> None:
+        self.embeddings = self
+        self.calls = 0
+        self._vectors = vectors
+
+    def create(self, **kwargs: Any) -> object:
+        del kwargs
+        self.calls += 1
+        data = [type("Embedding", (), {"embedding": vector})() for vector in self._vectors]
+        usage = type("Usage", (), {"prompt_tokens": 4, "total_tokens": 4})()
+        return type("EmbeddingResponse", (), {"data": data, "usage": usage})()

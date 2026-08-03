@@ -1,6 +1,7 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
+from agreement_intelligence_worker.vector_types import Vector
 from sqlalchemy import (
     JSON,
     DateTime,
@@ -115,3 +116,47 @@ class RetrievalChunkRecord(Base):
     heading_path: Mapped[list[str]] = mapped_column(JSON)
     anchor_ids: Mapped[list[str]] = mapped_column(JSON)
     content: Mapped[str] = mapped_column(String)
+
+
+class RetrievalChunkEmbeddingRecord(Base):
+    __tablename__ = "retrieval_chunk_embeddings"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "agreement_id",
+            "build_id",
+            "chunk_id",
+            "index_version",
+            "dimensions",
+            name="pk_retrieval_chunk_embeddings",
+        ),
+        Index(
+            "ix_retrieval_chunk_embeddings_scope_ready",
+            "organization_id",
+            "workspace_id",
+            "agreement_id",
+            "index_version",
+            "dimensions",
+            "state",
+        ),
+    )
+
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    build_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    chunk_id: Mapped[str] = mapped_column(String(80))
+    index_version: Mapped[str] = mapped_column(String(100))
+    dimensions: Mapped[int] = mapped_column(Integer)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(), nullable=True)
+    state: Mapped[str] = mapped_column(String(32))
+    provider: Mapped[str] = mapped_column(String(64))
+    model: Mapped[str] = mapped_column(String(256))
+    configuration_version: Mapped[str] = mapped_column(String(100))
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(nullable=True)
+    retry_outcome: Mapped[str] = mapped_column(String(64))
+    fallback_outcome: Mapped[str] = mapped_column(String(64))
+    failure_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

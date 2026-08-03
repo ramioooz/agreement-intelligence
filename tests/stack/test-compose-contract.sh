@@ -114,7 +114,7 @@ for (const [serviceName, expected] of Object.entries({
     "DEMO_REVIEWER_SUBJECT",
   ],
   web: ["API_ORGANIZATION_ID", "API_WORKSPACE_ID"],
-  worker: ["SQS_PROCESSING_QUEUE"],
+  worker: ["SQS_PROCESSING_QUEUE", "EMBEDDING_FALLBACK_MODEL"],
   "keycloak-bootstrap": ["DEMO_REVIEWER_SUBJECT"],
 })) {
   const environment = config.services?.[serviceName]?.environment ?? {};

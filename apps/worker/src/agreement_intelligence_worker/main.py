@@ -14,8 +14,13 @@ from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
     S3ObjectStorage,
 )
+from agreement_intelligence_worker.embedding_indexing import SQLAlchemyEmbeddingIndexSink
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
+from agreement_intelligence_worker.model_gateway import (
+    embedding_configuration_from_environment,
+    embedding_gateway_from_environment,
+)
 from agreement_intelligence_worker.playbook_evaluation import SQLAlchemyPlaybookEvaluationSink
 from agreement_intelligence_worker.processing import (
     CompletionHandlerFanout,
@@ -79,6 +84,7 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         region_name=region,
     )
     storage = S3ObjectStorage(client=document_client, bucket=bucket)
+    embedding_configuration = embedding_configuration_from_environment()
     processor = JobProcessor(
         repository,
         queue,
@@ -94,6 +100,11 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
                     fallback_model_comparator=fallback_comparator_from_environment(),
                 ),
                 SQLAlchemyDocumentIndexSink(engine, storage),
+                SQLAlchemyEmbeddingIndexSink(
+                    engine,
+                    gateway=embedding_gateway_from_environment(),
+                    configuration=embedding_configuration,
+                ),
             )
         ),
     )
