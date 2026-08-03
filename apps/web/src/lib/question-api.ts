@@ -1,9 +1,11 @@
 import type { AgreementScope } from "@/lib/agreement-api";
 
 export type QuestionCitation = {
-  agreement_id?: string;
   anchor_id: string;
   supporting_quote: string;
+  agreement_id: string;
+  source_checksum: string;
+  source_version: string;
 };
 
 export type QuestionAnswer = {

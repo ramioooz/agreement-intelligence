@@ -4,7 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type FormEvent, useState } from "react";
 
-import type { QuestionThread, QuestionTurn } from "@/lib/question-api";
+import type {
+  QuestionCitation,
+  QuestionThread,
+  QuestionTurn,
+} from "@/lib/question-api";
 import type { SearchResult } from "@/lib/search-api";
 
 export type QuestionAnswerState = {
@@ -15,11 +19,7 @@ export type QuestionAnswerState = {
     | "conflicting_evidence"
     | "model_unavailable";
   message: string;
-  citations?: Array<{
-    agreementId: string;
-    anchorId: string;
-    label: string;
-  }>;
+  citations?: QuestionCitation[];
   provenance?: {
     model?: string;
     indexVersion?: string;
@@ -40,6 +40,14 @@ function sourceHref(result: SearchResult): string {
 
 function stateLabel(state: QuestionAnswerState["state"]): string {
   return state.replaceAll("_", " ");
+}
+
+function answerState(turn: QuestionTurn): QuestionAnswerState {
+  return {
+    state: turn.answer.status,
+    message: turn.answer.message,
+    citations: turn.answer.claims.flatMap((claim) => claim.citations),
+  };
 }
 
 export function SearchWorkspace({
@@ -94,10 +102,7 @@ export function SearchWorkspace({
       );
       if (!turnResponse.ok) throw new Error("turn unavailable");
       const turn = (await turnResponse.json()) as QuestionTurn;
-      setQuestionState({
-        state: turn.answer.status,
-        message: turn.answer.message,
-      });
+      setQuestionState(answerState(turn));
       setQuestion("");
       router.push(
         `/dashboard/search?q=${encodeURIComponent(initialQuery)}&thread=${activeThreadId}`,
@@ -262,13 +267,17 @@ export function SearchWorkspace({
             {questionState.citations?.length ? (
               <ul className="mt-3 space-y-2">
                 {questionState.citations.map((citation) => (
-                  <li key={`${citation.agreementId}-${citation.anchorId}`}>
+                  <li key={`${citation.agreement_id}-${citation.anchor_id}`}>
                     <Link
                       className="text-sm font-semibold underline underline-offset-4"
-                      href={`/dashboard/agreements/${citation.agreementId}#evidence-${citation.anchorId}`}
+                      href={`/dashboard/agreements/${citation.agreement_id}#evidence-${citation.anchor_id}`}
                     >
-                      {citation.label}
+                      View source evidence
                     </Link>
+                    <p className="text-xs text-slate-500">
+                      Source version {citation.source_version} ·{" "}
+                      {citation.source_checksum}
+                    </p>
                   </li>
                 ))}
               </ul>

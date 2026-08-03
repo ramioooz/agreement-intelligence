@@ -58,19 +58,7 @@ export default async function SearchPage({
     ? {
         state: latestTurn.answer.status,
         message: latestTurn.answer.message,
-        citations: latestTurn.answer.claims.flatMap((claim) =>
-          claim.citations.flatMap((citation) =>
-            citation.agreement_id
-              ? [
-                  {
-                    agreementId: citation.agreement_id,
-                    anchorId: citation.anchor_id,
-                    label: "View source evidence",
-                  },
-                ]
-              : [],
-          ),
-        ),
+        citations: latestTurn.answer.claims.flatMap((claim) => claim.citations),
       }
     : undefined;
 

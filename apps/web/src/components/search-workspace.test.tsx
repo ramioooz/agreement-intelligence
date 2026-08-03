@@ -98,7 +98,21 @@ describe("SearchWorkspace", () => {
             answer: {
               status: "answered",
               message: "Either party may terminate with notice.",
-              claims: [],
+              claims: [
+                {
+                  text: "Either party may terminate with notice.",
+                  citations: [
+                    {
+                      agreement_id: "55555555-5555-5555-5555-555555555555",
+                      anchor_id: "anchor-termination",
+                      supporting_quote:
+                        "Either party may terminate with thirty days' notice.",
+                      source_checksum: "sha256:example",
+                      source_version: "3",
+                    },
+                  ],
+                },
+              ],
             },
             created_at: "2026-08-04T00:00:00Z",
           }),
@@ -114,6 +128,15 @@ describe("SearchWorkspace", () => {
 
     expect(
       await screen.findByText("Either party may terminate with notice."),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole("link", { name: "View source evidence" }),
+    ).toHaveAttribute(
+      "href",
+      "/dashboard/agreements/55555555-5555-5555-5555-555555555555#evidence-anchor-termination",
+    );
+    expect(
+      screen.getByText("Source version 3 · sha256:example"),
     ).toBeInTheDocument();
     expect(fetcher).toHaveBeenNthCalledWith(
       1,
