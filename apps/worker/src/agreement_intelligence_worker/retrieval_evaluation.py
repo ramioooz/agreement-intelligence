@@ -9,17 +9,25 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 
+class SourceReference(TypedDict):
+    agreement_id: str
+    anchor_id: str
+    source_checksum: str
+    source_version: str
+
+
 class AcceptedClaim(TypedDict):
     claim_id: str
-    citation_anchor_ids: list[str]
+    citation_sources: list[SourceReference]
 
 
 class EvaluationObservation(TypedDict):
     question_id: str
-    retrieved_anchor_ids: list[str]
-    citation_anchor_ids: list[str]
+    answer_status: str
+    retrieved_sources: list[SourceReference]
+    citation_sources: list[SourceReference]
     accepted_claims: list[AcceptedClaim]
-    unauthorized_retrieved_anchor_ids: list[str]
+    unauthorized_retrieved_sources: list[SourceReference]
     latency_ms: float
     cost_usd: float
 
@@ -31,6 +39,8 @@ class EvaluationMetrics(TypedDict):
     unsupported_accepted_claims: int
     unsupported_accepted_claim_rate: float
     unauthorized_retrieval_count: int
+    forbidden_retrieval_count: int
+    unexpected_outcome_count: int
     latency_ms_p95: float
     cost_usd_total: float
 
@@ -64,6 +74,12 @@ _REQUIRED_CATEGORIES = {
     "adversarial_prompt_injection",
     "permission_sensitive",
 }
+_OUTCOMES = {
+    "answer": {"answered", "partial"},
+    "abstain": {"insufficient_evidence"},
+    "needs_review": {"conflicting_evidence"},
+    "reject": {"insufficient_evidence"},
+}
 
 
 def load_dataset(path: Path = _DEFAULT_DATASET) -> EvaluationDataset:
@@ -78,8 +94,10 @@ def load_dataset(path: Path = _DEFAULT_DATASET) -> EvaluationDataset:
         if question_id in questions:
             raise ValueError(f"Duplicate evaluation question id: {question_id}")
         categories.add(_string(question.get("category"), f"question {question_id} category"))
-        _string_list(question.get("expected_retrieval_anchor_ids"), question_id)
-        _string_list(question.get("expected_citation_anchor_ids"), question_id)
+        _expected_outcome(question, question_id)
+        _sources(question.get("expected_retrieval_sources"), f"question {question_id} retrieval")
+        _sources(question.get("expected_citation_sources"), f"question {question_id} citations")
+        _sources(question.get("forbidden_sources", []), f"question {question_id} forbidden sources")
         _claims(question.get("expected_claims"), question_id)
         questions[question_id] = question
     missing_categories = _REQUIRED_CATEGORIES - categories
@@ -95,6 +113,12 @@ def load_dataset(path: Path = _DEFAULT_DATASET) -> EvaluationDataset:
 def evaluate_retrieval_quality(
     dataset: EvaluationDataset, observations: Sequence[EvaluationObservation]
 ) -> RetrievalEvaluationReport:
+    observation_ids = [observation["question_id"] for observation in observations]
+    duplicates = sorted(
+        {question_id for question_id in observation_ids if observation_ids.count(question_id) > 1}
+    )
+    if duplicates:
+        raise ValueError(f"Results contain duplicate question ids: {duplicates}")
     observations_by_id = {observation["question_id"]: observation for observation in observations}
     unexpected = set(observations_by_id) - set(dataset.questions)
     missing = set(dataset.questions) - set(observations_by_id)
@@ -104,41 +128,48 @@ def evaluate_retrieval_quality(
             f"unexpected={sorted(unexpected)}"
         )
 
-    retrieval_relevant = 0
-    retrieval_found = 0
-    citation_expected = 0
-    citation_found = 0
-    citation_returned = 0
-    unsupported_claims = 0
-    accepted_claims = 0
-    unauthorized_retrieval_count = 0
+    retrieval_relevant = retrieval_found = citation_expected = citation_found = (
+        citation_returned
+    ) = 0
+    unsupported_claims = accepted_claim_count = unauthorized_retrieval_count = 0
+    forbidden_retrieval_count = unexpected_outcome_count = 0
     latencies: list[float] = []
     costs: list[float] = []
     for question_id, question in dataset.questions.items():
         observation = observations_by_id[question_id]
-        expected_retrieval = set(
-            _string_list(question.get("expected_retrieval_anchor_ids"), question_id)
+        expected_retrieval = _source_keys(
+            _sources(question.get("expected_retrieval_sources"), question_id)
         )
-        expected_citations = set(
-            _string_list(question.get("expected_citation_anchor_ids"), question_id)
+        expected_citations = _source_keys(
+            _sources(question.get("expected_citation_sources"), question_id)
         )
-        retrieved = set(observation["retrieved_anchor_ids"][:5])
-        citations = set(observation["citation_anchor_ids"])
+        forbidden_sources = _source_keys(
+            _sources(question.get("forbidden_sources", []), question_id)
+        )
+        retrieved = _source_keys(observation["retrieved_sources"][:5])
+        citations = _source_keys(observation["citation_sources"])
         retrieval_relevant += len(expected_retrieval)
         retrieval_found += len(expected_retrieval & retrieved)
         citation_expected += len(expected_citations)
         citation_found += len(expected_citations & citations)
         citation_returned += len(citations)
+        forbidden_retrieval_count += len(
+            forbidden_sources & _source_keys(observation["retrieved_sources"])
+        )
+        if observation["answer_status"] not in _OUTCOMES[_expected_outcome(question, question_id)]:
+            unexpected_outcome_count += 1
         expected_claims = {
-            claim["claim_id"]: set(claim["citation_anchor_ids"])
+            claim["claim_id"]: _source_keys(claim["citation_sources"])
             for claim in _claims(question.get("expected_claims"), question_id)
         }
         for claim in observation["accepted_claims"]:
-            accepted_claims += 1
-            expected_claim_citations = expected_claims.get(claim["claim_id"], set())
-            if not (set(claim["citation_anchor_ids"]) & expected_claim_citations):
+            accepted_claim_count += 1
+            if not (
+                _source_keys(claim["citation_sources"])
+                & expected_claims.get(claim["claim_id"], set())
+            ):
                 unsupported_claims += 1
-        unauthorized_retrieval_count += len(observation["unauthorized_retrieved_anchor_ids"])
+        unauthorized_retrieval_count += len(observation["unauthorized_retrieved_sources"])
         latencies.append(observation["latency_ms"])
         costs.append(observation["cost_usd"])
 
@@ -147,8 +178,12 @@ def evaluate_retrieval_quality(
         "citation_precision": _ratio(citation_found, citation_returned),
         "citation_recall": _ratio(citation_found, citation_expected),
         "unsupported_accepted_claims": unsupported_claims,
-        "unsupported_accepted_claim_rate": _ratio(unsupported_claims, accepted_claims),
+        "unsupported_accepted_claim_rate": (
+            unsupported_claims / accepted_claim_count if accepted_claim_count else 0.0
+        ),
         "unauthorized_retrieval_count": unauthorized_retrieval_count,
+        "forbidden_retrieval_count": forbidden_retrieval_count,
+        "unexpected_outcome_count": unexpected_outcome_count,
         "latency_ms_p95": _p95(latencies),
         "cost_usd_total": round(sum(costs), 6),
     }
@@ -166,52 +201,49 @@ def observation_from_runtime_responses(
     question_id: str,
     search_response: Mapping[str, object],
     answer_response: Mapping[str, object],
-    authorized_anchor_ids: set[str],
+    authorized_source_ids: set[str],
     latency_ms: float,
     cost_usd: float,
 ) -> EvaluationObservation:
-    """Normalize the public search and grounded-answer response shapes.
-
-    The evaluator deliberately consumes JSON-shaped API responses rather than
-    importing API classes. That keeps the benchmark executable from the worker
-    package while binding it to the same citation fields exposed to clients.
-    Only ``answered`` and ``partial`` answers may contribute accepted claims;
-    every other answer state is measured as an abstention.
-    """
+    """Normalize the public search response and QuestionTurnResponse shapes."""
     question = dataset.questions.get(question_id)
     if question is None:
         raise ValueError(f"Unknown evaluation question id: {question_id}")
-
-    retrieved_anchor_ids, retrieved_source_ids = _search_sources(search_response)
-    citation_anchor_ids, accepted_claims = _answer_claims(
-        answer_response,
-        question,
-        retrieved_source_ids,
+    retrieved_sources = _search_sources(search_response)
+    answer = _object(answer_response.get("answer", answer_response), "answer response")
+    answer_status = _string(answer.get("status"), "answer response status")
+    citation_sources, accepted_claims = _answer_claims(
+        answer, question, _source_keys(retrieved_sources)
     )
-    unauthorized = sorted(
-        anchor_id
-        for anchor_id, source_ids in retrieved_source_ids.items()
-        if not any(
-            _source_is_authorized(source_id, anchor_id, authorized_anchor_ids)
-            for source_id in source_ids
-        )
-    )
+    unauthorized = [
+        source for source in retrieved_sources if _source_key(source) not in authorized_source_ids
+    ]
     return {
         "question_id": question_id,
-        "retrieved_anchor_ids": retrieved_anchor_ids,
-        "citation_anchor_ids": citation_anchor_ids,
+        "answer_status": answer_status,
+        "retrieved_sources": retrieved_sources,
+        "citation_sources": citation_sources,
         "accepted_claims": accepted_claims,
-        "unauthorized_retrieved_anchor_ids": unauthorized,
+        "unauthorized_retrieved_sources": unauthorized,
         "latency_ms": _non_negative_number(latency_ms, "runtime latency_ms"),
         "cost_usd": _non_negative_number(cost_usd, "runtime cost_usd"),
     }
 
 
-def load_observations(path: Path, dataset_version: str) -> list[EvaluationObservation]:
+def load_observations(path: Path, dataset: EvaluationDataset) -> list[EvaluationObservation]:
     payload = _object(json.loads(path.read_text()), "results")
-    if _string(payload.get("dataset_version"), "results dataset version") != dataset_version:
+    if _string(payload.get("dataset_version"), "results dataset version") != dataset.version:
         raise ValueError("Results dataset_version does not match the evaluation dataset")
-    return [_observation(item) for item in _list(payload.get("observations"), "observations")]
+    observations = payload.get("observations")
+    runtime_observations = payload.get("runtime_observations")
+    if observations is not None and runtime_observations is not None:
+        raise ValueError("Results must provide observations or runtime_observations, not both")
+    if observations is not None:
+        return [_observation(item) for item in _list(observations, "observations")]
+    return [
+        _runtime_observation(item, dataset)
+        for item in _list(runtime_observations, "runtime observations")
+    ]
 
 
 def main() -> None:
@@ -220,24 +252,43 @@ def main() -> None:
     parser.add_argument("--results", type=Path, required=True)
     args = parser.parse_args()
     dataset = load_dataset(args.dataset)
-    observations = load_observations(args.results, dataset.version)
+    observations = load_observations(args.results, dataset)
     print(json.dumps(evaluate_retrieval_quality(dataset, observations), sort_keys=True))
 
 
 def _observation(value: object) -> EvaluationObservation:
     item = _object(value, "observation")
-    latency = _non_negative_number(item.get("latency_ms"), "observation latency_ms")
     return {
         "question_id": _string(item.get("question_id"), "observation question_id"),
-        "retrieved_anchor_ids": _string_list(item.get("retrieved_anchor_ids"), "observation"),
-        "citation_anchor_ids": _string_list(item.get("citation_anchor_ids"), "observation"),
-        "accepted_claims": _claims(item.get("accepted_claims"), "observation"),
-        "unauthorized_retrieved_anchor_ids": _string_list(
-            item.get("unauthorized_retrieved_anchor_ids"), "observation"
+        "answer_status": _string(item.get("answer_status"), "observation answer_status"),
+        "retrieved_sources": _sources(
+            item.get("retrieved_sources"), "observation retrieved sources"
         ),
-        "latency_ms": float(latency),
+        "citation_sources": _sources(item.get("citation_sources"), "observation citation sources"),
+        "accepted_claims": _claims(item.get("accepted_claims"), "observation"),
+        "unauthorized_retrieved_sources": _sources(
+            item.get("unauthorized_retrieved_sources"), "observation unauthorized retrieved sources"
+        ),
+        "latency_ms": _non_negative_number(item.get("latency_ms"), "observation latency_ms"),
         "cost_usd": _non_negative_number(item.get("cost_usd"), "observation cost_usd"),
     }
+
+
+def _runtime_observation(value: object, dataset: EvaluationDataset) -> EvaluationObservation:
+    item = _object(value, "runtime observation")
+    return observation_from_runtime_responses(
+        dataset=dataset,
+        question_id=_string(item.get("question_id"), "runtime observation question id"),
+        search_response=_object(item.get("search_response"), "runtime observation search response"),
+        answer_response=_object(item.get("answer_response"), "runtime observation answer response"),
+        authorized_source_ids=set(
+            _string_list(
+                item.get("authorized_source_ids"), "runtime observation authorized source ids"
+            )
+        ),
+        latency_ms=_non_negative_number(item.get("latency_ms"), "runtime observation latency_ms"),
+        cost_usd=_non_negative_number(item.get("cost_usd"), "runtime observation cost_usd"),
+    )
 
 
 def _compare_baseline(metrics: EvaluationMetrics, baseline: Mapping[str, object]) -> BaselineResult:
@@ -271,6 +322,69 @@ def _compare_baseline(metrics: EvaluationMetrics, baseline: Mapping[str, object]
     return {"passed": not failures, "failures": failures}
 
 
+def _answer_claims(
+    answer: Mapping[str, object], question: Mapping[str, object], retrieved_source_ids: set[str]
+) -> tuple[list[SourceReference], list[AcceptedClaim]]:
+    if _string(answer.get("status"), "answer response status") not in {"answered", "partial"}:
+        return [], []
+    expected_claims = _claims(question.get("expected_claims"), "evaluation question")
+    citation_sources: list[SourceReference] = []
+    accepted_claims: list[AcceptedClaim] = []
+    for index, item in enumerate(_list(answer.get("claims"), "answer response claims"), start=1):
+        claim = _object(item, "answer response claim")
+        sources = [
+            source
+            for source in _sources(claim.get("citations"), "answer response citations")
+            if _source_key(source) in retrieved_source_ids
+        ]
+        sources = _ordered_unique_sources(sources)
+        citation_sources.extend(sources)
+        accepted_claims.append(
+            {
+                "claim_id": _expected_claim_id(expected_claims, sources, index),
+                "citation_sources": sources,
+            }
+        )
+    return _ordered_unique_sources(citation_sources), accepted_claims
+
+
+def _expected_claim_id(
+    expected_claims: list[AcceptedClaim], citation_sources: list[SourceReference], index: int
+) -> str:
+    sources = _source_keys(citation_sources)
+    for claim in expected_claims:
+        if sources == _source_keys(claim["citation_sources"]):
+            return claim["claim_id"]
+    return f"runtime-claim-{index}"
+
+
+def _search_sources(search_response: Mapping[str, object]) -> list[SourceReference]:
+    sources: list[SourceReference] = []
+    for item in _list(search_response.get("items"), "search response items"):
+        result = _object(item, "search response item")
+        agreement_id = _string(result.get("agreement_id"), "search response agreement_id")
+        citation = _object(result.get("citation"), "search response citation")
+        checksum = _string(citation.get("source_checksum"), "search response source checksum")
+        version = _string(citation.get("source_version"), "search response source version")
+        for anchor_id in _string_list(citation.get("anchor_ids"), "search response anchors"):
+            sources.append(
+                {
+                    "agreement_id": agreement_id,
+                    "anchor_id": anchor_id,
+                    "source_checksum": checksum,
+                    "source_version": version,
+                }
+            )
+    return _ordered_unique_sources(sources)
+
+
+def _expected_outcome(question: Mapping[str, object], question_id: str) -> str:
+    outcome = _string(question.get("expected_outcome"), f"question {question_id} expected outcome")
+    if outcome not in _OUTCOMES:
+        raise ValueError(f"question {question_id} has unsupported expected outcome: {outcome}")
+    return outcome
+
+
 def _claims(value: object, label: str) -> list[AcceptedClaim]:
     claims: list[AcceptedClaim] = []
     for item in _list(value, f"{label} claims"):
@@ -278,83 +392,51 @@ def _claims(value: object, label: str) -> list[AcceptedClaim]:
         claims.append(
             {
                 "claim_id": _string(claim.get("claim_id"), f"{label} claim id"),
-                "citation_anchor_ids": _string_list(
-                    claim.get("citation_anchor_ids"), f"{label} claim citations"
+                "citation_sources": _sources(
+                    claim.get("citation_sources"), f"{label} claim citations"
                 ),
             }
         )
     return claims
 
 
-def _search_sources(search_response: Mapping[str, object]) -> tuple[list[str], dict[str, set[str]]]:
-    anchor_ids: list[str] = []
-    source_ids: dict[str, set[str]] = {}
-    for item in _list(search_response.get("items"), "search response items"):
-        result = _object(item, "search response item")
-        agreement_id = _string(result.get("agreement_id"), "search response agreement_id")
-        citation = _object(result.get("citation"), "search response citation")
-        for anchor_id in _string_list(citation.get("anchor_ids"), "search response anchors"):
-            anchor_ids.append(anchor_id)
-            source_ids.setdefault(anchor_id, set()).add(_source_id(agreement_id, anchor_id))
-    return _ordered_unique(anchor_ids), source_ids
-
-
-def _answer_claims(
-    answer_response: Mapping[str, object],
-    question: Mapping[str, object],
-    retrieved_source_ids: Mapping[str, set[str]],
-) -> tuple[list[str], list[AcceptedClaim]]:
-    status = _string(answer_response.get("status"), "answer response status")
-    if status not in {"answered", "partial"}:
-        return [], []
-
-    expected_claims = _claims(question.get("expected_claims"), "evaluation question")
-    citation_anchor_ids: list[str] = []
-    accepted_claims: list[AcceptedClaim] = []
-    claims = _list(answer_response.get("claims"), "answer response claims")
-    for index, item in enumerate(claims, start=1):
-        claim = _object(item, "answer response claim")
-        citations = _list(claim.get("citations"), "answer response citations")
-        anchors: list[str] = []
-        for citation in citations:
-            payload = _object(citation, "answer response citation")
-            anchor_id = _string(payload.get("anchor_id"), "citation anchor")
-            agreement_id = _string(payload.get("agreement_id"), "citation agreement_id")
-            if _source_id(agreement_id, anchor_id) in retrieved_source_ids.get(anchor_id, set()):
-                anchors.append(anchor_id)
-        anchors = _ordered_unique(anchors)
-        citation_anchor_ids.extend(anchors)
-        accepted_claims.append(
+def _sources(value: object, label: str) -> list[SourceReference]:
+    sources: list[SourceReference] = []
+    for item in _list(value, label):
+        source = _object(item, f"{label} source")
+        sources.append(
             {
-                "claim_id": _expected_claim_id(expected_claims, anchors, index),
-                "citation_anchor_ids": anchors,
+                "agreement_id": _string(source.get("agreement_id"), f"{label} agreement id"),
+                "anchor_id": _string(source.get("anchor_id"), f"{label} anchor id"),
+                "source_checksum": _string(
+                    source.get("source_checksum"), f"{label} source checksum"
+                ),
+                "source_version": _string(source.get("source_version"), f"{label} source version"),
             }
         )
-    return _ordered_unique(citation_anchor_ids), accepted_claims
+    return sources
 
 
-def _expected_claim_id(
-    expected_claims: list[AcceptedClaim], citation_anchor_ids: list[str], index: int
-) -> str:
-    anchors = set(citation_anchor_ids)
-    for claim in expected_claims:
-        if anchors == set(claim["citation_anchor_ids"]):
-            return claim["claim_id"]
-    return f"runtime-claim-{index}"
+def _source_key(source: SourceReference) -> str:
+    return "\x1f".join(
+        (
+            source["agreement_id"],
+            source["source_checksum"],
+            source["source_version"],
+            source["anchor_id"],
+        )
+    )
 
 
-def _source_id(agreement_id: str, anchor_id: str) -> str:
-    """Keep identical anchors from different agreements distinguishable."""
-    return f"{agreement_id}:{anchor_id}"
+def _source_keys(sources: Iterable[SourceReference]) -> set[str]:
+    return {_source_key(source) for source in sources}
 
 
-def _source_is_authorized(source_id: str, anchor_id: str, authorized_source_ids: set[str]) -> bool:
-    """Accept source-scoped authorisation, with bare anchors for legacy fixtures."""
-    return source_id in authorized_source_ids or anchor_id in authorized_source_ids
-
-
-def _ordered_unique(values: Iterable[str]) -> list[str]:
-    return list(dict.fromkeys(values))
+def _ordered_unique_sources(sources: Iterable[SourceReference]) -> list[SourceReference]:
+    unique: dict[str, SourceReference] = {}
+    for source in sources:
+        unique.setdefault(_source_key(source), source)
+    return list(unique.values())
 
 
 def _object(value: object, label: str) -> Mapping[str, object]:
