@@ -238,6 +238,28 @@ services:
       timeout: 3s
       retries: 30
       start_period: 20s
+
+  mcp:
+    build:
+      context: .
+      dockerfile: apps/mcp/Dockerfile
+    environment:
+      DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${APP_DB_NAME}
+      AWS_REGION: ${AWS_REGION:?required}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?required}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?required}
+      AWS_ENDPOINT_URL: http://localstack:4566
+      S3_DOCUMENT_BUCKET: ${S3_DOCUMENT_BUCKET:?required}
+      OIDC_ISSUER: http://localhost:${KEYCLOAK_PORT:-8080}/realms/${KEYCLOAK_REALM:?required}
+      OIDC_INTERNAL_ISSUER: http://keycloak:8080/realms/${KEYCLOAK_REALM:?required}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?required}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?required}
+      MCP_PUBLIC_URL: http://localhost:${MCP_PORT:-8001}/mcp
+    ports:
+      - "127.0.0.1:${MCP_PORT:-8001}:8001"
+    depends_on:
+      api:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_drop:

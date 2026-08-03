@@ -29,7 +29,18 @@ def current_principal(
     response, or claim mismatch fails closed with 401.
     """
     access_token = _bearer_token(authorization)
-    claims = _validated_claims(access_token) if access_token else None
+    if access_token is None:
+        _authentication_required()
+    return authenticate_access_token(access_token)
+
+
+def authenticate_access_token(access_token: str) -> Principal:
+    """Validate an OIDC bearer token and provision its local principal.
+
+    This is deliberately transport-neutral so remote services can use exactly
+    the API's token validation and local identity mapping semantics.
+    """
+    claims = _validated_claims(access_token)
     if claims is None:
         _authentication_required()
 

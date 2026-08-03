@@ -57,6 +57,7 @@ The local applications are available at:
 - Protected dashboard: <http://localhost:3000/dashboard>
 - API liveness: <http://localhost:8000/health/live>
 - API documentation: <http://localhost:8000/docs>
+- MCP endpoint: <http://localhost:8001/mcp>
 - Keycloak: <http://localhost:8080>
 - LocalStack gateway: <http://localhost:4566>
 

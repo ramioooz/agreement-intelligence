@@ -2,7 +2,10 @@ import os
 from logging.config import fileConfig
 
 import agreement_intelligence_api.agreements.models  # noqa: F401
+import agreement_intelligence_api.mcp_audit  # noqa: F401
+import agreement_intelligence_api.playbooks.models  # noqa: F401
 import agreement_intelligence_api.processing.models  # noqa: F401
+import agreement_intelligence_api.reviews.models  # noqa: F401
 from agreement_intelligence_api.identity.models import Base
 from alembic import context
 from sqlalchemy import engine_from_config, pool
