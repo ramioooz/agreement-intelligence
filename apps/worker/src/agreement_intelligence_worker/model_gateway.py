@@ -177,28 +177,84 @@ class OpenAIModelGateway:
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         started_at = perf_counter()
         try:
-            request_options: dict[str, object] = {
-                "model": request.model or self.configuration.model,
-                "input": list(request.inputs),
-            }
-            if request.dimensions is not None:
-                request_options["dimensions"] = request.dimensions
-            response = self._client.embeddings.create(
-                **request_options,
+            vectors, usage = self._embed(
+                self._client,
+                self.configuration,
+                request,
+                use_requested_model=True,
             )
-        except Exception as error:
-            raise _gateway_error(error) from error
-        vectors = [list(cast(Sequence[float], item.embedding)) for item in response.data]
+        except GatewayUnavailableError as error:
+            return self._fallback_embed(error, started_at=started_at, request=request)
         return EmbeddingResponse(
             vectors=vectors,
             provenance=_provenance(
                 self.configuration,
-                getattr(response, "usage", None),
+                usage,
                 started_at=started_at,
                 fallback_outcome="not_needed",
                 safe_failure_reason=None,
             ),
         )
+
+    def _fallback_embed(
+        self,
+        primary_error: GatewayUnavailableError,
+        *,
+        started_at: float,
+        request: EmbeddingRequest,
+    ) -> EmbeddingResponse:
+        if self._fallback_client is None or self.configuration.fallback_model is None:
+            raise primary_error
+        fallback_configuration = ModelGatewayConfiguration(
+            mode="openai",
+            model=self.configuration.fallback_model,
+            endpoint_kind="hosted",
+            base_url=None,
+            api_key=cast(str, self.configuration.fallback_api_key),
+            configuration_version=self.configuration.configuration_version,
+        )
+        try:
+            vectors, usage = self._embed(
+                self._fallback_client,
+                fallback_configuration,
+                request,
+                use_requested_model=False,
+            )
+        except Exception as fallback_error:
+            raise GatewayUnavailableError("primary_and_fallback_unavailable") from fallback_error
+        return EmbeddingResponse(
+            vectors=vectors,
+            provenance=_provenance(
+                fallback_configuration,
+                usage,
+                started_at=started_at,
+                fallback_outcome="hosted_fallback_succeeded",
+                safe_failure_reason=primary_error.safe_reason,
+            ),
+        )
+
+    def _embed(
+        self,
+        client: Any,
+        configuration: ModelGatewayConfiguration,
+        request: EmbeddingRequest,
+        *,
+        use_requested_model: bool,
+    ) -> tuple[list[list[float]], object]:
+        request_options: dict[str, object] = {
+            "model": request.model
+            if use_requested_model and request.model
+            else configuration.model,
+            "input": list(request.inputs),
+        }
+        if request.dimensions is not None:
+            request_options["dimensions"] = request.dimensions
+        try:
+            response = client.embeddings.create(**request_options)
+        except Exception as error:
+            raise _gateway_error(error) from error
+        vectors = [list(cast(Sequence[float], item.embedding)) for item in response.data]
+        return vectors, getattr(response, "usage", None)
 
     def answer(self, request: GroundedAnswerRequest) -> GroundedAnswerResponse:
         result = self.generate_json(

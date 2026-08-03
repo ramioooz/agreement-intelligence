@@ -6,6 +6,7 @@ from typing import Any
 from _pytest.monkeypatch import MonkeyPatch
 from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
+    EmbeddingRequest,
     GatewayConfigurationError,
     GatewayUnavailableError,
     ModelGatewayConfiguration,
@@ -120,6 +121,36 @@ def test_unavailable_compatible_endpoint_uses_configured_hosted_fallback() -> No
     assert response.provenance.cost_usd is None
 
 
+def test_embedding_falls_back_to_hosted_provider_when_compatible_endpoint_is_unavailable() -> None:
+    configuration = ModelGatewayConfiguration(
+        mode="openai-compatible",
+        model="local-embedding-model.gguf",
+        endpoint_kind="openai-compatible",
+        base_url="http://llama:8080/v1",
+        api_key="local-key",
+        fallback_model="text-embedding-3-small",
+        fallback_api_key="hosted-key",
+    )
+    local_client = _FailingEmbeddingClient()
+    hosted_client = _EmbeddingClient(vectors=[[0.25, 0.75]])
+    gateway = OpenAIModelGateway(
+        configuration,
+        client=local_client,
+        fallback_client=hosted_client,
+    )
+
+    response = gateway.embed(EmbeddingRequest(inputs=("termination rights",), dimensions=2))
+
+    assert response.vectors == [[0.25, 0.75]]
+    assert local_client.calls == 1
+    assert hosted_client.calls == 1
+    assert response.provenance.provider == "openai"
+    assert response.provenance.endpoint_kind == "hosted"
+    assert response.provenance.model == "text-embedding-3-small"
+    assert response.provenance.fallback_outcome == "hosted_fallback_succeeded"
+    assert response.provenance.safe_failure_reason == "compatible_endpoint_unavailable"
+
+
 def test_unavailable_compatible_endpoint_has_a_safe_failure_reason_without_fallback() -> None:
     gateway = OpenAIModelGateway(
         ModelGatewayConfiguration(
@@ -144,3 +175,28 @@ class _FailingCompatibleClient:
             @staticmethod
             def create(**kwargs: Any) -> object:
                 raise ConnectionError("connection refused")
+
+
+class _FailingEmbeddingClient:
+    def __init__(self) -> None:
+        self.embeddings = self
+        self.calls = 0
+
+    def create(self, **kwargs: Any) -> object:
+        del kwargs
+        self.calls += 1
+        raise ConnectionError("connection refused")
+
+
+class _EmbeddingClient:
+    def __init__(self, *, vectors: list[list[float]]) -> None:
+        self.embeddings = self
+        self.calls = 0
+        self._vectors = vectors
+
+    def create(self, **kwargs: Any) -> object:
+        del kwargs
+        self.calls += 1
+        data = [type("Embedding", (), {"embedding": vector})() for vector in self._vectors]
+        usage = type("Usage", (), {"prompt_tokens": 4, "total_tokens": 4})()
+        return type("EmbeddingResponse", (), {"data": data, "usage": usage})()
