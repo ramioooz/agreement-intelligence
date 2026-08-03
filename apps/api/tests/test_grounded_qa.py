@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import UUID, uuid4
 
 from agreement_intelligence_api.agreements.models import AgreementRecord
@@ -38,6 +39,27 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+def test_question_audit_migration_enforces_postgresql_append_only_events() -> None:
+    migration_path = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "versions"
+        / "20260804_0020_question_audit_events.py"
+    )
+
+    migration_sql = migration_path.read_text()
+
+    assert "question_audit_events" in migration_sql
+    assert "prevent_question_audit_event_mutation" in migration_sql
+    assert "CREATE TRIGGER question_audit_events_immutable" in migration_sql
+    assert "BEFORE UPDATE OR DELETE ON question_audit_events" in migration_sql
+    assert "Question audit events are immutable" in migration_sql
+    assert "DROP TRIGGER IF EXISTS question_audit_events_immutable ON question_audit_events" in (
+        migration_sql
+    )
+    assert "DROP FUNCTION IF EXISTS prevent_question_audit_event_mutation" in migration_sql
 
 
 class _Identity:

@@ -51,10 +51,30 @@ def upgrade() -> None:
             WITH CHECK (organization_id = current_setting('app.organization_id', true)::uuid)
             """
         )
+        op.execute(
+            """
+            CREATE FUNCTION prevent_question_audit_event_mutation() RETURNS trigger AS $$
+            BEGIN
+              RAISE EXCEPTION 'Question audit events are immutable';
+            END;
+            $$ LANGUAGE plpgsql;
+            """
+        )
+        op.execute(
+            """
+            CREATE TRIGGER question_audit_events_immutable
+            BEFORE UPDATE OR DELETE ON question_audit_events
+            FOR EACH ROW EXECUTE FUNCTION prevent_question_audit_event_mutation();
+            """
+        )
 
 
 def downgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            "DROP TRIGGER IF EXISTS question_audit_events_immutable ON question_audit_events"
+        )
+        op.execute("DROP FUNCTION IF EXISTS prevent_question_audit_event_mutation")
         op.execute(
             "DROP POLICY IF EXISTS tenant_isolation_question_audit_events ON question_audit_events"
         )
