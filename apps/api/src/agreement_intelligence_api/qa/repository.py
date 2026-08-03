@@ -5,7 +5,12 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agreement_intelligence_api.qa.models import QuestionThreadRecord, QuestionTurnRecord
+from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.qa.models import (
+    QuestionAuditEventRecord,
+    QuestionThreadRecord,
+    QuestionTurnRecord,
+)
 
 
 class SQLAlchemyQuestionRepository:
@@ -30,6 +35,31 @@ class SQLAlchemyQuestionRepository:
     def add_turn(self, record: QuestionTurnRecord) -> None:
         self._session.add(record)
         self._session.flush()
+
+    def add_audit_event(self, record: QuestionAuditEventRecord) -> None:
+        self._session.add(record)
+        self._session.flush()
+
+    def commit(self) -> None:
+        self._session.commit()
+
+    def rollback(self) -> None:
+        self._session.rollback()
+
+    def visible_agreement_ids(
+        self, *, organization_id: UUID, workspace_id: UUID, agreement_ids: set[UUID]
+    ) -> set[UUID]:
+        if not agreement_ids:
+            return set()
+        return set(
+            self._session.scalars(
+                select(AgreementRecord.id)
+                .where(AgreementRecord.organization_id == organization_id)
+                .where(AgreementRecord.workspace_id == workspace_id)
+                .where(AgreementRecord.archived_at.is_(None))
+                .where(AgreementRecord.id.in_(agreement_ids))
+            )
+        )
 
     def list_turns(
         self, *, organization_id: UUID, workspace_id: UUID, thread_id: UUID

@@ -1,8 +1,18 @@
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
-from agreement_intelligence_api.identity.authz import Principal
+from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.db import get_session
+from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.models import Base
+from agreement_intelligence_api.identity.permissions import RoleKey
+from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.main import app
+from agreement_intelligence_api.qa.models import (
+    QuestionAuditEventRecord,
+    QuestionThreadRecord,
+    QuestionTurnRecord,
+)
 from agreement_intelligence_api.qa.repository import SQLAlchemyQuestionRepository
 from agreement_intelligence_api.qa.routes import _turn_response
 from agreement_intelligence_api.qa.schemas import CreateQuestionThreadRequest
@@ -24,8 +34,10 @@ from agreement_intelligence_worker.evidence_validation import (
     GroundedAnswer,
     GroundedClaim,
 )
-from sqlalchemy import create_engine
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 class _Identity:
@@ -39,15 +51,15 @@ class _Identity:
 class _Search:
     def __init__(self) -> None:
         self.calls = 0
+        self.agreement_id = uuid4()
 
     def search(self, *_: object, **__: object) -> SearchResponse:
         self.calls += 1
-        agreement_id = uuid4()
         return SearchResponse(
             limit=20,
             items=[
                 SearchResult(
-                    agreement_id=agreement_id,
+                    agreement_id=self.agreement_id,
                     agreement_title="Master agreement",
                     agreement_type="client_agreement",
                     agreement_status="active",
@@ -59,7 +71,7 @@ class _Search:
                         source_version="sha256:source",
                     ),
                     navigation=SearchNavigation(
-                        agreement_id=agreement_id,
+                        agreement_id=self.agreement_id,
                         anchor_ids=["source:page:1:block:1"],
                     ),
                     lexical_rank=1,
@@ -172,8 +184,23 @@ def test_persisted_thread_reloads_its_cited_turns() -> None:
     Base.metadata.create_all(engine)
     session: Session = sessionmaker(bind=engine)()
     repository = SQLAlchemyQuestionRepository(session)
+    search = _Search()
+    organization_id, workspace_id = uuid4(), uuid4()
+    session.add(
+        AgreementRecord(
+            id=search.agreement_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            title="Master agreement",
+            agreement_type="client_agreement",
+            status="active",
+            processing_state="completed",
+            archived_at=None,
+        )
+    )
+    session.commit()
     service = GroundedQuestionService(
-        search=_Search(),
+        search=search,
         identity=_Identity(),
         repository=repository,
         answerer=lambda _: AnswerCandidate(
@@ -191,18 +218,167 @@ def test_persisted_thread_reloads_its_cited_turns() -> None:
         ),
     )
     principal = Principal(user_id=uuid4())
-    thread = service.create_thread(principal, organization_id=uuid4(), workspace_id=uuid4())
+    thread = service.create_thread(
+        principal, organization_id=organization_id, workspace_id=workspace_id
+    )
     service.ask(principal, thread=thread, question="When may termination occur?")
-    session.commit()
+    session.close()
+    reloaded_session: Session = sessionmaker(bind=engine)()
     reloaded = GroundedQuestionService(
         search=_Search(),
         identity=_Identity(),
-        repository=repository,
+        repository=SQLAlchemyQuestionRepository(reloaded_session),
         answerer=lambda _: AnswerCandidate(claims=()),
     ).read_thread(principal, thread=thread)
 
     assert reloaded is not None
     assert reloaded.turns[0].answer.claims[0].citations[0].anchor_id == "source:page:1:block:1"
+
+
+def test_persisted_question_operations_commit_and_create_immutable_audit_events() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session: Session = sessionmaker(bind=engine)()
+    repository = SQLAlchemyQuestionRepository(session)
+    search = _Search()
+    service = GroundedQuestionService(
+        search=search,
+        identity=_Identity(),
+        repository=repository,
+        answerer=lambda _: AnswerCandidate(claims=()),
+    )
+    principal = Principal(user_id=uuid4())
+    organization_id, workspace_id = uuid4(), uuid4()
+    thread = service.create_thread(
+        principal, organization_id=organization_id, workspace_id=workspace_id
+    )
+    service.ask(principal, thread=thread, question="What is the termination right?")
+
+    audits = list(
+        session.scalars(
+            select(QuestionAuditEventRecord)
+            .where(QuestionAuditEventRecord.thread_id == thread.id)
+            .order_by(QuestionAuditEventRecord.occurred_at, QuestionAuditEventRecord.id)
+        )
+    )
+    assert {event.action for event in audits} == {"thread_created", "question_answered"}
+    assert all(event.metadata_json == {} for event in audits)
+    assert (
+        next(event for event in audits if event.action == "question_answered").turn_id is not None
+    )
+
+
+def test_question_post_endpoints_commit_thread_and_turn_without_caller_commit() -> None:
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session: Session = sessionmaker(bind=engine)()
+    identity = IdentityService(session)
+    identity.bootstrap_authorization_catalog()
+    user = identity.provision_user(
+        issuer="https://identity.example", subject="question-user", display_name="Question User"
+    )
+    organization = identity.create_organization(name="Acme", slug="acme-question-post")
+    workspace = identity.create_workspace(
+        organization_id=organization.id, name="Legal", slug="legal-question-post"
+    )
+    membership = identity.grant_membership(
+        organization_id=organization.id, user_id=user.id, role_key=RoleKey.BUSINESS_USER
+    )
+    identity.grant_workspace_membership(
+        organization_id=organization.id, membership_id=membership.id, workspace_id=workspace.id
+    )
+    session.commit()
+    user_id = user.id
+    organization_id = organization.id
+    workspace_id = workspace.id
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
+    try:
+        client = TestClient(app)
+        scope = {"organization_id": str(organization_id), "workspace_id": str(workspace_id)}
+        created = client.post("/questions/threads", params=scope, json={})
+        assert created.status_code == 201
+        thread_id = created.json()["id"]
+        created_turn = client.post(
+            f"/questions/threads/{thread_id}/turns",
+            params=scope,
+            json={"question": "What is the termination right?"},
+        )
+        assert created_turn.status_code == 201
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+    reloaded_session: Session = sessionmaker(bind=engine)()
+    persisted_thread = reloaded_session.get(QuestionThreadRecord, UUID(thread_id))
+    persisted_turns = list(
+        reloaded_session.scalars(
+            select(QuestionTurnRecord).where(QuestionTurnRecord.thread_id == UUID(thread_id))
+        )
+    )
+    assert persisted_thread is not None
+    assert len(persisted_turns) == 1
+    reloaded_session.close()
+    engine.dispose()
+
+
+def test_persisted_claims_are_redacted_when_their_agreement_is_archived() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session: Session = sessionmaker(bind=engine)()
+    repository = SQLAlchemyQuestionRepository(session)
+    search = _Search()
+    principal = Principal(user_id=uuid4())
+    organization_id, workspace_id = uuid4(), uuid4()
+    session.add(
+        AgreementRecord(
+            id=search.agreement_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            title="Master agreement",
+            agreement_type="client_agreement",
+            status="active",
+            processing_state="completed",
+            archived_at=None,
+        )
+    )
+    session.commit()
+    service = GroundedQuestionService(
+        search=search,
+        identity=_Identity(),
+        repository=repository,
+        answerer=lambda _: AnswerCandidate(
+            claims=(
+                GroundedClaim(
+                    text="Termination is permitted after material breach.",
+                    citations=(
+                        Citation(
+                            anchor_id="source:page:1:block:1",
+                            supporting_quote="Termination is permitted after material breach.",
+                        ),
+                    ),
+                ),
+            )
+        ),
+    )
+    thread = service.create_thread(
+        principal, organization_id=organization_id, workspace_id=workspace_id
+    )
+    service.ask(principal, thread=thread, question="When may termination occur?")
+    agreement = session.get(AgreementRecord, search.agreement_id)
+    assert agreement is not None
+    agreement.archived_at = datetime.now(UTC)
+    session.commit()
+
+    view = service.read_thread(principal, thread=thread)
+
+    assert view is not None
+    assert view.turns[0].answer.status == "insufficient_evidence"
+    assert view.turns[0].answer.claims == ()
 
 
 def test_question_turn_response_identifies_the_agreement_for_each_citation() -> None:

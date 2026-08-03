@@ -9,6 +9,7 @@ from uuid import UUID, uuid4
 
 from agreement_intelligence_worker.evidence_validation import (
     Answerer,
+    AnswerStatus,
     EvidenceAnchor,
     EvidenceSnippet,
     GroundedAnswer,
@@ -17,7 +18,11 @@ from agreement_intelligence_worker.evidence_validation import (
 
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.permissions import PermissionKey
-from agreement_intelligence_api.qa.models import QuestionThreadRecord, QuestionTurnRecord
+from agreement_intelligence_api.qa.models import (
+    QuestionAuditEventRecord,
+    QuestionThreadRecord,
+    QuestionTurnRecord,
+)
 from agreement_intelligence_api.qa.repository import SQLAlchemyQuestionRepository
 from agreement_intelligence_api.search.schemas import SearchFilters, SearchResponse
 
@@ -109,17 +114,35 @@ class GroundedQuestionService:
         )
         self._turns[thread.id] = []
         if self._repository is not None:
-            self._repository.add_thread(
-                QuestionThreadRecord(
-                    id=thread.id,
-                    organization_id=thread.organization_id,
-                    workspace_id=thread.workspace_id,
-                    agreement_ids=(
-                        [str(value) for value in agreement_ids] if agreement_ids else None
-                    ),
-                    created_by=principal.user_id,
+            try:
+                self._repository.add_thread(
+                    QuestionThreadRecord(
+                        id=thread.id,
+                        organization_id=thread.organization_id,
+                        workspace_id=thread.workspace_id,
+                        agreement_ids=(
+                            [str(value) for value in agreement_ids] if agreement_ids else None
+                        ),
+                        created_by=principal.user_id,
+                    )
                 )
-            )
+                self._repository.add_audit_event(
+                    QuestionAuditEventRecord(
+                        organization_id=thread.organization_id,
+                        workspace_id=thread.workspace_id,
+                        thread_id=thread.id,
+                        turn_id=None,
+                        actor_id=principal.user_id,
+                        action="thread_created",
+                        outcome="created",
+                        metadata_json={},
+                    )
+                )
+                self._repository.commit()
+            except Exception:
+                self._repository.rollback()
+                self._turns.pop(thread.id, None)
+                raise
         return thread
 
     def read_thread(
@@ -130,7 +153,7 @@ class GroundedQuestionService:
             return None
         return QuestionThreadView(
             thread=persisted,
-            turns=tuple(self._load_turns(persisted)),
+            turns=tuple(self._redact_inaccessible_turns(persisted)),
         )
 
     def ask(self, principal: Principal, *, thread: QuestionThread, question: str) -> QuestionTurn:
@@ -169,22 +192,40 @@ class GroundedQuestionService:
         )
         self._turns.setdefault(persisted.id, []).append(turn)
         if self._repository is not None:
-            self._repository.add_turn(
-                QuestionTurnRecord(
-                    id=turn.id,
-                    organization_id=persisted.organization_id,
-                    workspace_id=persisted.workspace_id,
-                    thread_id=persisted.id,
-                    question=turn.question,
-                    answer_status=turn.answer.status,
-                    answer_message=turn.answer.message,
-                    claims=_claims_payload(turn.answer),
-                    retrieval_provenance={
-                        "result_count": len(results.items),
-                        "citation_sources": _citation_sources_payload(citation_sources),
-                    },
+            try:
+                self._repository.add_turn(
+                    QuestionTurnRecord(
+                        id=turn.id,
+                        organization_id=persisted.organization_id,
+                        workspace_id=persisted.workspace_id,
+                        thread_id=persisted.id,
+                        question=turn.question,
+                        answer_status=turn.answer.status,
+                        answer_message=turn.answer.message,
+                        claims=_claims_payload(turn.answer),
+                        retrieval_provenance={
+                            "result_count": len(results.items),
+                            "citation_sources": _citation_sources_payload(citation_sources),
+                        },
+                    )
                 )
-            )
+                self._repository.add_audit_event(
+                    QuestionAuditEventRecord(
+                        organization_id=persisted.organization_id,
+                        workspace_id=persisted.workspace_id,
+                        thread_id=persisted.id,
+                        turn_id=turn.id,
+                        actor_id=principal.user_id,
+                        action="question_answered",
+                        outcome=turn.answer.status,
+                        metadata_json={},
+                    )
+                )
+                self._repository.commit()
+            except Exception:
+                self._repository.rollback()
+                self._turns.get(persisted.id, []).remove(turn)
+                raise
         return turn
 
     def _load_thread(self, thread: QuestionThread) -> QuestionThread | None:
@@ -215,6 +256,20 @@ class GroundedQuestionService:
                 thread_id=thread.id,
             )
         ]
+
+    def _redact_inaccessible_turns(self, thread: QuestionThread) -> list[QuestionTurn]:
+        turns = self._load_turns(thread)
+        if self._repository is None:
+            return turns
+        agreement_ids = {
+            source.agreement_id for turn in turns for source in turn.citation_sources.values()
+        }
+        visible_agreement_ids = self._repository.visible_agreement_ids(
+            organization_id=thread.organization_id,
+            workspace_id=thread.workspace_id,
+            agreement_ids=agreement_ids,
+        )
+        return [_redact_turn(turn, visible_agreement_ids) for turn in turns]
 
     def _can_access(self, principal: Principal, thread: QuestionThread) -> bool:
         return self._identity.can_access_workspace(
@@ -355,7 +410,7 @@ def _turn_from_record(record: QuestionTurnRecord) -> QuestionTurn:
         id=record.id,
         question=record.question,
         answer=GroundedAnswer(
-            status=record.answer_status,  # type: ignore[arg-type]
+            status=_answer_status(record.answer_status),
             claims=claims,
             message=record.answer_message,
         ),
@@ -372,3 +427,56 @@ def _validated_context(turns: list[QuestionTurn]) -> tuple[str, ...]:
         if turn.answer.status in {"answered", "partial"}
         for claim in turn.answer.claims
     )
+
+
+def _answer_status(value: str) -> AnswerStatus:
+    if value in {
+        "answered",
+        "insufficient_evidence",
+        "conflicting_evidence",
+        "partial",
+        "model_unavailable",
+    }:
+        return cast(AnswerStatus, value)
+    return "insufficient_evidence"
+
+
+def _redact_turn(turn: QuestionTurn, visible_agreement_ids: set[UUID]) -> QuestionTurn:
+    """Return a display-safe historical turn without mutating its audit record.
+
+    Persisted answers are historical output, not an authorization grant. A
+    claim survives only when every citation can still be navigated to an
+    agreement that remains visible in the current workspace scope.
+    """
+
+    valid_anchor_ids = {
+        anchor_id
+        for anchor_id, source in turn.citation_sources.items()
+        if source.agreement_id in visible_agreement_ids
+    }
+    claims = tuple(
+        claim
+        for claim in turn.answer.claims
+        if claim.citations
+        and all(citation.anchor_id in valid_anchor_ids for citation in claim.citations)
+    )
+    citation_sources = {
+        anchor_id: source
+        for anchor_id, source in turn.citation_sources.items()
+        if anchor_id in valid_anchor_ids
+    }
+    if len(claims) == len(turn.answer.claims):
+        return replace(turn, citation_sources=citation_sources)
+    if not claims:
+        answer = GroundedAnswer(
+            status="insufficient_evidence",
+            claims=(),
+            message="Prior evidence is no longer available to your current access.",
+        )
+    else:
+        answer = GroundedAnswer(
+            status="partial",
+            claims=claims,
+            message="Some prior evidence is no longer available to your current access.",
+        )
+    return replace(turn, answer=answer, citation_sources=citation_sources)
