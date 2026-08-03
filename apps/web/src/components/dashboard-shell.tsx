@@ -27,7 +27,8 @@ const navigationItems: Array<{
   },
   {
     label: "Search",
-    summary: "Ask cited questions after indexing and retrieval are delivered.",
+    summary: "Search authorized agreements and inspect cited source evidence.",
+    href: "/dashboard/search",
   },
   {
     label: "Playbooks",
