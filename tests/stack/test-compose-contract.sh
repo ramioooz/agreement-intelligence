@@ -129,10 +129,59 @@ const apiCommand = config.services?.api?.command?.join(" ") ?? "";
 if (!apiCommand.includes("python -m agreement_intelligence_api.identity.local_demo")) {
   throw new Error("API startup must explicitly provision local demo identities");
 }
+
+const expectedRunningServices = [
+  "api",
+  "keycloak",
+  "localstack",
+  "mcp",
+  "otel-collector",
+  "postgres",
+  "redis",
+  "web",
+  "worker",
+];
+for (const serviceName of expectedRunningServices) {
+  if (!config.services?.[serviceName]) {
+    throw new Error(`Stack topology is missing ${serviceName}`);
+  }
+}
+
+if (!config.services?.redis?.healthcheck?.test?.length) {
+  throw new Error("Redis must provide a Docker health check");
+}
+
+if (config.services?.["otel-collector"]?.healthcheck) {
+  throw new Error("OpenTelemetry Collector must be checked as running, not through a Docker health check");
+}
 NODE
 
 grep -q '^name: agreement-intelligence$' "$config_file"
 ! grep -q 'container_name:' compose.yaml
+
+stack_check_services=$(awk '
+  /^expected_running=/ { collecting = 1 }
+  collecting { print }
+  collecting && /'"'"'$/ { exit }
+' scripts/stack-check.sh | sed "s/^expected_running='//; s/'$//")
+for service in api keycloak localstack mcp otel-collector postgres redis web worker; do
+  printf '%s\n' "$stack_check_services" | grep -qx "$service" || {
+    echo "stack-check must account for the running $service service"
+    exit 1
+  }
+done
+
+for service in mcp redis; do
+  grep -Eq "for service in .*\\b$service\\b" scripts/stack-check.sh || {
+    echo "stack-check must verify $service Docker health"
+    exit 1
+  }
+done
+
+grep -q 'otel-collector is not running' scripts/stack-check.sh || {
+  echo "stack-check must verify that the OpenTelemetry Collector is running"
+  exit 1
+}
 
 for service in postgres localstack keycloak; do
   docker compose --project-name agreement-intelligence \

@@ -12,7 +12,10 @@ compose() {
 expected_running='api
 keycloak
 localstack
+mcp
+otel-collector
 postgres
+redis
 web
 worker'
 
@@ -23,7 +26,7 @@ test "$actual_running" = "$expected_running" || {
   exit 1
 }
 
-for service in web api worker postgres localstack keycloak; do
+for service in web api worker postgres localstack keycloak redis mcp; do
   container_id=$(compose ps --quiet "$service")
   status=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
     "$container_id")
@@ -32,6 +35,13 @@ for service in web api worker postgres localstack keycloak; do
     exit 1
   }
 done
+
+container_id=$(compose ps --quiet otel-collector)
+status=$(docker inspect --format '{{.State.Status}}' "$container_id")
+test "$status" = running || {
+  echo "otel-collector is not running: $status"
+  exit 1
+}
 
 for service in localstack-bootstrap keycloak-bootstrap; do
   container_id=$(compose ps --all --quiet "$service")
