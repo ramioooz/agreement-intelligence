@@ -1,0 +1,296 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { type FormEvent, useState } from "react";
+
+import type { QuestionThread, QuestionTurn } from "@/lib/question-api";
+import type { SearchResult } from "@/lib/search-api";
+
+export type QuestionAnswerState = {
+  state:
+    | "answered"
+    | "partial"
+    | "insufficient_evidence"
+    | "conflicting_evidence"
+    | "model_unavailable";
+  message: string;
+  citations?: Array<{
+    agreementId: string;
+    anchorId: string;
+    label: string;
+  }>;
+  provenance?: {
+    model?: string;
+    indexVersion?: string;
+  };
+};
+
+type SearchWorkspaceProps = {
+  initialQuery: string;
+  results?: SearchResult[];
+  qaState?: QuestionAnswerState;
+  thread?: QuestionThread;
+};
+
+function sourceHref(result: SearchResult): string {
+  const anchorId = result.navigation.anchor_ids[0];
+  return `/dashboard/agreements/${result.navigation.agreement_id}#evidence-${anchorId}`;
+}
+
+function stateLabel(state: QuestionAnswerState["state"]): string {
+  return state.replaceAll("_", " ");
+}
+
+export function SearchWorkspace({
+  initialQuery,
+  results = [],
+  qaState,
+  thread,
+}: SearchWorkspaceProps) {
+  const router = useRouter();
+  const [query, setQuery] = useState(initialQuery);
+  const [question, setQuestion] = useState("");
+  const [questionState, setQuestionState] = useState(qaState);
+  const [threadId, setThreadId] = useState(thread?.id);
+  const [asking, setAsking] = useState(false);
+
+  function submitSearch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalized = query.trim();
+    const params = new URLSearchParams({ q: normalized });
+    router.push(
+      normalized ? `/dashboard/search?${params}` : "/dashboard/search",
+    );
+  }
+
+  async function submitQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const normalized = question.trim();
+    if (!normalized || asking) return;
+    setAsking(true);
+    setQuestionState(undefined);
+    try {
+      let activeThreadId = threadId;
+      if (!activeThreadId) {
+        const threadResponse = await fetch("/api/questions/threads", {
+          method: "POST",
+        });
+        if (!threadResponse.ok) throw new Error("thread unavailable");
+        const createdThread = (await threadResponse.json()) as Pick<
+          QuestionThread,
+          "id"
+        >;
+        activeThreadId = createdThread.id;
+        setThreadId(activeThreadId);
+      }
+      const turnResponse = await fetch(
+        `/api/questions/threads/${activeThreadId}/turns`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: normalized }),
+        },
+      );
+      if (!turnResponse.ok) throw new Error("turn unavailable");
+      const turn = (await turnResponse.json()) as QuestionTurn;
+      setQuestionState({
+        state: turn.answer.status,
+        message: turn.answer.message,
+      });
+      setQuestion("");
+      router.push(
+        `/dashboard/search?q=${encodeURIComponent(initialQuery)}&thread=${activeThreadId}`,
+      );
+    } catch {
+      setQuestionState({
+        state: "model_unavailable",
+        message:
+          "Question answering is currently unavailable. Search evidence remains available.",
+      });
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby="grounded-search-heading" className="space-y-8">
+      <div>
+        <Link
+          className="inline-flex text-sm font-semibold text-slate-600 underline-offset-4 hover:text-slate-950 hover:underline"
+          href="/dashboard"
+        >
+          Back to dashboard
+        </Link>
+        <h1
+          className="mt-4 text-3xl font-semibold tracking-tight"
+          id="grounded-search-heading"
+        >
+          Grounded search
+        </h1>
+        <p className="mt-2 text-slate-600">
+          Search only agreements you are authorized to access. Results and
+          answers link back to their source evidence.
+        </p>
+      </div>
+
+      <form
+        aria-label="Portfolio search"
+        className="grid gap-3 rounded-2xl border border-slate-200 bg-white p-4 md:grid-cols-[1fr_auto]"
+        onSubmit={submitSearch}
+      >
+        <label className="grid gap-1.5 text-sm font-medium">
+          Search
+          <input
+            className="rounded-lg border border-slate-300 px-3 py-2"
+            name="q"
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Ask about termination, liability, or notices"
+            type="search"
+            value={query}
+          />
+        </label>
+        <button
+          className="self-end rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+          type="submit"
+        >
+          Search
+        </button>
+      </form>
+
+      {initialQuery && results.length === 0 ? (
+        <p
+          className="rounded-xl border border-dashed border-slate-300 bg-white p-6 text-slate-600"
+          role="status"
+        >
+          No authorized evidence matched this search. Try different terms or
+          broaden the agreement filters.
+        </p>
+      ) : null}
+
+      {results.length > 0 ? (
+        <section aria-labelledby="search-results-heading" className="space-y-4">
+          <h2 className="text-xl font-semibold" id="search-results-heading">
+            Search results
+          </h2>
+          <ol className="space-y-4">
+            {results.map((result) => (
+              <li
+                className="rounded-2xl border border-slate-200 bg-white p-5"
+                key={result.citation.chunk_id}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <h3 className="font-semibold">{result.agreement_title}</h3>
+                    <p className="text-sm text-slate-600">
+                      {result.agreement_type} · {result.agreement_status}
+                    </p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold text-slate-700">
+                    {result.semantic_rank === null
+                      ? "Lexical match"
+                      : "Hybrid match"}
+                  </span>
+                </div>
+                <p className="mt-3 text-sm leading-6 text-slate-700">
+                  {result.content_preview}
+                </p>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                  <Link
+                    className="text-sm font-semibold underline underline-offset-4"
+                    href={sourceHref(result)}
+                  >
+                    View source evidence
+                  </Link>
+                  <p
+                    aria-label={`Index: ${result.index_provenance.embedding_index_version ?? "lexical only"}`}
+                    className="text-xs text-slate-500"
+                  >
+                    Index:{" "}
+                    {result.index_provenance.embedding_index_version ??
+                      "lexical only"}
+                    {" · "}Chunker: {result.index_provenance.chunker_version}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
+
+      <section
+        aria-labelledby="question-answer-heading"
+        className="rounded-2xl border border-slate-200 bg-white p-5"
+      >
+        <h2 className="text-xl font-semibold" id="question-answer-heading">
+          Cited Q&amp;A
+        </h2>
+        <p className="mt-1 text-sm text-slate-600">
+          Answers are limited to current, authorized retrieval evidence. If the
+          evidence is insufficient or conflicting, the application will say so.
+        </p>
+        <form className="mt-4 grid gap-3" onSubmit={submitQuestion}>
+          <label className="grid gap-1.5 text-sm font-medium">
+            Question
+            <textarea
+              className="min-h-24 rounded-lg border border-slate-300 px-3 py-2"
+              disabled={!initialQuery || asking}
+              onChange={(event) => setQuestion(event.target.value)}
+              placeholder="Ask a question about the retrieved agreements"
+              value={question}
+            />
+          </label>
+          <button
+            className="w-fit rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={!initialQuery || !question.trim() || asking}
+            type="submit"
+          >
+            {asking ? "Answering…" : "Ask question"}
+          </button>
+        </form>
+        {questionState ? (
+          <div
+            className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-4"
+            role={questionState.state === "answered" ? "status" : "alert"}
+          >
+            <p className="font-semibold capitalize">
+              {stateLabel(questionState.state)}
+            </p>
+            <p className="mt-1 text-sm text-slate-700">
+              {questionState.message}
+            </p>
+            {questionState.citations?.length ? (
+              <ul className="mt-3 space-y-2">
+                {questionState.citations.map((citation) => (
+                  <li key={`${citation.agreementId}-${citation.anchorId}`}>
+                    <Link
+                      className="text-sm font-semibold underline underline-offset-4"
+                      href={`/dashboard/agreements/${citation.agreementId}#evidence-${citation.anchorId}`}
+                    >
+                      {citation.label}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+            {questionState.provenance ? (
+              <p className="mt-3 text-xs text-slate-500">
+                {questionState.provenance.model
+                  ? `Model: ${questionState.provenance.model}`
+                  : "Model response unavailable"}
+                {questionState.provenance.indexVersion
+                  ? ` · Index: ${questionState.provenance.indexVersion}`
+                  : ""}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-slate-600">
+            Ask a question after you run a search. Your conversation will be
+            retained with its cited answer history.
+          </p>
+        )}
+      </section>
+    </section>
+  );
+}
