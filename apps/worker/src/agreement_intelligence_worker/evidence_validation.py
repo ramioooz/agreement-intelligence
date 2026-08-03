@@ -74,6 +74,9 @@ class GroundedQuestionRequest:
     question: str
     instructions: str
     evidence: tuple[EvidenceSnippet, ...]
+    # Only prior validated claim text is allowed here. Source snippets are
+    # always retrieved again for the current turn and never carried in history.
+    conversation_context: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
