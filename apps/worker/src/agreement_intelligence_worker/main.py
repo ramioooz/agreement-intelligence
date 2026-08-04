@@ -23,13 +23,31 @@ from agreement_intelligence_worker.model_gateway import (
 )
 from agreement_intelligence_worker.playbook_evaluation import SQLAlchemyPlaybookEvaluationSink
 from agreement_intelligence_worker.processing import (
+    CompletedArtifact,
     CompletionHandlerFanout,
     JobProcessor,
+    ProcessingJob,
     SQLAlchemyProcessingJobRepository,
     SQSProcessingMessageReceiver,
     SQSProcessingQueue,
     processing_engine_from_url,
 )
+from agreement_intelligence_worker.version_comparison_processor import VersionComparisonProcessor
+
+
+class ProfileProcessor:
+    """Keeps document and comparison work on one durable queue without conflating contracts."""
+
+    def __init__(
+        self, document: DocumentUnderstandingProcessor, comparison: VersionComparisonProcessor
+    ) -> None:
+        self._document = document
+        self._comparison = comparison
+
+    def process(self, job: ProcessingJob) -> CompletedArtifact:
+        if job.profile == "version-comparison":
+            return self._comparison.process(job)
+        return self._document.process(job)
 
 
 @dataclass(frozen=True)
@@ -88,9 +106,9 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
     processor = JobProcessor(
         repository,
         queue,
-        DocumentUnderstandingProcessor(
-            storage,
-            analysis_provider=provider_from_environment(),
+        ProfileProcessor(
+            DocumentUnderstandingProcessor(storage, analysis_provider=provider_from_environment()),
+            VersionComparisonProcessor(database_url, storage),
         ),
         completion_handler=CompletionHandlerFanout(
             handlers=(

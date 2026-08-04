@@ -13,6 +13,11 @@ from agreement_intelligence_api.agreements.versions import (
     StaleCurrentVersionError,
     VersionIdempotencyConflictError,
 )
+from agreement_intelligence_api.comparisons.routes import (
+    comparison_conflict_handler,
+)
+from agreement_intelligence_api.comparisons.routes import router as comparisons_router
+from agreement_intelligence_api.comparisons.service import VersionComparisonConflictError
 from agreement_intelligence_api.documents.routes import router as documents_router
 from agreement_intelligence_api.errors import (
     http_exception_handler,
@@ -53,6 +58,7 @@ app.add_exception_handler(StaleCurrentVersionError, version_conflict_handler)
 app.add_exception_handler(VersionIdempotencyConflictError, version_conflict_handler)
 app.add_exception_handler(IdempotencyKeyConflictError, idempotency_conflict_handler)
 app.add_exception_handler(RetryNotPermittedError, retry_not_permitted_handler)
+app.add_exception_handler(VersionComparisonConflictError, comparison_conflict_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 app.include_router(health_router)
@@ -60,6 +66,7 @@ app.include_router(identity_router)
 app.include_router(agreements_router)
 app.include_router(documents_router)
 app.include_router(processing_router)
+app.include_router(comparisons_router)
 app.include_router(playbooks_router)
 app.include_router(reviews_router)
 app.include_router(decision_router)
