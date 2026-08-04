@@ -8,7 +8,7 @@ COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STA
 
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
-	format format-check lint typecheck test build check provider-smoke retrieval-eval
+	format format-check lint typecheck test build check provider-smoke retrieval-eval version-comparison-eval
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -29,6 +29,7 @@ help:
 	@echo "  make check          Run all pre-review source checks"
 	@echo "  make provider-smoke Run an opt-in configured-provider smoke check"
 	@echo "  make retrieval-eval Evaluate retrieval and grounded-answer results"
+	@echo "  make version-comparison-eval Evaluate agreement-version comparison results"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -142,3 +143,9 @@ retrieval-eval:
 		echo "RETRIEVAL_EVAL_RESULTS must name an evaluation results JSON file."; exit 1; \
 	}
 	uv run --package agreement-intelligence-worker python -m agreement_intelligence_worker.retrieval_evaluation --results "$(RETRIEVAL_EVAL_RESULTS)"
+
+version-comparison-eval:
+	@[ -n "$(VERSION_COMPARISON_EVAL_RESULTS)" ] || { \
+		echo "VERSION_COMPARISON_EVAL_RESULTS must name an evaluation results JSON file."; exit 1; \
+	}
+	uv run --package agreement-intelligence-worker python -m agreement_intelligence_worker.version_comparison_evaluation --results "$(VERSION_COMPARISON_EVAL_RESULTS)"
