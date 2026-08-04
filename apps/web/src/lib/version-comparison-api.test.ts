@@ -36,18 +36,16 @@ describe("version comparison API client", () => {
   });
 
   it("loads a persisted comparison and surfaces failures", async () => {
-    const fetcher = vi
-      .fn()
-      .mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            id: "comparison-1",
-            state: "completed",
-            changes: [],
-          }),
-          { status: 200 },
-        ),
-      );
+    const fetcher = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "comparison-1",
+          state: "completed",
+          changes: [],
+        }),
+        { status: 200 },
+      ),
+    );
     await expect(
       getVersionComparison({
         scope,
