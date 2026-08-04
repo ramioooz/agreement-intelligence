@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "description": "Synthetic, frozen agreement-version pairs for deterministic comparison evaluation.",
+  "accepted_baseline": {
+    "alignment_f1": {"minimum": 0.8},
+    "deterministic_change_accuracy": {"minimum": 0.85},
+    "critical_material_change_recall": {"minimum": 1.0},
+    "citation_precision": {"minimum": 1.0},
+    "unsupported_accepted_claims": {"maximum": 0},
+    "unauthorized_evidence_count": {"maximum": 0}
+  },
+  "cases": [
+    {
+      "id": "liability-cap-reduced",
+      "baseline": {"checksum": "liability-v1", "blocks": ["v1-liability"]},
+      "target": {"checksum": "liability-v2", "blocks": ["v2-liability"]},
+      "expected_alignments": [{"id": "liability-cap", "kind": "matched", "review_required": false}],
+      "expected_changes": [{"id": "liability-cap-reduced", "change_type": "modified", "severity": "critical", "legal_concepts": ["liability", "numbers"], "citation_ids": ["v1-liability", "v2-liability"]}]
+    },
+    {
+      "id": "termination-clause-moved",
+      "baseline": {"checksum": "termination-v1", "blocks": ["v1-termination"]},
+      "target": {"checksum": "termination-v2", "blocks": ["v2-termination"]},
+      "expected_alignments": [{"id": "termination", "kind": "moved", "review_required": false}],
+      "expected_changes": [{"id": "termination-clause-moved", "change_type": "moved", "severity": "low", "legal_concepts": ["termination"], "citation_ids": ["v1-termination", "v2-termination"]}]
+    },
+    {
+      "id": "indemnity-split",
+      "baseline": {"checksum": "indemnity-v1", "blocks": ["v1-indemnity"]},
+      "target": {"checksum": "indemnity-v2", "blocks": ["v2-indemnity-a", "v2-indemnity-b"]},
+      "expected_alignments": [{"id": "indemnity", "kind": "split", "review_required": true}],
+      "expected_changes": [{"id": "indemnity-split", "change_type": "split", "severity": "medium", "legal_concepts": ["indemnity"], "citation_ids": ["v1-indemnity", "v2-indemnity-a", "v2-indemnity-b"]}]
+    },
+    {
+      "id": "payment-clauses-merged",
+      "baseline": {"checksum": "payment-v1", "blocks": ["v1-payment-a", "v1-payment-b"]},
+      "target": {"checksum": "payment-v2", "blocks": ["v2-payment"]},
+      "expected_alignments": [{"id": "payment", "kind": "merged", "review_required": true}],
+      "expected_changes": [{"id": "payment-clauses-merged", "change_type": "merged", "severity": "medium", "legal_concepts": ["obligation", "numbers"], "citation_ids": ["v1-payment-a", "v1-payment-b", "v2-payment"]}]
+    },
+    {
+      "id": "governing-law-added",
+      "baseline": {"checksum": "law-v1", "blocks": []},
+      "target": {"checksum": "law-v2", "blocks": ["v2-governing-law"]},
+      "expected_alignments": [{"id": "governing-law", "kind": "added", "review_required": false}],
+      "expected_changes": [{"id": "governing-law-added", "change_type": "added", "severity": "high", "legal_concepts": ["governing_law"], "citation_ids": ["v2-governing-law"]}]
+    },
+    {
+      "id": "legacy-notice-removed",
+      "baseline": {"checksum": "notice-v1", "blocks": ["v1-legacy-notice"]},
+      "target": {"checksum": "notice-v2", "blocks": []},
+      "expected_alignments": [{"id": "legacy-notice", "kind": "removed", "review_required": false}],
+      "expected_changes": [{"id": "legacy-notice-removed", "change_type": "removed", "severity": "high", "legal_concepts": ["obligation", "dates"], "citation_ids": ["v1-legacy-notice"]}]
+    }
+  ]
+}
