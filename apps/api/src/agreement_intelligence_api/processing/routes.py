@@ -105,6 +105,37 @@ def submit_processing_job(
     return job
 
 
+@router.post(
+    "/{agreement_id}/versions/{version_id}/processing-jobs",
+    response_model=ProcessingJobResponse,
+    status_code=202,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+def submit_version_processing_job(
+    agreement_id: UUID,
+    version_id: UUID,
+    request: SubmitProcessingJobRequest,
+    response: Response,
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    organization_id: UUID,
+    workspace_id: UUID,
+    idempotency_key: IdempotencyKey,
+) -> ProcessingJobResponse:
+    job, created = service.submit(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+        version_id=version_id,
+        idempotency_key=idempotency_key,
+        request=request,
+    )
+    if not created:
+        response.status_code = 200
+    return job
+
+
 @router.get(
     "/{agreement_id}/processing-jobs/{job_id}",
     response_model=ProcessingJobResponse,

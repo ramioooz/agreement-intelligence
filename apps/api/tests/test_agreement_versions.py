@@ -12,6 +12,9 @@ from agreement_intelligence_api.identity.models import Base, Organization, Works
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
+from agreement_intelligence_api.processing.models import ProcessingJobRecord
+from agreement_intelligence_api.processing.routes import get_queue_publisher
+from agreement_intelligence_api.processing.schemas import ProcessingJobResponse
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
@@ -40,6 +43,17 @@ class MemoryStorage:
         self.documents.pop(key, None)
 
 
+class PublishedJobs:
+    def publish(
+        self,
+        job: ProcessingJobResponse,
+        *,
+        idempotency_key: str,
+        profile: str,
+    ) -> None:
+        del job, idempotency_key, profile
+
+
 @fixture
 def session() -> Generator[Session]:
     engine = create_engine(
@@ -62,6 +76,7 @@ def client_for_session(session: Session) -> Generator[Callable[[UUID], TestClien
     app.dependency_overrides[get_document_service] = lambda: DocumentService(
         MemoryStorage(), max_bytes=10 * 1024 * 1024
     )
+    app.dependency_overrides[get_queue_publisher] = lambda: PublishedJobs()
 
     def build_client(user_id: UUID) -> TestClient:
         app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
@@ -257,6 +272,56 @@ def test_read_only_reviewer_cannot_upload_a_revision(
     )
 
     assert response.status_code == 404
+
+
+def test_version_processing_snapshots_and_updates_only_the_selected_source(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    owner_id, organization, workspace = _create_scope(session)
+    client = client_for_session(owner_id)
+    scope = _scope(organization, workspace)
+    agreement = _create_agreement(client, scope)
+    version_one = client.get(f"/agreements/{agreement['id']}/versions", params=scope).json()[
+        "items"
+    ][0]
+    version_two = client.post(
+        f"/agreements/{agreement['id']}/versions",
+        headers={"Idempotency-Key": "revision-processing-v2"},
+        data={**scope, "expected_current_version": "1"},
+        files={
+            "file": (
+                "client-terms-v2.pdf",
+                b"%PDF-1.4 processing revision",
+                "application/pdf",
+            )
+        },
+    ).json()
+
+    submitted = client.post(
+        f"/agreements/{agreement['id']}/versions/{version_two['id']}/processing-jobs",
+        params=scope,
+        headers={"Idempotency-Key": "process-revision-v2"},
+        json={"profile": "baseline"},
+    )
+
+    assert submitted.status_code == 202
+    assert submitted.json()["version_id"] == version_two["id"]
+    job = session.get(ProcessingJobRecord, UUID(submitted.json()["id"]))
+    assert job is not None
+    assert job.version_id == UUID(version_two["id"])
+    assert job.source_storage_key == version_two["file"]["storage_key"]
+    assert job.source_checksum == version_two["file"]["checksum"]
+    refreshed_two = client.get(
+        f"/agreements/{agreement['id']}/versions/{version_two['id']}", params=scope
+    ).json()
+    refreshed_one = client.get(
+        f"/agreements/{agreement['id']}/versions/{version_one['id']}", params=scope
+    ).json()
+    assert refreshed_two["processing_state"] == "queued"
+    assert refreshed_two["processing_job_id"] == submitted.json()["id"]
+    assert refreshed_one["processing_state"] == "pending"
+    assert refreshed_one["processing_job_id"] is None
 
 
 def test_version_lineage_migration_creates_version_tables_and_backfills_legacy_files(
