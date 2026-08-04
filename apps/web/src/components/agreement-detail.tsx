@@ -97,6 +97,15 @@ export function AgreementDetail({
             Review playbook findings
           </Link>
         ) : null}
+        {versions.filter((version) => version.processing_state === "completed")
+          .length >= 2 ? (
+          <Link
+            className="mt-4 ml-2 inline-flex rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+            href={`/dashboard/agreements/${agreement.id}/compare`}
+          >
+            Compare versions
+          </Link>
+        ) : null}
       </header>
       <div className="grid gap-6 lg:grid-cols-[1.4fr_0.8fr]">
         <section
