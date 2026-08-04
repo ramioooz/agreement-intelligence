@@ -1,7 +1,18 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import JSONResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
@@ -10,14 +21,23 @@ from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreement
 from agreement_intelligence_api.agreements.schemas import (
     AgreementListResponse,
     AgreementResponse,
+    AgreementVersionListResponse,
+    AgreementVersionResponse,
     CreateAgreementRequest,
     ErrorResponse,
 )
 from agreement_intelligence_api.agreements.service import AgreementNotFoundError, AgreementService
+from agreement_intelligence_api.agreements.versions import (
+    AgreementVersionService,
+    DuplicateAgreementVersionError,
+    StaleCurrentVersionError,
+    VersionIdempotencyConflictError,
+)
 from agreement_intelligence_api.analysis.service import load_analysis
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.documents.routes import get_document_service
-from agreement_intelligence_api.documents.service import UploadScope
+from agreement_intelligence_api.documents.service import DocumentService, UploadScope
+from agreement_intelligence_api.documents.validation import DocumentValidationError
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.processing.models import (
@@ -43,6 +63,16 @@ def get_service(session: SessionDependency) -> AgreementService:
 AgreementServiceDependency = Annotated[AgreementService, Depends(get_service)]
 
 
+def get_version_service(session: SessionDependency) -> AgreementVersionService:
+    return AgreementVersionService(
+        SQLAlchemyAgreementRepository(session),
+        IdentityService(session),
+    )
+
+
+AgreementVersionServiceDependency = Annotated[AgreementVersionService, Depends(get_version_service)]
+
+
 async def agreement_not_found_handler(
     request: Request,
     _: Exception,
@@ -53,6 +83,26 @@ async def agreement_not_found_handler(
         correlation_id=request.state.correlation_id,
     )
     return JSONResponse(status_code=404, content=payload.model_dump())
+
+
+async def version_conflict_handler(request: Request, error: Exception) -> JSONResponse:
+    if isinstance(error, DuplicateAgreementVersionError):
+        code = "duplicate_version"
+        message = "This source already exists in the agreement lineage"
+    elif isinstance(error, StaleCurrentVersionError):
+        code = "stale_current_version"
+        message = "The agreement current version changed before this upload completed"
+    elif isinstance(error, VersionIdempotencyConflictError):
+        code = "version_idempotency_conflict"
+        message = "The idempotency key was already used for another revision"
+    else:
+        raise error
+    payload = ErrorResponse(
+        code=code,
+        message=message,
+        correlation_id=request.state.correlation_id,
+    )
+    return JSONResponse(status_code=409, content=payload.model_dump())
 
 
 @router.post("", response_model=AgreementResponse, status_code=201)
@@ -113,6 +163,98 @@ def get_agreement(
         workspace_id=workspace_id,
         agreement_id=agreement_id,
     )
+
+
+@router.get(
+    "/{agreement_id}/versions",
+    response_model=AgreementVersionListResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def list_agreement_versions(
+    agreement_id: UUID,
+    principal: PrincipalDependency,
+    service: AgreementVersionServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> AgreementVersionListResponse:
+    return service.list(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+    )
+
+
+@router.get(
+    "/{agreement_id}/versions/{version_id}",
+    response_model=AgreementVersionResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_agreement_version(
+    agreement_id: UUID,
+    version_id: UUID,
+    principal: PrincipalDependency,
+    service: AgreementVersionServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> AgreementVersionResponse:
+    return service.get(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+        version_id=version_id,
+    )
+
+
+@router.post(
+    "/{agreement_id}/versions",
+    response_model=AgreementVersionResponse,
+    status_code=201,
+    responses={404: {"model": ErrorResponse}, 409: {"model": ErrorResponse}},
+)
+async def upload_agreement_version(
+    agreement_id: UUID,
+    response: Response,
+    principal: PrincipalDependency,
+    service: AgreementVersionServiceDependency,
+    document_service: Annotated[DocumentService, Depends(get_document_service)],
+    file: Annotated[UploadFile, File()],
+    organization_id: Annotated[UUID, Form()],
+    workspace_id: Annotated[UUID, Form()],
+    expected_current_version: Annotated[int, Form(ge=0)],
+    idempotency_key: Annotated[str, Header(min_length=1, max_length=255)],
+) -> AgreementVersionResponse:
+    service.authorize_upload(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+    )
+    try:
+        content = await file.read(document_service._max_bytes + 1)
+        uploaded = document_service.upload(
+            UploadScope(tenant_id=organization_id, workspace_id=workspace_id),
+            filename=file.filename,
+            content=content,
+            declared_content_type=file.content_type,
+        )
+    except DocumentValidationError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    finally:
+        await file.close()
+    version, created = service.create(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+        expected_current_version=expected_current_version,
+        idempotency_key=idempotency_key,
+        uploaded=uploaded,
+    )
+    if not created:
+        response.status_code = 200
+    return version
 
 
 @router.get(

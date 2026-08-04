@@ -2,9 +2,17 @@ from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 
 from agreement_intelligence_api import __version__
-from agreement_intelligence_api.agreements.routes import agreement_not_found_handler
+from agreement_intelligence_api.agreements.routes import (
+    agreement_not_found_handler,
+    version_conflict_handler,
+)
 from agreement_intelligence_api.agreements.routes import router as agreements_router
 from agreement_intelligence_api.agreements.service import AgreementNotFoundError
+from agreement_intelligence_api.agreements.versions import (
+    DuplicateAgreementVersionError,
+    StaleCurrentVersionError,
+    VersionIdempotencyConflictError,
+)
 from agreement_intelligence_api.documents.routes import router as documents_router
 from agreement_intelligence_api.errors import (
     http_exception_handler,
@@ -40,6 +48,9 @@ configure_logging()
 app.add_middleware(DocumentUploadBodyLimitMiddleware)
 app.add_middleware(CorrelationIdMiddleware)
 app.add_exception_handler(AgreementNotFoundError, agreement_not_found_handler)
+app.add_exception_handler(DuplicateAgreementVersionError, version_conflict_handler)
+app.add_exception_handler(StaleCurrentVersionError, version_conflict_handler)
+app.add_exception_handler(VersionIdempotencyConflictError, version_conflict_handler)
 app.add_exception_handler(IdempotencyKeyConflictError, idempotency_conflict_handler)
 app.add_exception_handler(RetryNotPermittedError, retry_not_permitted_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
