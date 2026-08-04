@@ -13,12 +13,12 @@ from agreement_intelligence_api.agreements.versions import (
     StaleCurrentVersionError,
     VersionIdempotencyConflictError,
 )
-from agreement_intelligence_api.documents.routes import router as documents_router
 from agreement_intelligence_api.comparisons.routes import (
     comparison_conflict_handler,
 )
 from agreement_intelligence_api.comparisons.routes import router as comparisons_router
 from agreement_intelligence_api.comparisons.service import VersionComparisonConflictError
+from agreement_intelligence_api.documents.routes import router as documents_router
 from agreement_intelligence_api.errors import (
     http_exception_handler,
     request_validation_exception_handler,
