@@ -302,10 +302,15 @@ def test_workspace_capabilities_are_resolved_from_application_authorization(
         app.dependency_overrides.clear()
 
     assert response.status_code == 200
-    assert response.json() == {"agreements_delete": True, "playbooks_manage": True}
+    assert response.json() == {
+        "agreements_delete": True,
+        "agreements_update": True,
+        "playbooks_manage": True,
+    }
     assert reviewer_response.status_code == 200
     assert reviewer_response.json() == {
         "agreements_delete": False,
+        "agreements_update": False,
         "playbooks_manage": False,
     }
 

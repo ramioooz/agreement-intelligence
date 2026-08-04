@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   getDocumentAnalysis,
   listAgreements,
+  uploadAgreementVersion,
   uploadDocument,
   type AgreementScope,
 } from "@/lib/agreement-api";
@@ -115,6 +116,46 @@ describe("agreement API client", () => {
     expect(request?.body).toBeInstanceOf(FormData);
     expect((request?.body as FormData).get("organization_id")).toBe(
       scope.organizationId,
+    );
+  });
+
+  it("uploads a revision with optimistic concurrency and idempotency controls", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          id: "66666666-6666-6666-6666-666666666666",
+          version_number: 2,
+        }),
+        { status: 201 },
+      ),
+    );
+
+    await uploadAgreementVersion({
+      baseUrl: "https://api.example.test",
+      scope,
+      token: "access-token",
+      agreementId: "55555555-5555-5555-5555-555555555555",
+      expectedCurrentVersion: 1,
+      idempotencyKey: "revision-123",
+      file: new File(["revision"], "terms-v2.pdf", {
+        type: "application/pdf",
+      }),
+      fetcher,
+    });
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "https://api.example.test/agreements/55555555-5555-5555-5555-555555555555/versions",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer access-token",
+          "Idempotency-Key": "revision-123",
+        }),
+      }),
+    );
+    const request = fetcher.mock.calls[0]?.[1];
+    expect((request?.body as FormData).get("expected_current_version")).toBe(
+      "1",
     );
   });
 });

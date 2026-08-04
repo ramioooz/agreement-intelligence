@@ -32,6 +32,8 @@ export type AgreementSummary = {
     actor_id: string;
     occurred_at: string;
   }>;
+  current_version_id?: string | null;
+  comparison_baseline_version_id?: string | null;
   archived_at: string | null;
   created_at: string;
   updated_at: string;
@@ -44,7 +46,30 @@ export type AgreementPage = {
 
 export type WorkspaceCapabilities = {
   agreements_delete: boolean;
+  agreements_update: boolean;
   playbooks_manage: boolean;
+};
+
+export type AgreementVersion = {
+  id: string;
+  agreement_id: string;
+  organization_id: string;
+  workspace_id: string;
+  version_number: number;
+  predecessor_version_id: string | null;
+  file: AgreementFile;
+  uploaded_by: string;
+  uploaded_at: string;
+  processing_state: ProcessingState;
+  processing_job_id: string | null;
+  extraction_version: string | null;
+  analysis_provenance: Record<string, unknown>;
+};
+
+export type AgreementVersionList = {
+  items: AgreementVersion[];
+  current_version_id: string | null;
+  comparison_baseline_version_id: string | null;
 };
 
 export type DocumentAnalysis = {
@@ -138,6 +163,12 @@ type GetAgreementOptions = ClientOptions & {
 
 type GetDocumentAnalysisOptions = GetAgreementOptions & {
   processingJobId?: string;
+};
+
+type UploadAgreementVersionOptions = GetAgreementOptions & {
+  file: File;
+  expectedCurrentVersion: number;
+  idempotencyKey: string;
 };
 
 type UploadDocumentOptions = ClientOptions & {
@@ -257,6 +288,53 @@ export async function getAgreement({
         headers: authorizationHeader(token),
       },
     ),
+  );
+}
+
+export async function listAgreementVersions({
+  baseUrl = defaultBaseUrl,
+  scope,
+  agreementId,
+  token,
+  fetcher = fetch,
+}: GetAgreementOptions): Promise<AgreementVersionList> {
+  return decode<AgreementVersionList>(
+    await fetcher(
+      endpoint(
+        baseUrl,
+        `/agreements/${agreementId}/versions`,
+        scopedParams(scope),
+      ),
+      { cache: "no-store", headers: authorizationHeader(token) },
+    ),
+  );
+}
+
+export async function uploadAgreementVersion({
+  baseUrl = defaultBaseUrl,
+  scope,
+  agreementId,
+  token,
+  file,
+  expectedCurrentVersion,
+  idempotencyKey,
+  fetcher = fetch,
+}: UploadAgreementVersionOptions): Promise<AgreementVersion> {
+  const form = new FormData();
+  form.set("organization_id", scope.organizationId);
+  form.set("workspace_id", scope.workspaceId);
+  form.set("expected_current_version", String(expectedCurrentVersion));
+  form.set("file", file);
+
+  return decode<AgreementVersion>(
+    await fetcher(endpoint(baseUrl, `/agreements/${agreementId}/versions`), {
+      method: "POST",
+      headers: {
+        ...authorizationHeader(token),
+        "Idempotency-Key": idempotencyKey,
+      },
+      body: form,
+    }),
   );
 }
 
