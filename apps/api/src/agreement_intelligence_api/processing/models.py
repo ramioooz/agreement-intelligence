@@ -18,6 +18,9 @@ class ProcessingJobRecord(Base):
     organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
     workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
+    version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agreement_versions.id"), nullable=True, index=True
+    )
     idempotency_key: Mapped[str] = mapped_column(String(255))
     profile: Mapped[str] = mapped_column(String(100))
     source_storage_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)

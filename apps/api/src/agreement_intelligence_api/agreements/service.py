@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from agreement_intelligence_api.agreements.models import AgreementVersionRecord
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 from agreement_intelligence_api.agreements.schemas import (
     AgreementListResponse,
@@ -64,6 +65,36 @@ class AgreementService:
             updated_at=now,
         )
         created = self._repository.create(agreement)
+        if created.files:
+            source = created.files[-1]
+            initial = AgreementVersionRecord(
+                id=uuid4(),
+                agreement_id=created.id,
+                organization_id=created.organization_id,
+                workspace_id=created.workspace_id,
+                version_number=1,
+                predecessor_version_id=None,
+                file_name=source.file_name,
+                content_type=source.content_type,
+                storage_key=source.storage_key,
+                checksum=source.checksum,
+                byte_size=source.byte_size,
+                uploaded_by=principal.user_id,
+                uploaded_at=now,
+                processing_state=created.processing_state,
+                processing_job_id=None,
+                extraction_version=None,
+                analysis_provenance={},
+                idempotency_key=f"initial:{created.id}",
+            )
+            version = self._repository.create_version(
+                initial,
+                actor_id=principal.user_id,
+                action="version_created",
+            )
+            created = self._repository.replace(
+                created.model_copy(update={"current_version_id": version.id})
+            )
         self._identity.session.commit()
         return created
 

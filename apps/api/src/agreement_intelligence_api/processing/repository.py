@@ -64,6 +64,7 @@ class SQLAlchemyProcessingJobRepository:
         return ProcessingJobResponse(
             id=record.id,
             agreement_id=record.agreement_id,
+            version_id=record.version_id,
             state=record.state,  # type: ignore[arg-type]
             attempt_count=record.attempt_count,
             failure_category=record.failure_category,

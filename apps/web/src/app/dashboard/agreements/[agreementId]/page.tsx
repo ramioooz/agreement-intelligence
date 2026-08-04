@@ -8,8 +8,12 @@ import {
   documentDownloadPath,
   getDocumentAnalysis,
   getAgreement,
+  getWorkspaceCapabilities,
+  listAgreementVersions,
+  uploadAgreementVersion,
   type AgreementScope,
   type AgreementSummary,
+  type AgreementVersionList,
   type DocumentAnalysis,
 } from "@/lib/agreement-api";
 import { getKeycloakAccessToken } from "@/lib/auth-session-token";
@@ -94,6 +98,36 @@ async function loadEligiblePlaybooks(
   }
 }
 
+async function loadAgreementVersions(
+  scope: AgreementScope,
+  agreementId: string,
+): Promise<AgreementVersionList | undefined> {
+  try {
+    return await listAgreementVersions({
+      scope,
+      agreementId,
+      token: await getKeycloakAccessToken(await headers()),
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+async function canUploadAgreementVersion(
+  scope: AgreementScope,
+): Promise<boolean> {
+  try {
+    return (
+      await getWorkspaceCapabilities({
+        scope,
+        token: await getKeycloakAccessToken(await headers()),
+      })
+    ).agreements_update;
+  } catch {
+    return false;
+  }
+}
+
 export default async function AgreementDetailPage({
   params,
 }: {
@@ -112,8 +146,16 @@ export default async function AgreementDetailPage({
     : undefined;
   const analysis = await loadDocumentAnalysis(scope, agreement.id);
   const eligiblePlaybooks = await loadEligiblePlaybooks(scope, agreement.id);
+  const [versionHistory, canUploadVersion] = await Promise.all([
+    loadAgreementVersions(scope, agreement.id),
+    canUploadAgreementVersion(scope),
+  ]);
   const retryScope = scope;
   const retryAgreementId = agreement.id;
+  const expectedCurrentVersion = Math.max(
+    0,
+    ...(versionHistory?.items.map((version) => version.version_number) ?? []),
+  );
 
   async function retryAction() {
     "use server";
@@ -165,6 +207,22 @@ export default async function AgreementDetailPage({
     revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
   }
 
+  async function uploadVersionAction(formData: FormData) {
+    "use server";
+
+    const file = formData.get("file");
+    if (!(file instanceof File) || file.size === 0) return;
+    await uploadAgreementVersion({
+      scope: retryScope,
+      agreementId: retryAgreementId,
+      file,
+      expectedCurrentVersion,
+      idempotencyKey: crypto.randomUUID(),
+      token: await getKeycloakAccessToken(await headers()),
+    });
+    revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
       <AgreementDetail
@@ -183,6 +241,8 @@ export default async function AgreementDetailPage({
         startAnalysisAction={
           !processingJob && file ? startAnalysisAction : undefined
         }
+        versions={versionHistory?.items}
+        uploadVersionAction={canUploadVersion ? uploadVersionAction : undefined}
       />
       {eligiblePlaybooks && eligiblePlaybooks.length > 0 ? (
         <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5">

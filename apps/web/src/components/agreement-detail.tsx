@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 import { ProcessingStatusRefresher } from "@/components/processing-status-refresher";
-import type { AgreementSummary } from "@/lib/agreement-api";
+import type { AgreementSummary, AgreementVersion } from "@/lib/agreement-api";
 import type { DocumentAnalysis } from "@/lib/agreement-api";
 import type { ProcessingJob } from "@/lib/processing-api";
 
@@ -12,6 +12,8 @@ type AgreementDetailProps = {
   retryAction?: () => void | Promise<void>;
   requeueAction?: () => void | Promise<void>;
   startAnalysisAction?: () => void | Promise<void>;
+  versions?: AgreementVersion[];
+  uploadVersionAction?: (formData: FormData) => void | Promise<void>;
   analysis?: DocumentAnalysis;
 };
 
@@ -47,6 +49,8 @@ export function AgreementDetail({
   retryAction,
   requeueAction,
   startAnalysisAction,
+  versions = [],
+  uploadVersionAction,
   analysis,
 }: AgreementDetailProps) {
   const file = agreement.files[0];
@@ -203,6 +207,80 @@ export function AgreementDetail({
           </section>
         </aside>
       </div>
+      {versions.length > 0 || uploadVersionAction ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-xl font-semibold">Version history</h2>
+              <p className="mt-1 text-sm text-slate-600">
+                Every uploaded source is retained as an immutable revision.
+              </p>
+            </div>
+            {uploadVersionAction ? (
+              <form
+                action={uploadVersionAction}
+                className="flex flex-wrap items-end gap-3"
+              >
+                <label className="grid gap-1 text-sm font-medium">
+                  Revision file
+                  <input
+                    accept=".pdf,.docx,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                    className="max-w-xs rounded-lg border border-slate-300 px-3 py-2"
+                    name="file"
+                    required
+                    type="file"
+                  />
+                </label>
+                <button
+                  className="rounded-full bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
+                  type="submit"
+                >
+                  Upload new version
+                </button>
+              </form>
+            ) : null}
+          </div>
+          {versions.length > 0 ? (
+            <ol className="mt-5 divide-y divide-slate-200">
+              {[...versions]
+                .sort(
+                  (left, right) => right.version_number - left.version_number,
+                )
+                .map((version) => (
+                  <li
+                    className="grid gap-2 py-4 sm:grid-cols-[1fr_auto]"
+                    key={version.id}
+                  >
+                    <div>
+                      <p className="font-semibold">
+                        Version {version.version_number}
+                        {version.id === agreement.current_version_id ? (
+                          <span className="ml-2 rounded-full bg-emerald-100 px-2 py-1 text-xs text-emerald-800">
+                            Current version
+                          </span>
+                        ) : null}
+                      </p>
+                      <p className="mt-1 text-sm text-slate-600">
+                        {version.file.file_name} · Checksum{" "}
+                        <span className="font-mono">
+                          {version.file.checksum.slice(0, 12)}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="text-sm text-slate-600 sm:text-right">
+                      <p className="capitalize">{version.processing_state}</p>
+                      <p>{date(version.uploaded_at)}</p>
+                    </div>
+                  </li>
+                ))}
+            </ol>
+          ) : (
+            <p className="mt-5 text-sm text-slate-600">
+              No version history is available yet.
+            </p>
+          )}
+        </section>
+      ) : null}
       {analysis ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5">
           <h2 className="text-xl font-semibold">Document understanding</h2>

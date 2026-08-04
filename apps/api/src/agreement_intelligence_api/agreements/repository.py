@@ -7,8 +7,14 @@ from sqlalchemy.orm import Session
 from agreement_intelligence_api.agreements.models import (
     AgreementDeletionAuditEventRecord,
     AgreementRecord,
+    AgreementVersionAuditEventRecord,
+    AgreementVersionRecord,
 )
-from agreement_intelligence_api.agreements.schemas import AgreementResponse
+from agreement_intelligence_api.agreements.schemas import (
+    AgreementFile,
+    AgreementResponse,
+    AgreementVersionResponse,
+)
 from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
     ProcessingJobRecord,
@@ -33,6 +39,8 @@ class SQLAlchemyAgreementRepository:
             processing_state=agreement.processing_state,
             audit_metadata=agreement.audit_metadata,
             audit_events=[event.model_dump(mode="json") for event in agreement.audit_events],
+            current_version_id=agreement.current_version_id,
+            comparison_baseline_version_id=agreement.comparison_baseline_version_id,
             archived_at=agreement.archived_at,
             created_at=agreement.created_at,
             updated_at=agreement.updated_at,
@@ -85,10 +93,97 @@ class SQLAlchemyAgreementRepository:
         record.processing_state = agreement.processing_state
         record.audit_metadata = agreement.audit_metadata
         record.audit_events = [event.model_dump(mode="json") for event in agreement.audit_events]
+        record.current_version_id = agreement.current_version_id
+        record.comparison_baseline_version_id = agreement.comparison_baseline_version_id
         record.archived_at = agreement.archived_at
         record.updated_at = agreement.updated_at
         self._session.flush()
         return self._to_response(record)
+
+    def create_version(
+        self,
+        record: AgreementVersionRecord,
+        *,
+        actor_id: UUID,
+        action: str,
+    ) -> AgreementVersionResponse:
+        self._session.add(record)
+        self._session.flush()
+        self._session.add(
+            AgreementVersionAuditEventRecord(
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+                agreement_id=record.agreement_id,
+                version_id=record.id,
+                actor_id=actor_id,
+                action=action,
+                metadata_json={
+                    "version_number": record.version_number,
+                    "checksum": record.checksum,
+                },
+            )
+        )
+        self._session.flush()
+        return self.version_response(record)
+
+    def get_version(self, version_id: UUID) -> AgreementVersionRecord | None:
+        return self._session.get(AgreementVersionRecord, version_id)
+
+    def list_versions(self, agreement_id: UUID) -> list[AgreementVersionRecord]:
+        return list(
+            self._session.scalars(
+                select(AgreementVersionRecord)
+                .where(AgreementVersionRecord.agreement_id == agreement_id)
+                .order_by(AgreementVersionRecord.version_number)
+            )
+        )
+
+    def version_by_idempotency_key(
+        self, agreement_id: UUID, idempotency_key: str
+    ) -> AgreementVersionRecord | None:
+        return self._session.scalar(
+            select(AgreementVersionRecord).where(
+                AgreementVersionRecord.agreement_id == agreement_id,
+                AgreementVersionRecord.idempotency_key == idempotency_key,
+            )
+        )
+
+    def version_by_checksum(
+        self, agreement_id: UUID, checksum: str
+    ) -> AgreementVersionRecord | None:
+        return self._session.scalar(
+            select(AgreementVersionRecord).where(
+                AgreementVersionRecord.agreement_id == agreement_id,
+                AgreementVersionRecord.checksum == checksum,
+            )
+        )
+
+    @staticmethod
+    def version_response(record: AgreementVersionRecord) -> AgreementVersionResponse:
+        uploaded_at = _as_aware_utc(record.uploaded_at)
+        assert uploaded_at is not None
+        return AgreementVersionResponse(
+            id=record.id,
+            agreement_id=record.agreement_id,
+            organization_id=record.organization_id,
+            workspace_id=record.workspace_id,
+            version_number=record.version_number,
+            predecessor_version_id=record.predecessor_version_id,
+            file=AgreementFile(
+                file_name=record.file_name,
+                content_type=record.content_type,
+                storage_key=record.storage_key,
+                checksum=record.checksum,
+                byte_size=record.byte_size,
+                version_number=record.version_number,
+            ),
+            uploaded_by=record.uploaded_by,
+            uploaded_at=uploaded_at,
+            processing_state=record.processing_state,  # type: ignore[arg-type]
+            processing_job_id=record.processing_job_id,
+            extraction_version=record.extraction_version,
+            analysis_provenance=record.analysis_provenance,
+        )
 
     def deletion_object_keys(self, agreement: AgreementResponse) -> list[str]:
         artifact_keys = list(
@@ -159,6 +254,8 @@ class SQLAlchemyAgreementRepository:
                 "processing_state": record.processing_state,
                 "audit_metadata": record.audit_metadata,
                 "audit_events": record.audit_events,
+                "current_version_id": record.current_version_id,
+                "comparison_baseline_version_id": record.comparison_baseline_version_id,
                 "archived_at": _as_aware_utc(record.archived_at),
                 "created_at": _as_aware_utc(record.created_at),
                 "updated_at": _as_aware_utc(record.updated_at),

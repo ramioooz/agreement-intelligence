@@ -49,6 +49,7 @@ class ProcessingJobService:
         organization_id: UUID,
         workspace_id: UUID,
         agreement_id: UUID,
+        version_id: UUID | None = None,
         idempotency_key: str,
         request: SubmitProcessingJobRequest,
     ) -> tuple[ProcessingJobResponse, bool]:
@@ -60,22 +61,56 @@ class ProcessingJobService:
         )
         existing = self._repository.by_idempotency_key(agreement_id, idempotency_key)
         if existing is not None:
-            if existing.profile != request.profile:
+            if existing.profile != request.profile or (
+                version_id is not None and existing.version_id != version_id
+            ):
                 raise IdempotencyKeyConflictError
             return self._repository.response(existing), False
 
         now = datetime.now(UTC)
-        source_file = agreement.files[0] if agreement.files else None
+        resolved_version_id = version_id or agreement.current_version_id
+        version = (
+            self._agreements.get_version(resolved_version_id)
+            if resolved_version_id is not None
+            else None
+        )
+        if resolved_version_id is not None and (
+            version is None
+            or version.agreement_id != agreement_id
+            or version.organization_id != organization_id
+            or version.workspace_id != workspace_id
+        ):
+            raise AgreementNotFoundError
+        source_file = agreement.files[0] if version is None and agreement.files else None
         job = ProcessingJobRecord(
             id=uuid4(),
             organization_id=organization_id,
             workspace_id=workspace_id,
             agreement_id=agreement_id,
+            version_id=resolved_version_id,
             idempotency_key=idempotency_key,
             profile=request.profile,
-            source_storage_key=source_file.storage_key if source_file is not None else None,
-            source_checksum=source_file.checksum if source_file is not None else None,
-            source_content_type=source_file.content_type if source_file is not None else None,
+            source_storage_key=(
+                version.storage_key
+                if version is not None
+                else source_file.storage_key
+                if source_file is not None
+                else None
+            ),
+            source_checksum=(
+                version.checksum
+                if version is not None
+                else source_file.checksum
+                if source_file is not None
+                else None
+            ),
+            source_content_type=(
+                version.content_type
+                if version is not None
+                else source_file.content_type
+                if source_file is not None
+                else None
+            ),
             state="queued",
             attempt_count=0,
             failure_category=None,
@@ -95,14 +130,21 @@ class ProcessingJobService:
             existing = self._repository.by_idempotency_key(agreement_id, idempotency_key)
             if existing is None:
                 raise
-            if existing.profile != request.profile:
+            if existing.profile != request.profile or (
+                version_id is not None and existing.version_id != version_id
+            ):
                 raise IdempotencyKeyConflictError from error
             return self._repository.response(existing), False
+        if version is not None:
+            version.processing_state = "queued"
+            version.processing_job_id = response.id
         self._set_agreement_state(
             agreement_id,
             state="queued",
             updated_at=now,
             processing_job_id=response.id,
+            update_agreement=resolved_version_id is None
+            or resolved_version_id == agreement.current_version_id,
         )
         self._repository.enqueue_outbox(
             response,
@@ -234,7 +276,10 @@ class ProcessingJobService:
         state: str,
         updated_at: datetime,
         processing_job_id: UUID | None = None,
+        update_agreement: bool = True,
     ) -> None:
+        if not update_agreement:
+            return
         agreement = self._agreements.get(agreement_id)
         if agreement is None:
             raise AgreementNotFoundError

@@ -56,6 +56,8 @@ class AgreementResponse(BaseModel):
     processing_state: ProcessingState
     audit_metadata: dict[str, str]
     audit_events: list[AuditEvent]
+    current_version_id: UUID | None = None
+    comparison_baseline_version_id: UUID | None = None
     archived_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -75,3 +77,25 @@ class ErrorResponse(BaseModel):
     code: str
     message: str
     correlation_id: str
+
+
+class AgreementVersionResponse(BaseModel):
+    id: UUID
+    agreement_id: UUID
+    organization_id: UUID
+    workspace_id: UUID
+    version_number: int
+    predecessor_version_id: UUID | None
+    file: AgreementFile
+    uploaded_by: UUID
+    uploaded_at: datetime
+    processing_state: ProcessingState
+    processing_job_id: UUID | None
+    extraction_version: str | None
+    analysis_provenance: dict[str, object]
+
+
+class AgreementVersionListResponse(BaseModel):
+    items: list[AgreementVersionResponse]
+    current_version_id: UUID | None
+    comparison_baseline_version_id: UUID | None

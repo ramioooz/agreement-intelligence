@@ -16,6 +16,7 @@ class SubmitProcessingJobRequest(BaseModel):
 class ProcessingJobResponse(BaseModel):
     id: UUID
     agreement_id: UUID
+    version_id: UUID | None = None
     state: ProcessingJobState
     attempt_count: int
     failure_category: str | None

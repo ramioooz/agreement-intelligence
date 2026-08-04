@@ -23,6 +23,7 @@ class WorkspaceResponse(BaseModel):
 
 class WorkspaceCapabilitiesResponse(BaseModel):
     agreements_delete: bool
+    agreements_update: bool
     playbooks_manage: bool
 
 
@@ -77,6 +78,12 @@ def get_workspace_capabilities(
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.AGREEMENTS_DELETE,
+        ),
+        agreements_update=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.AGREEMENTS_UPDATE,
         ),
         playbooks_manage=identity.can_access_workspace(
             principal,

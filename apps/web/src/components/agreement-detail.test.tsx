@@ -2,7 +2,11 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { AgreementDetail } from "@/components/agreement-detail";
-import type { AgreementSummary, DocumentAnalysis } from "@/lib/agreement-api";
+import type {
+  AgreementSummary,
+  AgreementVersion,
+  DocumentAnalysis,
+} from "@/lib/agreement-api";
 import type { ProcessingJob } from "@/lib/processing-api";
 
 const agreement: AgreementSummary = {
@@ -54,6 +58,24 @@ const job: ProcessingJob = {
   updated_at: "2026-07-31T09:02:00Z",
   retry_permitted: true,
 };
+
+const versions: AgreementVersion[] = [
+  {
+    id: "66666666-6666-6666-6666-666666666666",
+    agreement_id: agreement.id,
+    organization_id: agreement.organization_id,
+    workspace_id: agreement.workspace_id,
+    version_number: 1,
+    predecessor_version_id: null,
+    file: agreement.files[0],
+    uploaded_by: "77777777-7777-7777-7777-777777777777",
+    uploaded_at: "2026-07-31T09:00:00Z",
+    processing_state: "completed",
+    processing_job_id: job.id,
+    extraction_version: "document-analysis.v1",
+    analysis_provenance: {},
+  },
+];
 
 const analysisWithRisk: DocumentAnalysis = {
   schema_version: "document-analysis.v1",
@@ -146,6 +168,28 @@ describe("AgreementDetail", () => {
 
     expect(
       screen.getByRole("button", { name: "Start analysis" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows immutable version history and an authorized revision upload action", () => {
+    render(
+      <AgreementDetail
+        agreement={{
+          ...agreement,
+          current_version_id: versions[0].id,
+        }}
+        versions={versions}
+        uploadVersionAction={() => {}}
+      />,
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Version history" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Version 1")).toBeInTheDocument();
+    expect(screen.getByText("Current version")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Upload new version" }),
     ).toBeInTheDocument();
   });
 
