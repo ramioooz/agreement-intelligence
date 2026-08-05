@@ -39,11 +39,22 @@ describe("DashboardShell", () => {
       "href",
       "/dashboard/playbooks",
     );
-    expect(screen.getAllByText("Coming soon")).toHaveLength(2);
+    expect(screen.getByRole("link", { name: "Reviews" })).toHaveAttribute(
+      "href",
+      "/dashboard/reviews",
+    );
+    expect(screen.getAllByText("Available")).toHaveLength(5);
     expect(screen.getByRole("link", { name: "Search" })).toHaveAttribute(
       "href",
       "/dashboard/search",
     );
+    expect(screen.getByRole("link", { name: "Reviews" })).toHaveAttribute(
+      "href",
+      "/dashboard/reviews",
+    );
+    expect(
+      screen.getByRole("link", { name: "Administration" }),
+    ).toHaveAttribute("href", "/dashboard/approval-policies");
     expect(
       screen.getByRole("button", { name: "Sign out" }),
     ).toBeInTheDocument();
