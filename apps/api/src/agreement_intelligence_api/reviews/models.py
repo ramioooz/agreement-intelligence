@@ -173,3 +173,127 @@ def _reject_decision_mutation(*_: object) -> None:
 
 event.listen(ReviewDecisionRecord, "before_update", _reject_decision_mutation)
 event.listen(ReviewDecisionRecord, "before_delete", _reject_decision_mutation)
+
+
+class ReviewCaseRecord(Base):
+    """A tenant-scoped human review case for one immutable agreement version."""
+
+    __tablename__ = "review_cases"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint(
+            "agreement_id",
+            "agreement_version_id",
+            "idempotency_key",
+            name="uq_review_cases_idempotency",
+        ),
+        Index("ix_review_cases_scope_created", "organization_id", "workspace_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
+    agreement_version_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("agreement_versions.id"), index=True, nullable=True
+    )
+    state: Mapped[str] = mapped_column(String(32), default="open", index=True)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    revision: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    assignments: Mapped[list["ReviewAssignmentRecord"]] = relationship(
+        back_populates="review", cascade="all, delete-orphan"
+    )
+    comments: Mapped[list["ReviewCommentRecord"]] = relationship(
+        back_populates="review", cascade="all, delete-orphan"
+    )
+
+
+class ReviewAssignmentRecord(Base):
+    __tablename__ = "review_assignments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint("review_id", "idempotency_key", name="uq_review_assignments_idempotency"),
+        Index(
+            "ix_review_assignments_inbox",
+            "organization_id",
+            "workspace_id",
+            "assignee_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    review_id: Mapped[UUID] = mapped_column(ForeignKey("review_cases.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    assignee_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    assigned_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    predecessor_assignment_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("review_assignments.id"), nullable=True, index=True
+    )
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="active", index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    review: Mapped[ReviewCaseRecord] = relationship(back_populates="assignments")
+
+
+class ReviewCommentRecord(Base):
+    __tablename__ = "review_comments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint("review_id", "idempotency_key", name="uq_review_comments_idempotency"),
+        Index("ix_review_comments_scope_review", "organization_id", "workspace_id", "review_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    review_id: Mapped[UUID] = mapped_column(ForeignKey("review_cases.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    finding_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    agreement_version_id: Mapped[UUID | None] = mapped_column(
+        Uuid(as_uuid=True), nullable=True, index=True
+    )
+    author_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    body: Mapped[str] = mapped_column(String(4000))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    review: Mapped[ReviewCaseRecord] = relationship(back_populates="comments")
+
+
+class ReviewNotificationEventRecord(Base):
+    """Durable, provider-neutral notification outbox consumed by a later dispatcher."""
+
+    __tablename__ = "review_notification_events"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_review_notification_events_idempotency"),
+        Index("ix_review_notification_events_pending", "delivered_at", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    review_id: Mapped[UUID] = mapped_column(ForeignKey("review_cases.id"), index=True)
+    recipient_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    event_type: Mapped[str] = mapped_column(String(100))
+    payload_json: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
