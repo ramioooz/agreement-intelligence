@@ -5,7 +5,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -22,6 +22,7 @@ from agreement_intelligence_api.reviews.collaboration_schemas import (
     ReviewAssignmentResponse,
     ReviewCaseResponse,
     ReviewCommentResponse,
+    ReviewNotificationSummaryResponse,
     StartReviewRequest,
 )
 from agreement_intelligence_api.reviews.models import (
@@ -123,6 +124,34 @@ class ReviewCollaborationService:
             .order_by(ReviewAssignmentRecord.due_at, ReviewAssignmentRecord.created_at)
         )
         return [self._assignment_response(item) for item in assignments]
+
+    def comments(
+        self, principal: Principal, *, organization_id: UUID, workspace_id: UUID, review_id: UUID
+    ) -> list[ReviewCommentResponse]:
+        self._authorize_read(principal, organization_id, workspace_id)
+        self._review(review_id, organization_id, workspace_id)
+        records = self._session.scalars(
+            select(ReviewCommentRecord)
+            .where(ReviewCommentRecord.organization_id == organization_id)
+            .where(ReviewCommentRecord.workspace_id == workspace_id)
+            .where(ReviewCommentRecord.review_id == review_id)
+            .order_by(ReviewCommentRecord.created_at, ReviewCommentRecord.id)
+        )
+        return [self._comment_response(record) for record in records]
+
+    def notification_summary(
+        self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
+    ) -> ReviewNotificationSummaryResponse:
+        self._authorize_read(principal, organization_id, workspace_id)
+        unread_count = self._session.scalar(
+            select(func.count())
+            .select_from(ReviewNotificationEventRecord)
+            .where(ReviewNotificationEventRecord.organization_id == organization_id)
+            .where(ReviewNotificationEventRecord.workspace_id == workspace_id)
+            .where(ReviewNotificationEventRecord.recipient_id == principal.user_id)
+            .where(ReviewNotificationEventRecord.delivered_at.is_(None))
+        )
+        return ReviewNotificationSummaryResponse(unread_count=unread_count or 0)
 
     def assign(
         self,

@@ -63,3 +63,7 @@ class ReviewCommentResponse(BaseModel):
     author_id: UUID
     body: str
     created_at: datetime
+
+
+class ReviewNotificationSummaryResponse(BaseModel):
+    unread_count: int
