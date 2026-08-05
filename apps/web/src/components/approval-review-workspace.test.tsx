@@ -106,4 +106,43 @@ describe("ApprovalReviewWorkspace", () => {
       "/api/reviews/review-1/package/manifest",
     );
   });
+
+  it("records an approval against the workflow revision", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            id: "workflow-1",
+            state: "approved",
+            active_stage_ordinal: null,
+            revision: 4,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+    render(
+      <ApprovalReviewWorkspace
+        canDecide
+        comments={[]}
+        review={review}
+        title="Master services agreement"
+        workflow={{
+          id: "workflow-1",
+          state: "waiting_for_approval",
+          active_stage_ordinal: 1,
+          revision: 3,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+
+    expect(await screen.findByText(/Approval actions become available/i)).toBeVisible();
+    expect(fetch).toHaveBeenCalledWith(
+      "/api/reviews/review-1/workflow/decisions",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
 });

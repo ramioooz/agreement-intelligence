@@ -25,3 +25,10 @@ class ReviewWorkflowResponse(BaseModel):
     checkpoint_id: UUID
     revision: int
     stages: list[ReviewWorkflowStageResponse]
+
+
+class FinalReviewPackageResponse(BaseModel):
+    pdf_url: str
+    manifest_url: str
+    checksum: str
+    created_at: str
