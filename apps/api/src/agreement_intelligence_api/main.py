@@ -7,13 +7,13 @@ from agreement_intelligence_api.agreements.routes import (
     version_conflict_handler,
 )
 from agreement_intelligence_api.agreements.routes import router as agreements_router
-from agreement_intelligence_api.audit.routes import router as audit_router
 from agreement_intelligence_api.agreements.service import AgreementNotFoundError
 from agreement_intelligence_api.agreements.versions import (
     DuplicateAgreementVersionError,
     StaleCurrentVersionError,
     VersionIdempotencyConflictError,
 )
+from agreement_intelligence_api.audit.routes import router as audit_router
 from agreement_intelligence_api.comparisons.routes import (
     comparison_conflict_handler,
 )
