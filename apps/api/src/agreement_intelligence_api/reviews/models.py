@@ -297,3 +297,134 @@ class ReviewNotificationEventRecord(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255))
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ReviewWorkflowRecord(Base):
+    """Authoritative workflow state for a review; graph checkpoints are a recovery aid."""
+
+    __tablename__ = "review_workflows"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint("review_id", name="uq_review_workflows_review"),
+        UniqueConstraint("checkpoint_id", name="uq_review_workflows_checkpoint"),
+        Index("ix_review_workflows_scope_state", "organization_id", "workspace_id", "state"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    review_id: Mapped[UUID] = mapped_column(ForeignKey("review_cases.id"), index=True)
+    policy_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("approval_policy_versions.id"), index=True
+    )
+    checkpoint_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), default=uuid4)
+    state: Mapped[str] = mapped_column(String(32), default="waiting_for_approval", index=True)
+    active_stage_ordinal: Mapped[int | None] = mapped_column(nullable=True)
+    revision: Mapped[int] = mapped_column(default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    stages: Mapped[list["ReviewWorkflowStageRecord"]] = relationship(
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        order_by="ReviewWorkflowStageRecord.ordinal",
+    )
+    decisions: Mapped[list["ReviewWorkflowDecisionRecord"]] = relationship(
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        order_by="ReviewWorkflowDecisionRecord.occurred_at",
+    )
+    outbox_events: Mapped[list["ReviewWorkflowOutboxRecord"]] = relationship(
+        back_populates="workflow",
+        cascade="all, delete-orphan",
+        order_by="ReviewWorkflowOutboxRecord.created_at",
+    )
+
+
+class ReviewWorkflowStageRecord(Base):
+    __tablename__ = "review_workflow_stages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint("workflow_id", "ordinal", name="uq_review_workflow_stages_ordinal"),
+        Index("ix_review_workflow_stages_active", "workflow_id", "state", "ordinal"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    workflow_id: Mapped[UUID] = mapped_column(ForeignKey("review_workflows.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    policy_stage_id: Mapped[UUID] = mapped_column(
+        ForeignKey("approval_policy_stages.id"), index=True
+    )
+    ordinal: Mapped[int] = mapped_column()
+    state: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    deadline_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    escalated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    workflow: Mapped[ReviewWorkflowRecord] = relationship(back_populates="stages")
+
+
+class ReviewWorkflowDecisionRecord(Base):
+    __tablename__ = "review_workflow_decisions"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint(
+            "workflow_id", "idempotency_key", name="uq_review_workflow_decisions_idempotency"
+        ),
+        Index("ix_review_workflow_decisions_stage", "workflow_stage_id", "occurred_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    workflow_id: Mapped[UUID] = mapped_column(ForeignKey("review_workflows.id"), index=True)
+    workflow_stage_id: Mapped[UUID] = mapped_column(
+        ForeignKey("review_workflow_stages.id"), index=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    action: Mapped[str] = mapped_column(String(32))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    workflow: Mapped[ReviewWorkflowRecord] = relationship(back_populates="decisions")
+
+
+class ReviewWorkflowOutboxRecord(Base):
+    """Transactional wake-up events. Delivery is at-least-once and consumers are idempotent."""
+
+    __tablename__ = "review_workflow_outbox"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_review_workflow_outbox_idempotency"),
+        Index("ix_review_workflow_outbox_pending", "delivered_at", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    workflow_id: Mapped[UUID] = mapped_column(ForeignKey("review_workflows.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    correlation_id: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(255))
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    workflow: Mapped[ReviewWorkflowRecord] = relationship(back_populates="outbox_events")
+
+
+def _reject_workflow_decision_mutation(*_: object) -> None:
+    raise ValueError("review workflow decisions are immutable")
+
+
+event.listen(ReviewWorkflowDecisionRecord, "before_update", _reject_workflow_decision_mutation)
+event.listen(ReviewWorkflowDecisionRecord, "before_delete", _reject_workflow_decision_mutation)
