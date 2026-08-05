@@ -32,7 +32,7 @@ def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() ->
             )
         )
     checkpoints = RecordingCheckpointStore()
-    processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints)  # type: ignore[arg-type]
+    processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints)
 
     assert processor.process(event_id) is True
     assert processor.process(event_id) is False
