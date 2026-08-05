@@ -7,11 +7,15 @@ restarts and at-least-once queue delivery cannot recreate a decision.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Literal, Protocol, TypedDict
+from typing import Any, Literal, Protocol, TypedDict
 from uuid import UUID, uuid4
 
+import boto3
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
 from sqlalchemy import select
@@ -37,6 +41,7 @@ WorkflowState = Literal[
     "revision_requested",
 ]
 WorkflowAction = Literal["approve", "reject", "request_changes"]
+logger = logging.getLogger("agreement_intelligence.api")
 
 
 class ReviewWorkflowGraphState(TypedDict):
@@ -52,6 +57,36 @@ class ReviewWorkflowCheckpointStore(Protocol):
     """A narrow boundary that guarantees production resumes use LangGraph checkpoints."""
 
     def persist(self, *, checkpoint_id: UUID, workflow_id: UUID, event_type: str) -> None: ...
+
+
+class ReviewWorkflowQueuePublisher(Protocol):
+    def publish(self, event: ReviewWorkflowOutboxRecord) -> None: ...
+
+
+class LoggingReviewWorkflowQueuePublisher:
+    def publish(self, event: ReviewWorkflowOutboxRecord) -> None:
+        logger.info(
+            "review workflow queued",
+            extra={"event": event.event_type, "workflow_event_id": str(event.id)},
+        )
+
+
+class SQSReviewWorkflowQueuePublisher:
+    def __init__(self, *, client: Any, queue_url: str) -> None:
+        self._client = client
+        self._queue_url = queue_url
+
+    def publish(self, event: ReviewWorkflowOutboxRecord) -> None:
+        request: dict[str, object] = {
+            "QueueUrl": self._queue_url,
+            "MessageBody": json.dumps(
+                {"kind": "review-workflow", "event_id": str(event.id)}, sort_keys=True
+            ),
+        }
+        if self._queue_url.rsplit("/", 1)[-1].endswith(".fifo"):
+            request["MessageGroupId"] = str(event.workflow_id)
+            request["MessageDeduplicationId"] = event.idempotency_key
+        self._client.send_message(**request)
 
 
 @dataclass(frozen=True)
@@ -430,3 +465,43 @@ class ReviewWorkflowOutboxDispatcher:
             self._session.commit()
             delivered += 1
         return delivered
+
+
+class ReviewWorkflowQueueDispatcher:
+    """Publishes committed wake-up events; workers own checkpoint persistence."""
+
+    def __init__(self, session: Session, publisher: ReviewWorkflowQueuePublisher) -> None:
+        self._session = session
+        self._publisher = publisher
+
+    def dispatch_pending(self, *, limit: int = 50) -> int:
+        events = self._session.scalars(
+            select(ReviewWorkflowOutboxRecord)
+            .where(ReviewWorkflowOutboxRecord.delivered_at.is_(None))
+            .order_by(ReviewWorkflowOutboxRecord.created_at, ReviewWorkflowOutboxRecord.id)
+            .limit(limit)
+        ).all()
+        delivered = 0
+        for event in events:
+            try:
+                self._publisher.publish(event)
+            except Exception:
+                self._session.rollback()
+                break
+            event.delivered_at = datetime.now(UTC)
+            self._session.commit()
+            delivered += 1
+        return delivered
+
+
+def workflow_queue_publisher_from_environment() -> ReviewWorkflowQueuePublisher:
+    queue_url = os.environ.get("SQS_NOTIFICATION_QUEUE")
+    region = os.environ.get("AWS_REGION")
+    if not queue_url or not region:
+        return LoggingReviewWorkflowQueuePublisher()
+    client = boto3.client(
+        "sqs", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"), region_name=region
+    )
+    if "://" not in queue_url:
+        queue_url = str(client.get_queue_url(QueueName=queue_url)["QueueUrl"])
+    return SQSReviewWorkflowQueuePublisher(client=client, queue_url=queue_url)

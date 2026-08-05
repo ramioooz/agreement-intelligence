@@ -103,6 +103,8 @@ version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
     { name = "boto3" },
+    { name = "langgraph" },
+    { name = "langgraph-checkpoint-postgres" },
     { name = "openai" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-sdk" },
@@ -115,6 +117,8 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = "==1.43.60" },
+    { name = "langgraph", specifier = ">=1.0,<2" },
+    { name = "langgraph-checkpoint-postgres", specifier = ">=3.0,<4" },
     { name = "openai", specifier = ">=2.52.0" },
     { name = "opentelemetry-api", specifier = "==1.38.0" },
     { name = "opentelemetry-sdk", specifier = "==1.38.0" },

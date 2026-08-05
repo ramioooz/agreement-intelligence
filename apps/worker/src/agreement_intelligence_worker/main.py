@@ -32,6 +32,12 @@ from agreement_intelligence_worker.processing import (
     SQSProcessingQueue,
     processing_engine_from_url,
 )
+from agreement_intelligence_worker.review_workflow import (
+    PostgresWorkflowCheckpointStore,
+    SQLAlchemyWorkflowEventProcessor,
+    SQSWorkflowMessageReceiver,
+    run_workflow_loop,
+)
 from agreement_intelligence_worker.version_comparison_processor import VersionComparisonProcessor
 
 
@@ -56,6 +62,12 @@ class ProcessingRuntime:
     processor: JobProcessor
 
 
+@dataclass(frozen=True)
+class WorkflowRuntime:
+    receiver: SQSWorkflowMessageReceiver
+    processor: SQLAlchemyWorkflowEventProcessor
+
+
 async def serve() -> None:
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -64,14 +76,37 @@ async def serve() -> None:
         loop.add_signal_handler(shutdown_signal, stop_event.set)
 
     runtime = processing_runtime_from_environment()
+    workflow_runtime = workflow_runtime_from_environment()
     if runtime is None:
-        await run_worker(stop_event)
+        if workflow_runtime is None:
+            await run_worker(stop_event)
+        else:
+            await run_worker(
+                stop_event,
+                background_tasks=(
+                    run_workflow_loop(
+                        stop_event, workflow_runtime.receiver, workflow_runtime.processor
+                    ),
+                ),
+            )
         return
-    await run_worker(
-        stop_event,
-        message_receiver=runtime.receiver,
-        job_processor=runtime.processor,
-    )
+    if workflow_runtime is None:
+        await run_worker(
+            stop_event,
+            message_receiver=runtime.receiver,
+            job_processor=runtime.processor,
+        )
+    else:
+        await run_worker(
+            stop_event,
+            message_receiver=runtime.receiver,
+            job_processor=runtime.processor,
+            background_tasks=(
+                run_workflow_loop(
+                    stop_event, workflow_runtime.receiver, workflow_runtime.processor
+                ),
+            ),
+        )
 
 
 def processing_runtime_from_environment() -> ProcessingRuntime | None:
@@ -128,6 +163,28 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
     return ProcessingRuntime(receiver=receiver, processor=processor)
+
+
+def workflow_runtime_from_environment() -> WorkflowRuntime | None:
+    queue_url = os.environ.get("SQS_NOTIFICATION_QUEUE")
+    region = os.environ.get("AWS_REGION")
+    database_url = os.environ.get("DATABASE_URL")
+    if not queue_url:
+        return None
+    if not region or not database_url:
+        raise RuntimeError("AWS_REGION and DATABASE_URL are required for review workflow runtime")
+    client = boto3.client(
+        "sqs", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"), region_name=region
+    )
+    if "://" not in queue_url:
+        queue_url = str(client.get_queue_url(QueueName=queue_url)["QueueUrl"])
+    return WorkflowRuntime(
+        receiver=SQSWorkflowMessageReceiver(client=client, queue_url=queue_url),
+        processor=SQLAlchemyWorkflowEventProcessor(
+            processing_engine_from_url(database_url),
+            PostgresWorkflowCheckpointStore(database_url),
+        ),
+    )
 
 
 def main() -> None:

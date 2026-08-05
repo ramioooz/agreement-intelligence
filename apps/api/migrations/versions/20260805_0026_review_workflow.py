@@ -118,6 +118,7 @@ def upgrade() -> None:
         sa.Column("correlation_id", sa.String(length=64), nullable=False),
         sa.Column("idempotency_key", sa.String(length=255), nullable=False),
         sa.Column("delivered_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
