@@ -13,6 +13,7 @@ from agreement_intelligence_api.agreements.versions import (
     StaleCurrentVersionError,
     VersionIdempotencyConflictError,
 )
+from agreement_intelligence_api.approval_policies.routes import router as approval_policies_router
 from agreement_intelligence_api.audit.routes import router as audit_router
 from agreement_intelligence_api.comparisons.routes import (
     comparison_conflict_handler,
@@ -70,6 +71,7 @@ app.include_router(documents_router)
 app.include_router(processing_router)
 app.include_router(comparisons_router)
 app.include_router(playbooks_router)
+app.include_router(approval_policies_router)
 app.include_router(reviews_router)
 app.include_router(decision_router)
 app.include_router(search_router)

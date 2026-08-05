@@ -7,6 +7,7 @@ class RoleKey(StrEnum):
     LEGAL_ADMIN = "legal_admin"
     LEGAL_REVIEWER = "legal_reviewer"
     BUSINESS_USER = "business_user"
+    BUSINESS_APPROVER = "business_approver"
     AUDITOR = "auditor"
 
 
@@ -22,6 +23,7 @@ class PermissionKey(StrEnum):
     REVIEWS_DECIDE = "reviews:decide"
     REVIEWS_APPROVE = "reviews:approve"
     PLAYBOOKS_MANAGE = "playbooks:manage"
+    APPROVAL_POLICIES_MANAGE = "approval_policies:manage"
     SEARCH_QUERY = "search:query"
     AUDIT_READ = "audit:read"
 
@@ -45,6 +47,7 @@ ROLE_PERMISSIONS: dict[RoleKey, frozenset[PermissionKey]] = {
             PermissionKey.REVIEWS_APPROVE,
             PermissionKey.AGREEMENTS_READ,
             PermissionKey.SEARCH_QUERY,
+            PermissionKey.APPROVAL_POLICIES_MANAGE,
         }
     ),
     RoleKey.LEGAL_REVIEWER: frozenset(
@@ -61,6 +64,14 @@ ROLE_PERMISSIONS: dict[RoleKey, frozenset[PermissionKey]] = {
             PermissionKey.AGREEMENTS_CREATE,
             PermissionKey.AGREEMENTS_READ,
             PermissionKey.AGREEMENTS_UPDATE,
+            PermissionKey.SEARCH_QUERY,
+        }
+    ),
+    RoleKey.BUSINESS_APPROVER: frozenset(
+        {
+            PermissionKey.WORKSPACES_READ,
+            PermissionKey.AGREEMENTS_READ,
+            PermissionKey.REVIEWS_APPROVE,
             PermissionKey.SEARCH_QUERY,
         }
     ),
