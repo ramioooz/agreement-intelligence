@@ -13,7 +13,10 @@ export async function POST(
 ) {
   const session = await getKeycloakAccessTokenResult(request.headers);
   if (!session.accessToken) {
-    return Response.json({ message: "An authorized session is required." }, { status: 401 });
+    return Response.json(
+      { message: "An authorized session is required." },
+      { status: 401 },
+    );
   }
   const { reviewId } = await context.params;
   const response = await fetch(
@@ -31,7 +34,10 @@ export async function POST(
   return applyRefreshedKeycloakSession(
     new Response(response.body, {
       status: response.status,
-      headers: { "Content-Type": response.headers.get("Content-Type") ?? "application/json" },
+      headers: {
+        "Content-Type":
+          response.headers.get("Content-Type") ?? "application/json",
+      },
     }),
     session,
   );

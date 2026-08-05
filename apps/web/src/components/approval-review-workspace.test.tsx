@@ -36,9 +36,13 @@ describe("ApprovalReviewWorkspace", () => {
 
     expect(screen.getByText("Approval review")).toBeVisible();
     expect(screen.getByText(/Awaiting approval/i)).toBeVisible();
-    expect(screen.getByText("The liability cap needs legal review.")).toBeVisible();
     expect(
-      screen.getByText("Final package will be available when the approval workflow completes."),
+      screen.getByText("The liability cap needs legal review."),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "Final package will be available when the approval workflow completes.",
+      ),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Add comment" })).toBeDisabled();
   });
@@ -97,14 +101,12 @@ describe("ApprovalReviewWorkspace", () => {
       />,
     );
 
-    expect(screen.getByRole("link", { name: "Download final PDF" })).toHaveAttribute(
-      "href",
-      "/api/reviews/review-1/package/report",
-    );
-    expect(screen.getByRole("link", { name: "Download JSON manifest" })).toHaveAttribute(
-      "href",
-      "/api/reviews/review-1/package/manifest",
-    );
+    expect(
+      screen.getByRole("link", { name: "Download final PDF" }),
+    ).toHaveAttribute("href", "/api/reviews/review-1/package/report");
+    expect(
+      screen.getByRole("link", { name: "Download JSON manifest" }),
+    ).toHaveAttribute("href", "/api/reviews/review-1/package/manifest");
   });
 
   it("records an approval against the workflow revision", async () => {
@@ -139,7 +141,9 @@ describe("ApprovalReviewWorkspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Approve" }));
 
-    expect(await screen.findByText(/Approval actions become available/i)).toBeVisible();
+    expect(
+      await screen.findByText(/Approval actions become available/i),
+    ).toBeVisible();
     expect(fetch).toHaveBeenCalledWith(
       "/api/reviews/review-1/workflow/decisions",
       expect.objectContaining({ method: "POST" }),
