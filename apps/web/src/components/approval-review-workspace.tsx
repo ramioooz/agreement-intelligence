@@ -284,9 +284,15 @@ export function ApprovalReviewWorkspace({
               </p>
             )}
             {activeWorkflow?.stages?.length ? (
-              <ol aria-label="Approval stages" className="mt-5 space-y-2 border-t border-slate-200 pt-4">
+              <ol
+                aria-label="Approval stages"
+                className="mt-5 space-y-2 border-t border-slate-200 pt-4"
+              >
                 {activeWorkflow.stages.map((stage) => (
-                  <li className="flex items-center justify-between text-sm" key={stage.ordinal}>
+                  <li
+                    className="flex items-center justify-between text-sm"
+                    key={stage.ordinal}
+                  >
                     <span>Stage {stage.ordinal}</span>
                     <span className="font-semibold">{label(stage.state)}</span>
                   </li>

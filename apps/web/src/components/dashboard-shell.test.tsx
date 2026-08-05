@@ -52,10 +52,9 @@ describe("DashboardShell", () => {
       "href",
       "/dashboard/reviews",
     );
-    expect(screen.getByRole("link", { name: "Administration" })).toHaveAttribute(
-      "href",
-      "/dashboard/approval-policies",
-    );
+    expect(
+      screen.getByRole("link", { name: "Administration" }),
+    ).toHaveAttribute("href", "/dashboard/approval-policies");
     expect(
       screen.getByRole("button", { name: "Sign out" }),
     ).toBeInTheDocument();

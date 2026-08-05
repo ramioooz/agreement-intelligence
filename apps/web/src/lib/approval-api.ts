@@ -81,55 +81,151 @@ type Options = { scope: AgreementScope; token?: string; baseUrl?: string };
 const defaultBaseUrl = process.env.API_BASE_URL ?? "http://127.0.0.1:8000";
 
 function url(baseUrl: string, path: string, scope: AgreementScope): string {
-  const query = new URLSearchParams({ organization_id: scope.organizationId, workspace_id: scope.workspaceId });
+  const query = new URLSearchParams({
+    organization_id: scope.organizationId,
+    workspace_id: scope.workspaceId,
+  });
   return `${baseUrl.replace(/\/$/, "")}${path}?${query}`;
 }
 
 function requestHeaders(token?: string, json = false): HeadersInit {
-  return { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(json ? { "Content-Type": "application/json" } : {}) };
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(json ? { "Content-Type": "application/json" } : {}),
+  };
 }
 
 async function decode<T>(response: Response): Promise<T> {
-  if (!response.ok) throw new Error((await response.text()) || "Approval request failed");
+  if (!response.ok)
+    throw new Error((await response.text()) || "Approval request failed");
   return response.json() as Promise<T>;
 }
 
-export async function listApprovalPolicies({ baseUrl = defaultBaseUrl, scope, token }: Options): Promise<ApprovalPolicy[]> {
-  return decode(await fetch(url(baseUrl, "/approval-policies", scope), { cache: "no-store", headers: requestHeaders(token) }));
+export async function listApprovalPolicies({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+}: Options): Promise<ApprovalPolicy[]> {
+  return decode(
+    await fetch(url(baseUrl, "/approval-policies", scope), {
+      cache: "no-store",
+      headers: requestHeaders(token),
+    }),
+  );
 }
 
-export async function createApprovalPolicy({ baseUrl = defaultBaseUrl, scope, token, draft }: Options & { draft: ApprovalPolicyDraft }): Promise<ApprovalPolicy> {
-  return decode(await fetch(url(baseUrl, "/approval-policies", scope), { method: "POST", headers: requestHeaders(token, true), body: JSON.stringify(draft) }));
+export async function createApprovalPolicy({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  draft,
+}: Options & { draft: ApprovalPolicyDraft }): Promise<ApprovalPolicy> {
+  return decode(
+    await fetch(url(baseUrl, "/approval-policies", scope), {
+      method: "POST",
+      headers: requestHeaders(token, true),
+      body: JSON.stringify(draft),
+    }),
+  );
 }
 
-export async function publishApprovalPolicy({ baseUrl = defaultBaseUrl, scope, token, policyId, version }: Options & { policyId: string; version: number }): Promise<ApprovalPolicy> {
-  return decode(await fetch(url(baseUrl, `/approval-policies/${policyId}/versions/${version}/publish`, scope), { method: "POST", headers: requestHeaders(token) }));
+export async function publishApprovalPolicy({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  policyId,
+  version,
+}: Options & { policyId: string; version: number }): Promise<ApprovalPolicy> {
+  return decode(
+    await fetch(
+      url(
+        baseUrl,
+        `/approval-policies/${policyId}/versions/${version}/publish`,
+        scope,
+      ),
+      { method: "POST", headers: requestHeaders(token) },
+    ),
+  );
 }
 
-export async function listReviewAssignments({ baseUrl = defaultBaseUrl, scope, token }: Options): Promise<ReviewAssignment[]> {
-  return decode(await fetch(url(baseUrl, "/reviews/inbox", scope), { cache: "no-store", headers: requestHeaders(token) }));
+export async function listReviewAssignments({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+}: Options): Promise<ReviewAssignment[]> {
+  return decode(
+    await fetch(url(baseUrl, "/reviews/inbox", scope), {
+      cache: "no-store",
+      headers: requestHeaders(token),
+    }),
+  );
 }
 
-export async function getReviewNotifications({ baseUrl = defaultBaseUrl, scope, token }: Options): Promise<ReviewNotificationSummary> {
-  return decode(await fetch(url(baseUrl, "/reviews/notifications", scope), { cache: "no-store", headers: requestHeaders(token) }));
+export async function getReviewNotifications({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+}: Options): Promise<ReviewNotificationSummary> {
+  return decode(
+    await fetch(url(baseUrl, "/reviews/notifications", scope), {
+      cache: "no-store",
+      headers: requestHeaders(token),
+    }),
+  );
 }
 
-export async function getReview({ baseUrl = defaultBaseUrl, scope, token, reviewId }: Options & { reviewId: string }): Promise<ReviewCase> {
-  return decode(await fetch(url(baseUrl, `/reviews/${reviewId}`, scope), { cache: "no-store", headers: requestHeaders(token) }));
+export async function getReview({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  reviewId,
+}: Options & { reviewId: string }): Promise<ReviewCase> {
+  return decode(
+    await fetch(url(baseUrl, `/reviews/${reviewId}`, scope), {
+      cache: "no-store",
+      headers: requestHeaders(token),
+    }),
+  );
 }
 
-export async function listReviewComments({ baseUrl = defaultBaseUrl, scope, token, reviewId }: Options & { reviewId: string }): Promise<ReviewComment[]> {
-  return decode(await fetch(url(baseUrl, `/reviews/${reviewId}/comments`, scope), { cache: "no-store", headers: requestHeaders(token) }));
+export async function listReviewComments({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  reviewId,
+}: Options & { reviewId: string }): Promise<ReviewComment[]> {
+  return decode(
+    await fetch(url(baseUrl, `/reviews/${reviewId}/comments`, scope), {
+      cache: "no-store",
+      headers: requestHeaders(token),
+    }),
+  );
 }
 
-export async function getReviewWorkflow({ baseUrl = defaultBaseUrl, scope, token, reviewId }: Options & { reviewId: string }): Promise<Record<string, unknown> | null> {
-  const response = await fetch(url(baseUrl, `/reviews/${reviewId}/workflow`, scope), { cache: "no-store", headers: requestHeaders(token) });
+export async function getReviewWorkflow({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  reviewId,
+}: Options & { reviewId: string }): Promise<Record<string, unknown> | null> {
+  const response = await fetch(
+    url(baseUrl, `/reviews/${reviewId}/workflow`, scope),
+    { cache: "no-store", headers: requestHeaders(token) },
+  );
   if (response.status === 404) return null;
   return decode(response);
 }
 
-export async function getFinalReviewPackage({ baseUrl = defaultBaseUrl, scope, token, reviewId }: Options & { reviewId: string }): Promise<Record<string, unknown> | null> {
-  const response = await fetch(url(baseUrl, `/reviews/${reviewId}/final-package`, scope), { cache: "no-store", headers: requestHeaders(token) });
+export async function getFinalReviewPackage({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  reviewId,
+}: Options & { reviewId: string }): Promise<Record<string, unknown> | null> {
+  const response = await fetch(
+    url(baseUrl, `/reviews/${reviewId}/final-package`, scope),
+    { cache: "no-store", headers: requestHeaders(token) },
+  );
   if (response.status === 409 || response.status === 404) return null;
   return decode(response);
 }

@@ -17,7 +17,9 @@ describe("ApprovalPolicyAdmin", () => {
     fireEvent.click(screen.getByRole("button", { name: "Add business stage" }));
     fireEvent.click(screen.getByRole("button", { name: "Create policy" }));
 
-    expect(await screen.findByText("Policy submitted for publication.")).toBeVisible();
+    expect(
+      await screen.findByText("Policy submitted for publication."),
+    ).toBeVisible();
     expect(onCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "UAE legal and business review",

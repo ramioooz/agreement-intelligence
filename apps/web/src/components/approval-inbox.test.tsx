@@ -25,19 +25,17 @@ describe("ApprovalInbox", () => {
 
     expect(screen.getByRole("heading", { name: "Review inbox" })).toBeVisible();
     expect(screen.getByText("2 unread notifications")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Open review review-1" })).toHaveAttribute(
-      "href",
-      "/dashboard/reviews/review-1",
-    );
+    expect(
+      screen.getByRole("link", { name: "Open review review-1" }),
+    ).toHaveAttribute("href", "/dashboard/reviews/review-1");
     expect(screen.getByRole("listitem")).toHaveTextContent("Due Aug 6, 2026");
   });
 
   it("renders an actionable empty state", () => {
     render(<ApprovalInbox assignments={[]} unreadCount={0} />);
     expect(screen.getByText("No active review assignments")).toBeVisible();
-    expect(screen.getByRole("link", { name: "Browse agreements" })).toHaveAttribute(
-      "href",
-      "/dashboard/agreements",
-    );
+    expect(
+      screen.getByRole("link", { name: "Browse agreements" }),
+    ).toHaveAttribute("href", "/dashboard/agreements");
   });
 });
