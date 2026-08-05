@@ -45,6 +45,11 @@ from agreement_intelligence_api.processing.service import (
 from agreement_intelligence_api.qa.routes import router as questions_router
 from agreement_intelligence_api.reviews.routes import decision_router
 from agreement_intelligence_api.reviews.routes import router as reviews_router
+from agreement_intelligence_api.reviews.collaboration import ReviewConflictError
+from agreement_intelligence_api.reviews.collaboration_routes import (
+    review_conflict_handler,
+)
+from agreement_intelligence_api.reviews.collaboration_routes import router as collaboration_router
 from agreement_intelligence_api.search.routes import router as search_router
 
 app = FastAPI(
@@ -61,6 +66,7 @@ app.add_exception_handler(VersionIdempotencyConflictError, version_conflict_hand
 app.add_exception_handler(IdempotencyKeyConflictError, idempotency_conflict_handler)
 app.add_exception_handler(RetryNotPermittedError, retry_not_permitted_handler)
 app.add_exception_handler(VersionComparisonConflictError, comparison_conflict_handler)
+app.add_exception_handler(ReviewConflictError, review_conflict_handler)
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 app.include_router(health_router)
@@ -74,5 +80,6 @@ app.include_router(playbooks_router)
 app.include_router(approval_policies_router)
 app.include_router(reviews_router)
 app.include_router(decision_router)
+app.include_router(collaboration_router)
 app.include_router(search_router)
 app.include_router(questions_router)
