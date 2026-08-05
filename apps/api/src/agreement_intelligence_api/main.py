@@ -43,13 +43,13 @@ from agreement_intelligence_api.processing.service import (
     RetryNotPermittedError,
 )
 from agreement_intelligence_api.qa.routes import router as questions_router
-from agreement_intelligence_api.reviews.routes import decision_router
-from agreement_intelligence_api.reviews.routes import router as reviews_router
 from agreement_intelligence_api.reviews.collaboration import ReviewConflictError
 from agreement_intelligence_api.reviews.collaboration_routes import (
     review_conflict_handler,
 )
 from agreement_intelligence_api.reviews.collaboration_routes import router as collaboration_router
+from agreement_intelligence_api.reviews.routes import decision_router
+from agreement_intelligence_api.reviews.routes import router as reviews_router
 from agreement_intelligence_api.search.routes import router as search_router
 
 app = FastAPI(
