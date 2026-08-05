@@ -32,3 +32,5 @@ class FinalReviewPackageResponse(BaseModel):
     manifest_url: str
     checksum: str
     created_at: str
+    manifest_checksum: str | None = None
+    pdf_checksum: str | None = None

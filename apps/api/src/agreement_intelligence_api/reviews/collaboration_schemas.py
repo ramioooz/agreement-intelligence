@@ -8,6 +8,8 @@ class StartReviewRequest(BaseModel):
     agreement_id: UUID
     agreement_version_id: UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=255)
+    policy_version_id: UUID | None = None
+    policy_override_reason: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class ReviewCaseResponse(BaseModel):

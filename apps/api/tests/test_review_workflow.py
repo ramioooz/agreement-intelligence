@@ -17,7 +17,10 @@ from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.reviews.models import ReviewCaseRecord
-from agreement_intelligence_api.reviews.workflow import ReviewWorkflowCoordinator
+from agreement_intelligence_api.reviews.workflow import (
+    ReviewWorkflowConflictError,
+    ReviewWorkflowCoordinator,
+)
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -63,6 +66,129 @@ def test_starting_a_review_activates_the_first_stage_and_persists_a_resume_check
     assert workflow.stages[0].state == "active"
     assert workflow.stages[1].state == "pending"
     assert [event.event_type for event in workflow.pending_events] == ["review.workflow.resume"]
+
+
+def test_submitter_cannot_approve_and_stage_requires_eligible_role(session: Session) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="review-start-eligibility",
+    )
+
+    with pytest.raises(ReviewWorkflowConflictError, match="submitter_cannot_approve"):
+        ReviewWorkflowCoordinator(session).decide(
+            workflow_id=workflow.id,
+            actor_id=review.created_by,
+            action="approve",
+            idempotency_key="decision-submitter",
+            expected_revision=workflow.revision,
+            correlation_id="decision-submitter",
+        )
+
+    outsider = IdentityService(session).provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject=f"outsider-{uuid4()}",
+        display_name="Outsider",
+    )
+    session.commit()
+    with pytest.raises(ReviewWorkflowConflictError, match="actor_not_eligible"):
+        ReviewWorkflowCoordinator(session).decide(
+            workflow_id=workflow.id,
+            actor_id=outsider.id,
+            action="approve",
+            idempotency_key="decision-outsider",
+            expected_revision=workflow.revision,
+            correlation_id="decision-outsider",
+        )
+
+
+def test_stage_completion_counts_unique_eligible_actors(session: Session) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    identity = IdentityService(session)
+    reviewer = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject=f"reviewer-{uuid4()}",
+        display_name="Legal reviewer",
+    )
+    membership = identity.grant_membership(
+        organization_id=review.organization_id,
+        user_id=reviewer.id,
+        role_key=RoleKey.LEGAL_ADMIN,
+    )
+    identity.grant_workspace_membership(
+        organization_id=review.organization_id,
+        membership_id=membership.id,
+        workspace_id=review.workspace_id,
+    )
+    session.commit()
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="review-start-unique",
+    )
+    first = ReviewWorkflowCoordinator(session).decide(
+        workflow_id=workflow.id,
+        actor_id=reviewer.id,
+        action="approve",
+        idempotency_key="decision-first",
+        expected_revision=workflow.revision,
+        correlation_id="decision-first",
+    )
+    assert first.active_stage_ordinal == 2
+
+
+def test_cross_stage_same_approver_is_rejected_by_default(session: Session) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    identity = IdentityService(session)
+    reviewer = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject=f"shared-{uuid4()}",
+        display_name="Shared reviewer",
+    )
+    legal_membership = identity.grant_membership(
+        organization_id=review.organization_id,
+        user_id=reviewer.id,
+        role_key=RoleKey.LEGAL_ADMIN,
+    )
+    business_membership = identity.grant_membership(
+        organization_id=review.organization_id,
+        user_id=reviewer.id,
+        role_key=RoleKey.BUSINESS_APPROVER,
+    )
+    identity.grant_workspace_membership(
+        organization_id=review.organization_id,
+        membership_id=legal_membership.id,
+        workspace_id=review.workspace_id,
+    )
+    identity.grant_workspace_membership(
+        organization_id=review.organization_id,
+        membership_id=business_membership.id,
+        workspace_id=review.workspace_id,
+    )
+    session.commit()
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="review-start-cross-stage",
+    )
+    next_stage = ReviewWorkflowCoordinator(session).decide(
+        workflow_id=workflow.id,
+        actor_id=reviewer.id,
+        action="approve",
+        idempotency_key="decision-legal",
+        expected_revision=workflow.revision,
+        correlation_id="decision-legal",
+    )
+    with pytest.raises(ReviewWorkflowConflictError, match="cross_stage_approver_not_allowed"):
+        ReviewWorkflowCoordinator(session).decide(
+            workflow_id=workflow.id,
+            actor_id=reviewer.id,
+            action="approve",
+            idempotency_key="decision-business",
+            expected_revision=next_stage.revision,
+            correlation_id="decision-business",
+        )
 
 
 def _seed_review_and_published_policy(

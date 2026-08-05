@@ -429,3 +429,42 @@ def _reject_workflow_decision_mutation(*_: object) -> None:
 
 event.listen(ReviewWorkflowDecisionRecord, "before_update", _reject_workflow_decision_mutation)
 event.listen(ReviewWorkflowDecisionRecord, "before_delete", _reject_workflow_decision_mutation)
+
+
+class ReviewFinalPackageRecord(Base):
+    """Immutable, stored artifacts generated once for a terminal review."""
+
+    __tablename__ = "review_final_packages"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint("review_id", name="uq_review_final_packages_review"),
+        Index(
+            "ix_review_final_packages_scope_review",
+            "organization_id",
+            "workspace_id",
+            "review_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    review_id: Mapped[UUID] = mapped_column(ForeignKey("review_cases.id"), index=True)
+    workflow_id: Mapped[UUID] = mapped_column(ForeignKey("review_workflows.id"), index=True)
+    state: Mapped[str] = mapped_column(String(32))
+    manifest_key: Mapped[str] = mapped_column(String(512), unique=True)
+    pdf_key: Mapped[str] = mapped_column(String(512), unique=True)
+    manifest_checksum: Mapped[str] = mapped_column(String(128))
+    pdf_checksum: Mapped[str] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+def _reject_final_package_mutation(*_: object) -> None:
+    raise ValueError("review final packages are immutable")
+
+
+event.listen(ReviewFinalPackageRecord, "before_update", _reject_final_package_mutation)
+event.listen(ReviewFinalPackageRecord, "before_delete", _reject_final_package_mutation)
