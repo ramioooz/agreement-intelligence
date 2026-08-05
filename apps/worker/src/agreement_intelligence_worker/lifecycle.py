@@ -3,6 +3,7 @@ import contextlib
 import logging
 import os
 import time
+from collections.abc import Awaitable
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ async def run_worker(
     heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     message_receiver: ProcessingMessageReceiver | None = None,
     job_processor: JobProcessor | None = None,
+    background_tasks: tuple[Awaitable[None], ...] = (),
 ) -> None:
     lifecycle_correlation_id = correlation_id or os.environ.get(
         "WORKER_CORRELATION_ID",
@@ -54,6 +56,9 @@ async def run_worker(
                 idle_sleep_seconds=heartbeat_interval_seconds,
             )
         )
+    supplemental_tasks: list[asyncio.Future[None]] = [
+        asyncio.ensure_future(task) for task in background_tasks
+    ]
 
     try:
         while not stop_event.is_set():
@@ -68,6 +73,11 @@ async def run_worker(
             processing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await processing_task
+        for task in supplemental_tasks:
+            task.cancel()
+        for task in supplemental_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     logger.info(
         "worker stopped",
