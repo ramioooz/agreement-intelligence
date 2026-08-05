@@ -36,6 +36,7 @@ export type ApprovalWorkflow = {
     "waiting_for_approval" | "approved" | "rejected" | "revision_requested";
   active_stage_ordinal: number | null;
   revision: number;
+  stages?: Array<{ ordinal: number; state: string }>;
 };
 
 type ApprovalReviewWorkspaceProps = {
@@ -282,6 +283,16 @@ export function ApprovalReviewWorkspace({
                 approval decision.
               </p>
             )}
+            {activeWorkflow?.stages?.length ? (
+              <ol aria-label="Approval stages" className="mt-5 space-y-2 border-t border-slate-200 pt-4">
+                {activeWorkflow.stages.map((stage) => (
+                  <li className="flex items-center justify-between text-sm" key={stage.ordinal}>
+                    <span>Stage {stage.ordinal}</span>
+                    <span className="font-semibold">{label(stage.state)}</span>
+                  </li>
+                ))}
+              </ol>
+            ) : null}
           </section>
 
           <section

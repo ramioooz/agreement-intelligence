@@ -23,7 +23,8 @@ const navigationItems: Array<{
   },
   {
     label: "Reviews",
-    summary: "Track legal review queues and human decisions in later sprints.",
+    summary: "Track approval assignments, deadlines, decisions, and packages.",
+    href: "/dashboard/reviews",
   },
   {
     label: "Search",
@@ -37,7 +38,8 @@ const navigationItems: Array<{
   },
   {
     label: "Administration",
-    summary: "Configure tenants, users, and policies in later secure stories.",
+    summary: "Configure approval policies and workspace controls.",
+    href: "/dashboard/approval-policies",
   },
 ];
 
@@ -76,9 +78,8 @@ export function DashboardShell({ user, signOutAction }: DashboardShellProps) {
 
       <section className="mx-auto max-w-7xl px-6 py-10">
         <p className="max-w-3xl text-lg leading-8 text-slate-300">
-          You are signed in. Sprint 0 proves protected navigation and secure
-          session boundaries; business workflows appear as honest placeholders
-          until their delivery stories are implemented.
+        You are signed in. Your workspace shows only the agreements, policies,
+        and approval tasks authorized for your current role.
         </p>
 
         <nav
