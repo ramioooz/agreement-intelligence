@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -68,6 +69,22 @@ class ReviewDecisionService:
                 metadata_json={"decision_id": str(decision.id), "action": request.action.value},
                 occurred_at=now,
             )
+        )
+        AuditEventWriter(self._session).record(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            actor_id=principal.user_id,
+            action="review_finding_decision_recorded",
+            resource_type="review_finding",
+            resource_id=finding.id,
+            outcome="succeeded",
+            before_ref={"review_state": finding.review_state},
+            after_ref={"decision_id": str(decision.id), "review_state": "decided"},
+            metadata={
+                "finding_id": str(finding.id),
+                "decision_action": request.action.value,
+            },
+            occurred_at=now,
         )
         self._session.flush()
         events = [*finding.decisions, decision]
