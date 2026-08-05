@@ -175,6 +175,19 @@ def test_reviewer_decisions_are_append_only_and_exported_with_citations(
         "decision_recorded",
         "report_exported",
     ]
+    from agreement_intelligence_api.audit.models import AuditEventRecord
+
+    ledger_events = session.query(AuditEventRecord).order_by(AuditEventRecord.occurred_at).all()
+    assert [event.action for event in ledger_events] == [
+        "review_finding_decision_recorded",
+        "review_finding_decision_recorded",
+        "review_report_exported",
+    ]
+    assert ledger_events[0].metadata_json == {
+        "finding_id": str(seeded.finding_id),
+        "decision_action": "accepted",
+    }
+    assert "rationale" not in ledger_events[0].metadata_json
 
     decisions[0].rationale = "mutated"
     with pytest.raises(ValueError, match="review decision events are immutable"):

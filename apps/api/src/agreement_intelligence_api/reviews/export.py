@@ -17,6 +17,7 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
 from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -71,6 +72,22 @@ class ReviewReportService:
                 },
                 occurred_at=generated_at,
             )
+        )
+        AuditEventWriter(self._session).record(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            actor_id=principal.user_id,
+            action="review_report_exported",
+            resource_type="agreement",
+            resource_id=agreement.id,
+            outcome="succeeded",
+            before_ref={},
+            after_ref={"report_filename": filename},
+            metadata={
+                "evaluation_id": str(evaluation.id),
+                "playbook_version_id": str(version.id),
+            },
+            occurred_at=generated_at,
         )
         self._session.flush()
         self._session.commit()
