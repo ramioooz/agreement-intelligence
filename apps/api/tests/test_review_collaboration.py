@@ -157,6 +157,45 @@ def test_review_assignment_reassignment_and_comment_are_workspace_scoped_and_ide
     assert replacement_inbox.json()[0]["review_id"] == review_id
 
 
+def test_review_comment_timeline_and_notification_indicator_are_visible_only_to_the_recipient(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    seeded = _seed_scope(session)
+    assigner = client_for_session(seeded.assigner_id)
+    started = assigner.post(
+        "/reviews",
+        params=seeded.scope,
+        json={"agreement_id": str(seeded.agreement_id), "idempotency_key": "review-timeline"},
+    )
+    review_id = started.json()["id"]
+    assigned = assigner.post(
+        f"/reviews/{review_id}/assignments",
+        params=seeded.scope,
+        json={"assignee_id": str(seeded.reviewer_id), "idempotency_key": "assignment-timeline"},
+    )
+    assert assigned.status_code == 201
+
+    reviewer = client_for_session(seeded.reviewer_id)
+    commented = reviewer.post(
+        f"/reviews/{review_id}/comments",
+        params=seeded.scope,
+        json={"body": "Please confirm the liability cap.", "idempotency_key": "comment-timeline"},
+    )
+    assert commented.status_code == 201
+
+    timeline = reviewer.get(f"/reviews/{review_id}/comments", params=seeded.scope)
+    notifications = reviewer.get("/reviews/notifications", params=seeded.scope)
+
+    assert timeline.status_code == 200
+    assert [item["body"] for item in timeline.json()] == ["Please confirm the liability cap."]
+    assert notifications.status_code == 200
+    assert notifications.json()["unread_count"] == 1
+
+    unrelated = client_for_session(seeded.replacement_id)
+    assert unrelated.get("/reviews/notifications", params=seeded.scope).json()["unread_count"] == 0
+
+
 class _Scope:
     def __init__(
         self,

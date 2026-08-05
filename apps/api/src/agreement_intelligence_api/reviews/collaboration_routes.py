@@ -16,6 +16,7 @@ from agreement_intelligence_api.reviews.collaboration_schemas import (
     ReviewAssignmentResponse,
     ReviewCaseResponse,
     ReviewCommentResponse,
+    ReviewNotificationSummaryResponse,
     StartReviewRequest,
 )
 
@@ -60,6 +61,18 @@ def review_inbox(
     return service.inbox(principal, organization_id=organization_id, workspace_id=workspace_id)
 
 
+@router.get("/notifications", response_model=ReviewNotificationSummaryResponse)
+def review_notification_summary(
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> ReviewNotificationSummaryResponse:
+    return service.notification_summary(
+        principal, organization_id=organization_id, workspace_id=workspace_id
+    )
+
+
 @router.get("/{review_id}", response_model=ReviewCaseResponse)
 def get_review(
     review_id: UUID,
@@ -69,6 +82,19 @@ def get_review(
     workspace_id: WorkspaceScope,
 ) -> ReviewCaseResponse:
     return service.get(
+        principal, organization_id=organization_id, workspace_id=workspace_id, review_id=review_id
+    )
+
+
+@router.get("/{review_id}/comments", response_model=list[ReviewCommentResponse])
+def list_review_comments(
+    review_id: UUID,
+    principal: PrincipalDependency,
+    service: ServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> list[ReviewCommentResponse]:
+    return service.comments(
         principal, organization_id=organization_id, workspace_id=workspace_id, review_id=review_id
     )
 
