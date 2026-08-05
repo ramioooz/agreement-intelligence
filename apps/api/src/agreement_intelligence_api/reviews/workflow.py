@@ -26,6 +26,7 @@ from agreement_intelligence_api.approval_policies.models import (
     ApprovalPolicyVersionRecord,
 )
 from agreement_intelligence_api.audit.service import AuditEventWriter
+from agreement_intelligence_api.identity.models import Membership, WorkspaceMembership
 from agreement_intelligence_api.reviews.models import (
     ReviewCaseRecord,
     ReviewWorkflowDecisionRecord,
@@ -232,6 +233,29 @@ class ReviewWorkflowCoordinator:
         if workflow.revision != expected_revision or workflow.state != "waiting_for_approval":
             raise ReviewWorkflowConflictError
         stage = self._active_stage(workflow)
+        policy_version = self._session.get(ApprovalPolicyVersionRecord, workflow.policy_version_id)
+        if policy_version is None:
+            raise ReviewWorkflowConflictError("policy_not_found")
+        review = self._review(workflow.review_id)
+        if (
+            action == "approve"
+            and not policy_version.submitter_may_approve
+            and actor_id == review.created_by
+        ):
+            raise ReviewWorkflowConflictError("submitter_cannot_approve")
+        policy_stage = self._session.get(ApprovalPolicyStageRecord, stage.policy_stage_id)
+        if policy_stage is None or not self._actor_is_eligible(actor_id, workflow, policy_stage):
+            raise ReviewWorkflowConflictError("actor_not_eligible")
+        if action == "approve" and not policy_version.allow_cross_stage_same_approver:
+            prior_approval = self._session.scalar(
+                select(ReviewWorkflowDecisionRecord.id)
+                .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)
+                .where(ReviewWorkflowDecisionRecord.actor_id == actor_id)
+                .where(ReviewWorkflowDecisionRecord.action == "approve")
+                .where(ReviewWorkflowDecisionRecord.workflow_stage_id != stage.id)
+            )
+            if prior_approval is not None:
+                raise ReviewWorkflowConflictError("cross_stage_approver_not_allowed")
         now = datetime.now(UTC)
         self._session.add(
             ReviewWorkflowDecisionRecord(
@@ -337,7 +361,70 @@ class ReviewWorkflowCoordinator:
         )
         if policy_stage.approval_mode == "quorum":
             return len(approvals) >= (policy_stage.quorum_count or 1)
-        return len(approvals) >= eligible_count
+        return len({item.actor_id for item in approvals}) >= eligible_count
+
+    def _actor_is_eligible(
+        self,
+        actor_id: UUID,
+        workflow: ReviewWorkflowRecord,
+        policy_stage: ApprovalPolicyStageRecord,
+    ) -> bool:
+        if str(actor_id) in {str(value) for value in policy_stage.eligible_user_ids}:
+            return True
+        memberships = self._session.scalars(
+            select(Membership)
+            .join(Membership.role)
+            .join(
+                WorkspaceMembership,
+                WorkspaceMembership.membership_id == Membership.id,
+            )
+            .where(Membership.organization_id == workflow.organization_id)
+            .where(Membership.user_id == actor_id)
+            .where(WorkspaceMembership.workspace_id == workflow.workspace_id)
+        )
+        eligible_roles = {str(value) for value in policy_stage.eligible_role_keys}
+        return any(str(membership.role.key) in eligible_roles for membership in memberships)
+
+    def escalate_overdue(self, *, now: datetime, correlation_id: str) -> int:
+        """Mark overdue active stages once and emit an idempotent wake-up event."""
+        count = 0
+        workflows = self._session.scalars(
+            select(ReviewWorkflowRecord)
+            .options(selectinload(ReviewWorkflowRecord.stages))
+            .where(ReviewWorkflowRecord.state == "waiting_for_approval")
+        ).all()
+        for workflow in workflows:
+            stage = next((item for item in workflow.stages if item.state == "active"), None)
+            if stage is None or stage.deadline_at is None or stage.deadline_at > now:
+                continue
+            if stage.escalated_at is not None:
+                continue
+            stage.escalated_at = now
+            self._emit(
+                workflow,
+                event_type="review.workflow.escalate",
+                correlation_id=correlation_id,
+                idempotency_key=f"workflow:{workflow.id}:stage:{stage.ordinal}:escalation",
+            )
+            review = self._session.get(ReviewCaseRecord, workflow.review_id)
+            self._audit.record(
+                organization_id=workflow.organization_id,
+                workspace_id=workflow.workspace_id,
+                actor_id=review.created_by if review is not None else UUID(int=0),
+                action="review_workflow_escalated",
+                resource_type="review_workflow_stage",
+                resource_id=stage.id,
+                outcome="accepted",
+                correlation_id=correlation_id,
+                before_ref={"escalated_at": None},
+                after_ref={"escalated_at": now.isoformat()},
+                metadata={"workflow_id": str(workflow.id), "stage": stage.ordinal},
+                occurred_at=now,
+            )
+            count += 1
+        if count:
+            self._session.commit()
+        return count
 
     def _advance(
         self, workflow: ReviewWorkflowRecord, stage: ReviewWorkflowStageRecord, now: datetime

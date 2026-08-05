@@ -1,10 +1,18 @@
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.approval_policies.schemas import (
+    ApprovalPolicyRouteRequest,
+    SupportedAgreementFamily,
+)
+from agreement_intelligence_api.approval_policies.service import ApprovalPolicyService
+from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.service import IdentityService
@@ -18,6 +26,11 @@ from agreement_intelligence_api.reviews.collaboration_schemas import (
     ReviewCommentResponse,
     ReviewNotificationSummaryResponse,
     StartReviewRequest,
+)
+from agreement_intelligence_api.reviews.workflow import (
+    ReviewWorkflowCoordinator,
+    ReviewWorkflowQueueDispatcher,
+    workflow_queue_publisher_from_environment,
 )
 
 router = APIRouter(prefix="/reviews", tags=["reviews"])
@@ -41,11 +54,63 @@ def start_review(
     service: ServiceDependency,
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
+    session: SessionDependency,
     response: Response,
 ) -> ReviewCaseResponse:
+    if request.policy_version_id is not None and not request.policy_override_reason:
+        raise HTTPException(status_code=400, detail="policy_override_reason_required")
     review, created = service.start(
         principal, organization_id=organization_id, workspace_id=workspace_id, request=request
     )
+    if created:
+        agreement = session.scalar(
+            select(AgreementRecord).where(
+                AgreementRecord.id == review.agreement_id,
+                AgreementRecord.organization_id == organization_id,
+                AgreementRecord.workspace_id == workspace_id,
+            )
+        )
+        selected_policy_id = request.policy_version_id
+        if (
+            selected_policy_id is None
+            and agreement is not None
+            and agreement.agreement_type in {"client_agreement", "liquidity_provider_agreement"}
+        ):
+            routed = ApprovalPolicyService(session, IdentityService(session)).route(
+                principal,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                request=ApprovalPolicyRouteRequest(
+                    agreement_family=cast(
+                        SupportedAgreementFamily,
+                        agreement.agreement_type,
+                    )
+                ),
+            )
+            selected_policy_id = routed.id if routed is not None else None
+        if selected_policy_id is not None:
+            ReviewWorkflowCoordinator(session).start(
+                review_id=review.id,
+                policy_version_id=selected_policy_id,
+                correlation_id="review-start",
+            )
+            if request.policy_version_id is not None:
+                AuditEventWriter(session).record(
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    actor_id=principal.user_id,
+                    action="review_policy_override",
+                    resource_type="review",
+                    resource_id=review.id,
+                    outcome="accepted",
+                    correlation_id="review-policy-override",
+                    before_ref={},
+                    after_ref={"policy_version_id": str(selected_policy_id)},
+                    metadata={"reason": request.policy_override_reason},
+                )
+            ReviewWorkflowQueueDispatcher(
+                session, workflow_queue_publisher_from_environment()
+            ).dispatch_pending()
     if not created:
         response.status_code = 200
     return review

@@ -20,11 +20,16 @@ from pytest import fixture, raises
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 @fixture
 def session() -> Generator[Session]:
-    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     event.listen(
         engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON")
     )
