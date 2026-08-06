@@ -28,7 +28,9 @@ from agreement_intelligence_api.approval_policies.models import (
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.identity.models import Membership, WorkspaceMembership
 from agreement_intelligence_api.reviews.models import (
+    ReviewAssignmentRecord,
     ReviewCaseRecord,
+    ReviewNotificationEventRecord,
     ReviewWorkflowDecisionRecord,
     ReviewWorkflowOutboxRecord,
     ReviewWorkflowRecord,
@@ -186,6 +188,8 @@ class ReviewWorkflowCoordinator:
                     escalated_at=None,
                 )
             )
+            if activated:
+                self._activate_assignments(review, workflow, policy_stage, now)
         self._emit(
             workflow,
             event_type="review.workflow.resume",
@@ -360,7 +364,7 @@ class ReviewWorkflowCoordinator:
             set(policy_stage.eligible_user_ids)
         )
         if policy_stage.approval_mode == "quorum":
-            return len(approvals) >= (policy_stage.quorum_count or 1)
+            return len({item.actor_id for item in approvals}) >= (policy_stage.quorum_count or 1)
         return len({item.actor_id for item in approvals}) >= eligible_count
 
     def _actor_is_eligible(
@@ -431,6 +435,7 @@ class ReviewWorkflowCoordinator:
     ) -> None:
         stage.state = "completed"
         stage.completed_at = now
+        self._complete_assignments(workflow, stage)
         next_stage = next(
             (candidate for candidate in workflow.stages if candidate.ordinal == stage.ordinal + 1),
             None,
@@ -444,10 +449,13 @@ class ReviewWorkflowCoordinator:
         policy_stage = self._session.get(ApprovalPolicyStageRecord, next_stage.policy_stage_id)
         if policy_stage is not None and policy_stage.deadline_hours is not None:
             next_stage.deadline_at = now + timedelta(hours=policy_stage.deadline_hours)
+        if policy_stage is not None:
+            review = self._review(workflow.review_id)
+            self._activate_assignments(review, workflow, policy_stage, now)
         workflow.active_stage_ordinal = next_stage.ordinal
 
-    @staticmethod
     def _complete_terminal(
+        self,
         workflow: ReviewWorkflowRecord,
         stage: ReviewWorkflowStageRecord,
         state: Literal["rejected", "revision_requested"],
@@ -455,8 +463,110 @@ class ReviewWorkflowCoordinator:
     ) -> None:
         stage.state = "completed"
         stage.completed_at = now
+        # Terminal decisions close any remaining active assignee work.
+        for assignment in self._session.scalars(
+            select(ReviewAssignmentRecord).where(
+                ReviewAssignmentRecord.review_id == workflow.review_id,
+                ReviewAssignmentRecord.status == "active",
+            )
+        ):
+            assignment.status = "completed"
         workflow.state = state
         workflow.active_stage_ordinal = None
+
+    def _eligible_actor_ids(
+        self, workflow: ReviewWorkflowRecord, policy_stage: ApprovalPolicyStageRecord
+    ) -> set[UUID]:
+        ids = {UUID(str(value)) for value in policy_stage.eligible_user_ids}
+        eligible_roles = {str(value) for value in policy_stage.eligible_role_keys}
+        if eligible_roles:
+            memberships = self._session.scalars(
+                select(Membership)
+                .join(Membership.role)
+                .join(WorkspaceMembership, WorkspaceMembership.membership_id == Membership.id)
+                .where(
+                    Membership.organization_id == workflow.organization_id,
+                    WorkspaceMembership.workspace_id == workflow.workspace_id,
+                )
+            )
+            ids.update(
+                membership.user_id
+                for membership in memberships
+                if str(membership.role.key) in eligible_roles
+            )
+        return ids
+
+    def _activate_assignments(
+        self,
+        review: ReviewCaseRecord,
+        workflow: ReviewWorkflowRecord,
+        policy_stage: ApprovalPolicyStageRecord,
+        now: datetime,
+    ) -> None:
+        eligible_ids = self._eligible_actor_ids(workflow, policy_stage)
+        due_at = (
+            now + timedelta(hours=policy_stage.deadline_hours)
+            if policy_stage.deadline_hours is not None
+            else None
+        )
+        for assignee_id in sorted(eligible_ids, key=str):
+            key = f"workflow:{workflow.id}:stage:{policy_stage.ordinal}:assignee:{assignee_id}"
+            existing = self._session.scalar(
+                select(ReviewAssignmentRecord).where(
+                    ReviewAssignmentRecord.review_id == review.id,
+                    ReviewAssignmentRecord.idempotency_key == key,
+                )
+            )
+            if existing is not None:
+                if existing.status != "active":
+                    existing.status = "active"
+                continue
+            assignment = ReviewAssignmentRecord(
+                id=uuid4(),
+                review_id=review.id,
+                organization_id=workflow.organization_id,
+                workspace_id=workflow.workspace_id,
+                assignee_id=assignee_id,
+                assigned_by=review.created_by,
+                predecessor_assignment_id=None,
+                due_at=due_at,
+                status="active",
+                idempotency_key=key,
+                created_at=now,
+                updated_at=now,
+            )
+            self._session.add(assignment)
+            self._session.add(
+                ReviewNotificationEventRecord(
+                    id=uuid4(),
+                    organization_id=workflow.organization_id,
+                    workspace_id=workflow.workspace_id,
+                    review_id=review.id,
+                    recipient_id=assignee_id,
+                    event_type="review.assignment.created",
+                    payload_json={
+                        "agreement_id": str(review.agreement_id),
+                        "stage": policy_stage.ordinal,
+                    },
+                    idempotency_key=f"notification:{key}",
+                    delivered_at=None,
+                    processed_at=None,
+                    created_at=now,
+                )
+            )
+
+    def _complete_assignments(
+        self, workflow: ReviewWorkflowRecord, stage: ReviewWorkflowStageRecord
+    ) -> None:
+        prefix = f"workflow:{workflow.id}:stage:{stage.ordinal}:"
+        for assignment in self._session.scalars(
+            select(ReviewAssignmentRecord).where(
+                ReviewAssignmentRecord.review_id == workflow.review_id,
+                ReviewAssignmentRecord.status == "active",
+            )
+        ):
+            if assignment.idempotency_key.startswith(prefix):
+                assignment.status = "completed"
 
     def _emit(
         self,

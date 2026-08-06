@@ -108,12 +108,19 @@ class ReviewCollaborationService:
     def inbox(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
     ) -> list[ReviewAssignmentResponse]:
-        if not self._identity.can_access_workspace(
+        can_decide = self._identity.can_access_workspace(
             principal,
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.REVIEWS_DECIDE,
-        ):
+        )
+        can_approve = self._identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.REVIEWS_APPROVE,
+        )
+        if not (can_decide or can_approve):
             hide_resource()
         assignments = self._session.scalars(
             select(ReviewAssignmentRecord)
