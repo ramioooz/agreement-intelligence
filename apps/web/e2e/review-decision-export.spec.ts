@@ -51,7 +51,10 @@ test("a legal reviewer records a cited decision and downloads the review report"
   test.setTimeout(180_000);
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const family = "client_agreement";
-  const priority = 100 + (Date.now() % 900);
+  const jurisdiction = `E${Date.now().toString(36).slice(-6)}${Math.random()
+    .toString(36)
+    .slice(2, 6)}`.toUpperCase();
+  const priority = 1000;
   const title = `Decision export agreement ${unique}`;
 
   await page.goto("/dashboard/playbooks");
@@ -64,6 +67,7 @@ test("a legal reviewer records a cited decision and downloads the review report"
   await page.getByLabel("Playbook name").fill(`Decision export ${unique}`);
   await page.getByLabel("Agreement family").selectOption(family);
   await page.getByText("Advanced settings", { exact: true }).click();
+  await page.getByLabel("Jurisdiction").fill(jurisdiction);
   await page.getByLabel("Override priority").fill(String(priority));
   await page.getByRole("button", { name: "Create draft" }).click();
   const ruleForm = page
@@ -95,6 +99,7 @@ test("a legal reviewer records a cited decision and downloads the review report"
     .locator("..");
   await upload.getByLabel("Agreement title").fill(title);
   await upload.getByLabel("Agreement type").fill(family);
+  await upload.getByLabel("Jurisdiction").fill(jurisdiction);
   await upload.getByLabel("Original agreement file").setInputFiles({
     name: `decision-${unique}.pdf`,
     mimeType: "application/pdf",
