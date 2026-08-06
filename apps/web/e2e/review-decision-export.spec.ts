@@ -50,7 +50,8 @@ test("a legal reviewer records a cited decision and downloads the review report"
 }) => {
   test.setTimeout(180_000);
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const family = `decision_e2e_${unique}`;
+  const family = "client_agreement";
+  const priority = 100 + (Date.now() % 900);
   const title = `Decision export agreement ${unique}`;
 
   await page.goto("/dashboard/playbooks");
@@ -61,14 +62,18 @@ test("a legal reviewer records a cited decision and downloads the review report"
   );
   await page.getByRole("link", { name: "Playbooks" }).click();
   await page.getByLabel("Playbook name").fill(`Decision export ${unique}`);
-  await page.getByLabel("Agreement family").fill(family);
+  await page.getByLabel("Agreement family").selectOption(family);
+  await page.getByText("Advanced settings", { exact: true }).click();
+  await page.getByLabel("Override priority").fill(String(priority));
   await page.getByRole("button", { name: "Create draft" }).click();
   const ruleForm = page
     .getByRole("heading", { name: "Add rule" })
     .locator("..");
-  await ruleForm.getByLabel("Clause type").fill("liability");
+  await ruleForm
+    .getByLabel("Clause type")
+    .selectOption("limitation_of_liability");
   await ruleForm.getByLabel("Rule title").fill("Liability cap decision");
-  await ruleForm.getByLabel("Policy type").selectOption("prohibited");
+  await ruleForm.getByLabel("Rule type").selectOption("prohibited");
   await ruleForm.getByLabel("Severity").selectOption("high");
   await ruleForm.getByLabel(/Preferred language/).fill("unlimited liability");
   await ruleForm
