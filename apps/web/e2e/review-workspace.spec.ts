@@ -50,7 +50,8 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
 }) => {
   test.setTimeout(90_000);
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const agreementFamily = `review_e2e_${unique}`;
+  const agreementFamily = "client_agreement";
+  const priority = 100 + (Date.now() % 900);
   const agreementTitle = `Supplier agreement ${unique}`;
 
   await page.goto("/dashboard/playbooks");
@@ -64,15 +65,19 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     page.getByRole("heading", { name: "Create playbook draft" }),
   ).toBeVisible();
   await page.getByLabel("Playbook name").fill(`Review E2E ${unique}`);
-  await page.getByLabel("Agreement family").fill(agreementFamily);
+  await page.getByLabel("Agreement family").selectOption(agreementFamily);
+  await page.getByText("Advanced settings", { exact: true }).click();
+  await page.getByLabel("Override priority").fill(String(priority));
   await page.getByRole("button", { name: "Create draft" }).click();
 
   const ruleForm = page
     .getByRole("heading", { name: "Add rule" })
     .locator("..");
-  await ruleForm.getByLabel("Clause type").fill("liability");
+  await ruleForm
+    .getByLabel("Clause type")
+    .selectOption("limitation_of_liability");
   await ruleForm.getByLabel("Rule title").fill("Prohibit unlimited liability");
-  await ruleForm.getByLabel("Policy type").selectOption("prohibited");
+  await ruleForm.getByLabel("Rule type").selectOption("prohibited");
   await ruleForm.getByLabel("Severity").selectOption("high");
   await ruleForm.getByLabel(/Preferred language/).fill("unlimited liability");
   await ruleForm
@@ -90,14 +95,17 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
   ).toBeVisible();
 
   await page.reload();
+  await page.locator('button[type="button"]', { hasText: "Add rule" }).click();
   const secondRuleForm = page
     .getByRole("heading", { name: "Add rule" })
     .locator("..");
-  await secondRuleForm.getByLabel("Clause type").fill("confidentiality");
+  await secondRuleForm
+    .getByLabel("Clause type")
+    .selectOption("confidentiality");
   await secondRuleForm
     .getByLabel("Rule title")
     .fill("Confidentiality survival");
-  await secondRuleForm.getByLabel("Policy type").selectOption("required");
+  await secondRuleForm.getByLabel("Rule type").selectOption("required");
   await secondRuleForm.getByLabel("Severity").selectOption("high");
   await secondRuleForm
     .getByLabel(/Preferred language/)
