@@ -51,7 +51,10 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
   test.setTimeout(90_000);
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const agreementFamily = "client_agreement";
-  const priority = 100 + (Date.now() % 900);
+  const jurisdiction = `E${Date.now().toString(36).slice(-6)}${Math.random()
+    .toString(36)
+    .slice(2, 6)}`.toUpperCase();
+  const priority = 1000;
   const agreementTitle = `Supplier agreement ${unique}`;
 
   await page.goto("/dashboard/playbooks");
@@ -67,6 +70,7 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
   await page.getByLabel("Playbook name").fill(`Review E2E ${unique}`);
   await page.getByLabel("Agreement family").selectOption(agreementFamily);
   await page.getByText("Advanced settings", { exact: true }).click();
+  await page.getByLabel("Jurisdiction").fill(jurisdiction);
   await page.getByLabel("Override priority").fill(String(priority));
   await page.getByRole("button", { name: "Create draft" }).click();
 
@@ -129,6 +133,7 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     .locator("..");
   await uploadForm.getByLabel("Agreement title").fill(agreementTitle);
   await uploadForm.getByLabel("Agreement type").fill(agreementFamily);
+  await uploadForm.getByLabel("Jurisdiction").fill(jurisdiction);
   await uploadForm.getByLabel("Original agreement file").setInputFiles({
     name: `review-${unique}.pdf`,
     mimeType: "application/pdf",
