@@ -21,6 +21,12 @@ export type ReviewCase = {
   created_at: string;
 };
 
+export type StartReviewInput = {
+  agreement_id: string;
+  agreement_version_id?: string;
+  idempotency_key: string;
+};
+
 export type ReviewComment = {
   id: string;
   review_id: string;
@@ -184,6 +190,21 @@ export async function getReview({
     await fetch(url(baseUrl, `/reviews/${reviewId}`, scope), {
       cache: "no-store",
       headers: requestHeaders(token),
+    }),
+  );
+}
+
+export async function startReview({
+  baseUrl = defaultBaseUrl,
+  scope,
+  token,
+  request,
+}: Options & { request: StartReviewInput }): Promise<ReviewCase> {
+  return decode(
+    await fetch(url(baseUrl, "/reviews", scope), {
+      method: "POST",
+      headers: requestHeaders(token, true),
+      body: JSON.stringify(request),
     }),
   );
 }

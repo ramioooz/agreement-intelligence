@@ -25,6 +25,10 @@ class WorkspaceCapabilitiesResponse(BaseModel):
     agreements_delete: bool
     agreements_update: bool
     playbooks_manage: bool
+    reviews_assign: bool
+    reviews_decide: bool
+    reviews_approve: bool
+    approval_policies_manage: bool
 
 
 def get_identity_service(session: SessionDependency) -> IdentityService:
@@ -90,5 +94,29 @@ def get_workspace_capabilities(
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.PLAYBOOKS_MANAGE,
+        ),
+        reviews_assign=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.REVIEWS_ASSIGN,
+        ),
+        reviews_decide=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.REVIEWS_DECIDE,
+        ),
+        reviews_approve=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.REVIEWS_APPROVE,
+        ),
+        approval_policies_manage=identity.can_access_workspace(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            permission=PermissionKey.APPROVAL_POLICIES_MANAGE,
         ),
     )

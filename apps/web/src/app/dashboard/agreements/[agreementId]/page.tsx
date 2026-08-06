@@ -29,6 +29,7 @@ import {
   submitProcessingJob,
   type ProcessingJob,
 } from "@/lib/processing-api";
+import { startReview } from "@/lib/approval-api";
 
 function scopeFromEnvironment(): AgreementScope | null {
   const organizationId = process.env.API_ORGANIZATION_ID;
@@ -150,6 +151,10 @@ export default async function AgreementDetailPage({
     loadAgreementVersions(scope, agreement.id),
     canUploadAgreementVersion(scope),
   ]);
+  const capabilities = await getWorkspaceCapabilities({
+    scope,
+    token: await getKeycloakAccessToken(await headers()),
+  }).catch(() => undefined);
   const retryScope = scope;
   const retryAgreementId = agreement.id;
   const expectedCurrentVersion = Math.max(
@@ -223,6 +228,26 @@ export default async function AgreementDetailPage({
     revalidatePath(`/dashboard/agreements/${retryAgreementId}`);
   }
 
+  async function startApprovalReviewAction() {
+    "use server";
+    const currentVersion = versionHistory?.items.find(
+      (version) => version.id === versionHistory.current_version_id,
+    );
+    if (!currentVersion || currentVersion.processing_state !== "completed") {
+      return;
+    }
+    const review = await startReview({
+      scope: retryScope,
+      token: await getKeycloakAccessToken(await headers()),
+      request: {
+        agreement_id: retryAgreementId,
+        agreement_version_id: currentVersion.id,
+        idempotency_key: crypto.randomUUID(),
+      },
+    });
+    redirect(`/dashboard/reviews/${review.id}`);
+  }
+
   return (
     <main className="mx-auto max-w-7xl px-6 py-10">
       <AgreementDetail
@@ -243,6 +268,16 @@ export default async function AgreementDetailPage({
         }
         versions={versionHistory?.items}
         uploadVersionAction={canUploadVersion ? uploadVersionAction : undefined}
+        startApprovalReviewAction={
+          capabilities?.reviews_assign &&
+          versionHistory?.items.some(
+            (version) =>
+              version.id === versionHistory.current_version_id &&
+              version.processing_state === "completed",
+          )
+            ? startApprovalReviewAction
+            : undefined
+        }
       />
       {eligiblePlaybooks && eligiblePlaybooks.length > 0 ? (
         <section className="mt-8 rounded-2xl border border-slate-200 bg-white p-5">

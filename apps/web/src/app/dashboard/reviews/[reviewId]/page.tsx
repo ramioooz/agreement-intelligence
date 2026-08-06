@@ -99,6 +99,9 @@ export default async function ReviewDetailPage({
         review={data.review}
         title={`Review ${data.review.id}`}
         workflow={workflowValue}
+        assignments={data.assignments.filter(
+          (assignment) => assignment.review_id === data?.review.id,
+        )}
       />
     </main>
   );

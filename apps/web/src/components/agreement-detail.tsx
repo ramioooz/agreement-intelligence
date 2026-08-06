@@ -14,6 +14,7 @@ type AgreementDetailProps = {
   startAnalysisAction?: () => void | Promise<void>;
   versions?: AgreementVersion[];
   uploadVersionAction?: (formData: FormData) => void | Promise<void>;
+  startApprovalReviewAction?: () => void | Promise<void>;
   analysis?: DocumentAnalysis;
 };
 
@@ -51,6 +52,7 @@ export function AgreementDetail({
   startAnalysisAction,
   versions = [],
   uploadVersionAction,
+  startApprovalReviewAction,
   analysis,
 }: AgreementDetailProps) {
   const file = agreement.files[0];
@@ -96,6 +98,16 @@ export function AgreementDetail({
           >
             Review playbook findings
           </Link>
+        ) : null}
+        {startApprovalReviewAction ? (
+          <form action={startApprovalReviewAction} className="mt-4">
+            <button
+              className="ml-2 inline-flex rounded-full border border-slate-300 px-4 py-2 text-sm font-semibold"
+              type="submit"
+            >
+              Start approval review
+            </button>
+          </form>
         ) : null}
         {versions.filter((version) => version.processing_state === "completed")
           .length >= 2 ? (
