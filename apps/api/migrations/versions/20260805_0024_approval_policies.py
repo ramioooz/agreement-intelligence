@@ -20,7 +20,33 @@ BUSINESS_APPROVER_ROLE_ID = UUID("11111111-1111-4111-8111-111111111117")
 APPROVAL_POLICIES_MANAGE_PERMISSION_ID = UUID("22222222-2222-4222-8222-22222222222d")
 
 
+def _widen_permission_key() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "sqlite":
+        with op.batch_alter_table("permissions") as batch_op:
+            batch_op.alter_column(
+                "key",
+                existing_type=sa.String(length=17),
+                type_=sa.String(length=64),
+                existing_nullable=False,
+            )
+        return
+
+    op.alter_column(
+        "permissions",
+        "key",
+        existing_type=sa.String(length=17),
+        type_=sa.String(length=64),
+        existing_nullable=False,
+    )
+
+
 def upgrade() -> None:
+    # The identity catalog originally sized permission keys for the initial
+    # entries. Approval-policy administration introduces a longer key, so
+    # widen the column before seeding it during a fresh migration run.
+    _widen_permission_key()
+
     op.create_table(
         "approval_policies",
         sa.Column("id", sa.Uuid(), nullable=False),
