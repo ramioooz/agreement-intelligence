@@ -16,7 +16,11 @@ from agreement_intelligence_api.approval_policies.models import (
 from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
-from agreement_intelligence_api.reviews.models import ReviewCaseRecord
+from agreement_intelligence_api.reviews.models import (
+    ReviewAssignmentRecord,
+    ReviewCaseRecord,
+    ReviewNotificationEventRecord,
+)
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowConflictError,
     ReviewWorkflowCoordinator,
@@ -66,6 +70,23 @@ def test_starting_a_review_activates_the_first_stage_and_persists_a_resume_check
     assert workflow.stages[0].state == "active"
     assert workflow.stages[1].state == "pending"
     assert [event.event_type for event in workflow.pending_events] == ["review.workflow.resume"]
+
+
+def test_stage_activation_assigns_each_eligible_actor_once(session: Session) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    coordinator = ReviewWorkflowCoordinator(session)
+    coordinator.start(
+        review_id=review.id, policy_version_id=policy_version.id, correlation_id="assign"
+    )
+    coordinator.start(
+        review_id=review.id, policy_version_id=policy_version.id, correlation_id="repeat"
+    )
+    assignments = session.query(ReviewAssignmentRecord).filter_by(review_id=review.id).all()
+    notifications = (
+        session.query(ReviewNotificationEventRecord).filter_by(review_id=review.id).all()
+    )
+    assert len(assignments) == 1
+    assert len(notifications) == 1
 
 
 def test_submitter_cannot_approve_and_stage_requires_eligible_role(session: Session) -> None:

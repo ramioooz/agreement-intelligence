@@ -196,6 +196,44 @@ def test_review_comment_timeline_and_notification_indicator_are_visible_only_to_
     assert unrelated.get("/reviews/notifications", params=seeded.scope).json()["unread_count"] == 0
 
 
+def test_business_approver_can_read_inbox(
+    session: Session, client_for_session: Callable[[UUID], TestClient]
+) -> None:
+    seeded = _seed_scope(session)
+    identity = IdentityService(session)
+    approver = identity.provision_user(
+        issuer="https://identity.example/realms/demo",
+        subject=f"approver-{uuid4()}",
+        display_name="Approver",
+    )
+    membership = identity.grant_membership(
+        organization_id=seeded.organization_id,
+        user_id=approver.id,
+        role_key=RoleKey.BUSINESS_APPROVER,
+    )
+    identity.grant_workspace_membership(
+        organization_id=seeded.organization_id,
+        membership_id=membership.id,
+        workspace_id=seeded.workspace_id,
+    )
+    session.commit()
+    assigner = client_for_session(seeded.assigner_id)
+    review = assigner.post(
+        "/reviews",
+        params=seeded.scope,
+        json={"agreement_id": str(seeded.agreement_id), "idempotency_key": "business-inbox"},
+    ).json()
+    assigned = assigner.post(
+        f"/reviews/{review['id']}/assignments",
+        params=seeded.scope,
+        json={"assignee_id": str(approver.id), "idempotency_key": "business-assignment"},
+    )
+    assert assigned.status_code == 201
+    inbox = client_for_session(approver.id).get("/reviews/inbox", params=seeded.scope)
+    assert inbox.status_code == 200
+    assert inbox.json()[0]["assignee_id"] == str(approver.id)
+
+
 class _Scope:
     def __init__(
         self,

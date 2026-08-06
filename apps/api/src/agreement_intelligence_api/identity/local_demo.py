@@ -22,6 +22,7 @@ DEMO_ORGANIZATION_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 DEMO_WORKSPACE_ID = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 DEMO_REVIEWER_SUBJECT = UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 DEMO_ADMIN_SUBJECT = UUID("dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+DEMO_BUSINESS_APPROVER_SUBJECT = UUID("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")
 
 
 def provision_local_demo_identities(
@@ -33,7 +34,10 @@ def provision_local_demo_identities(
         raise RuntimeError("OIDC_ISSUER must be configured before demo identity provisioning")
     reviewer_username = environ.get("DEMO_REVIEWER_USERNAME", "legal.reviewer")
     admin_username = environ.get("DEMO_ADMIN_USERNAME", "platform.admin")
-    subjects = _keycloak_subjects_by_username([reviewer_username, admin_username])
+    business_username = environ.get("DEMO_BUSINESS_APPROVER_USERNAME", "business.approver")
+    subjects = _keycloak_subjects_by_username(
+        [reviewer_username, admin_username, business_username]
+    )
 
     reviewer = identity.provision_user(
         issuer=configured_issuer,
@@ -49,9 +53,19 @@ def provision_local_demo_identities(
         display_name=_display_name("DEMO_ADMIN", "Platform Administrator"),
         email=environ.get("DEMO_ADMIN_EMAIL", "platform.admin@example.test"),
     )
-    _revoke_stale_demo_memberships(identity, users=[reviewer, admin])
+    business_approver = identity.provision_user(
+        issuer=configured_issuer,
+        subject=subjects.get(business_username)
+        or environ.get("DEMO_BUSINESS_APPROVER_SUBJECT", str(DEMO_BUSINESS_APPROVER_SUBJECT)),
+        display_name=_display_name("DEMO_BUSINESS_APPROVER", "Business Approver"),
+        email=environ.get("DEMO_BUSINESS_APPROVER_EMAIL", "business.approver@example.test"),
+    )
+    _revoke_stale_demo_memberships(identity, users=[reviewer, admin, business_approver])
     _grant_configured_membership(identity, user=reviewer, admin_matches=False)
     _grant_configured_membership(identity, user=admin, admin_matches=True)
+    _grant_configured_membership(
+        identity, user=business_approver, admin_matches=False, business_matches=True
+    )
 
 
 def grant_local_demo_membership(
@@ -62,15 +76,26 @@ def grant_local_demo_membership(
     configured_reviewer_username = environ.get("DEMO_REVIEWER_USERNAME", "legal.reviewer")
     configured_admin_username = environ.get("DEMO_ADMIN_USERNAME", "platform.admin")
     configured_admin_subject = environ.get("DEMO_ADMIN_SUBJECT", str(DEMO_ADMIN_SUBJECT))
+    configured_business_subject = environ.get(
+        "DEMO_BUSINESS_APPROVER_SUBJECT", str(DEMO_BUSINESS_APPROVER_SUBJECT)
+    )
+    configured_business_username = environ.get(
+        "DEMO_BUSINESS_APPROVER_USERNAME", "business.approver"
+    )
     reviewer_matches = subject == configured_subject and username == configured_reviewer_username
     admin_matches = subject == configured_admin_subject and username == configured_admin_username
-    if not reviewer_matches and not admin_matches:
+    business_matches = (
+        subject == configured_business_subject and username == configured_business_username
+    )
+    if not reviewer_matches and not admin_matches and not business_matches:
         return
-    _grant_configured_membership(identity, user=user, admin_matches=admin_matches)
+    _grant_configured_membership(
+        identity, user=user, admin_matches=admin_matches, business_matches=business_matches
+    )
 
 
 def _grant_configured_membership(
-    identity: IdentityService, *, user: User, admin_matches: bool
+    identity: IdentityService, *, user: User, admin_matches: bool, business_matches: bool = False
 ) -> None:
     identity.scope_organization(DEMO_ORGANIZATION_ID)
     organization = identity.session.get(Organization, DEMO_ORGANIZATION_ID)
@@ -82,6 +107,14 @@ def _grant_configured_membership(
             organization_id=organization.id,
             user_id=user.id,
             role_key=RoleKey.PLATFORM_ADMIN,
+        )
+        return
+    if business_matches:
+        membership = identity.grant_membership(
+            organization_id=organization.id, user_id=user.id, role_key=RoleKey.BUSINESS_APPROVER
+        )
+        identity.grant_workspace_membership(
+            organization_id=organization.id, membership_id=membership.id, workspace_id=workspace.id
         )
         return
     for role_key in (RoleKey.LEGAL_REVIEWER, RoleKey.BUSINESS_USER):

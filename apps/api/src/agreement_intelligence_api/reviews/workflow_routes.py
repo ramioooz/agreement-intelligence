@@ -17,11 +17,15 @@ from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.reviews.export import _render_pdf
 from agreement_intelligence_api.reviews.models import (
+    PlaybookEvaluationRecord,
+    PlaybookFindingRecord,
+    ReviewAssignmentRecord,
     ReviewCaseRecord,
     ReviewCommentRecord,
     ReviewFinalPackageRecord,
     ReviewWorkflowDecisionRecord,
     ReviewWorkflowRecord,
+    ReviewWorkflowStageRecord,
 )
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowCoordinator,
@@ -231,6 +235,38 @@ def _create_final_package(
         .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)
         .order_by(ReviewWorkflowDecisionRecord.occurred_at)
     ).all()
+    stages = session.scalars(
+        select(ReviewWorkflowStageRecord)
+        .where(ReviewWorkflowStageRecord.workflow_id == workflow.id)
+        .order_by(ReviewWorkflowStageRecord.ordinal)
+    ).all()
+    assignments = session.scalars(
+        select(ReviewAssignmentRecord)
+        .where(ReviewAssignmentRecord.review_id == review.id)
+        .order_by(ReviewAssignmentRecord.created_at)
+    ).all()
+    comments = session.scalars(
+        select(ReviewCommentRecord)
+        .where(ReviewCommentRecord.review_id == review.id)
+        .order_by(ReviewCommentRecord.created_at)
+    ).all()
+    audit_refs = session.scalars(
+        select(AuditEventRecord)
+        .where(AuditEventRecord.organization_id == review.organization_id)
+        .where(AuditEventRecord.workspace_id == review.workspace_id)
+        .where(AuditEventRecord.resource_id == review.id)
+        .order_by(AuditEventRecord.occurred_at)
+    ).all()
+    findings = session.scalars(
+        select(PlaybookFindingRecord)
+        .join(
+            PlaybookEvaluationRecord,
+            PlaybookEvaluationRecord.id == PlaybookFindingRecord.evaluation_id,
+        )
+        .where(PlaybookFindingRecord.organization_id == review.organization_id)
+        .where(PlaybookFindingRecord.workspace_id == review.workspace_id)
+        .where(PlaybookEvaluationRecord.agreement_id == review.agreement_id)
+    ).all()
     manifest = {
         "review_id": str(review.id),
         "agreement_id": str(review.agreement_id),
@@ -250,6 +286,44 @@ def _create_final_package(
             }
             for item in decisions
         ],
+        "stages": [
+            {
+                "id": str(item.id),
+                "ordinal": item.ordinal,
+                "state": item.state,
+                "activated_at": item.activated_at.isoformat() if item.activated_at else None,
+                "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+            }
+            for item in stages
+        ],
+        "assignments": [
+            {
+                "id": str(item.id),
+                "assignee_id": str(item.assignee_id),
+                "status": item.status,
+                "due_at": item.due_at.isoformat() if item.due_at else None,
+            }
+            for item in assignments
+        ],
+        "comments": [
+            {
+                "id": str(item.id),
+                "author_id": str(item.author_id),
+                "finding_id": str(item.finding_id) if item.finding_id else None,
+                "created_at": item.created_at.isoformat(),
+            }
+            for item in comments
+        ],
+        "findings": [
+            {
+                "id": str(item.id),
+                "result": item.result,
+                "severity": item.severity,
+                "citation_ids": item.citation_ids,
+            }
+            for item in findings
+        ],
+        "audit_event_ids": [str(item.id) for item in audit_refs],
         "provenance": {"source": "postgresql", "workflow_revision": workflow.revision},
     }
     manifest_content = dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
@@ -314,7 +388,9 @@ def decide_workflow(
     principal: PrincipalDependency,
     session: SessionDependency,
 ) -> ReviewWorkflowResponse:
-    review = _review_for_permission(session, review_id, principal, PermissionKey.REVIEWS_APPROVE)
+    review = _review_for_any_permission(
+        session, review_id, principal, (PermissionKey.REVIEWS_DECIDE, PermissionKey.REVIEWS_APPROVE)
+    )
     workflow = session.scalar(
         select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
     )
@@ -345,6 +421,29 @@ def _review_for_permission(
         organization_id=review.organization_id,
         workspace_id=review.workspace_id,
         permission=permission,
+    ):
+        hide_resource()
+    return review
+
+
+def _review_for_any_permission(
+    session: Session,
+    review_id: UUID,
+    principal: Principal,
+    permissions: tuple[PermissionKey, ...],
+) -> ReviewCaseRecord:
+    review = session.get(ReviewCaseRecord, review_id)
+    if review is None:
+        hide_resource()
+    identity = IdentityService(session)
+    if not any(
+        identity.can_access_workspace(
+            principal,
+            organization_id=review.organization_id,
+            workspace_id=review.workspace_id,
+            permission=permission,
+        )
+        for permission in permissions
     ):
         hide_resource()
     return review
