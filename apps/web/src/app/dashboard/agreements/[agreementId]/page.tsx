@@ -161,6 +161,11 @@ export default async function AgreementDetailPage({
     0,
     ...(versionHistory?.items.map((version) => version.version_number) ?? []),
   );
+  const currentCompletedVersionId = versionHistory?.items.find(
+    (version) =>
+      version.id === versionHistory.current_version_id &&
+      version.processing_state === "completed",
+  )?.id;
 
   async function retryAction() {
     "use server";
@@ -230,18 +235,13 @@ export default async function AgreementDetailPage({
 
   async function startApprovalReviewAction() {
     "use server";
-    const currentVersion = versionHistory?.items.find(
-      (version) => version.id === versionHistory.current_version_id,
-    );
-    if (!currentVersion || currentVersion.processing_state !== "completed") {
-      return;
-    }
+    if (!currentCompletedVersionId) return;
     const review = await startReview({
       scope: retryScope,
       token: await getKeycloakAccessToken(await headers()),
       request: {
         agreement_id: retryAgreementId,
-        agreement_version_id: currentVersion.id,
+        agreement_version_id: currentCompletedVersionId,
         idempotency_key: crypto.randomUUID(),
       },
     });
@@ -269,12 +269,7 @@ export default async function AgreementDetailPage({
         versions={versionHistory?.items}
         uploadVersionAction={canUploadVersion ? uploadVersionAction : undefined}
         startApprovalReviewAction={
-          capabilities?.reviews_assign &&
-          versionHistory?.items.some(
-            (version) =>
-              version.id === versionHistory.current_version_id &&
-              version.processing_state === "completed",
-          )
+          capabilities?.reviews_assign && currentCompletedVersionId
             ? startApprovalReviewAction
             : undefined
         }

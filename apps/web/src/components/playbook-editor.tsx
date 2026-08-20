@@ -585,7 +585,7 @@ export function PlaybookEditor({
           onClick={() => setAddingRule(true)}
           type="button"
         >
-          Add rule
+          Add another rule
         </button>
       ) : null}
 

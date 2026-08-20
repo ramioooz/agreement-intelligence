@@ -31,4 +31,28 @@ describe("ApprovalPolicyAdmin", () => {
       }),
     );
   });
+
+  it("publishes a draft through its stable policy lineage identifier", async () => {
+    const onPublish = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ApprovalPolicyAdmin
+        onCreate={vi.fn()}
+        onPublish={onPublish}
+        policies={[
+          {
+            id: "version-1",
+            policy_id: "policy-1",
+            name: "Two-stage approval",
+            version: 1,
+            status: "draft",
+            jurisdiction: "any",
+          },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Publish version 1" }));
+
+    expect(onPublish).toHaveBeenCalledWith("policy-1", 1);
+  });
 });

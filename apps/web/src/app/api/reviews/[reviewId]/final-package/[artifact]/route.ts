@@ -27,10 +27,15 @@ export async function GET(
       headers: { Authorization: `Bearer ${session.accessToken}` },
     },
   );
+  const extension = artifact === "pdf" ? "pdf" : "json";
   return applyRefreshedKeycloakSession(
     new Response(response.body, {
       status: response.status,
       headers: {
+        "Cache-Control": "private, no-store",
+        "Content-Disposition":
+          response.headers.get("Content-Disposition") ??
+          `attachment; filename="review-${reviewId}-final-package.${extension}"`,
         "Content-Type":
           response.headers.get("Content-Type") ?? "application/json",
       },

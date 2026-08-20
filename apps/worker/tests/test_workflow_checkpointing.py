@@ -1,12 +1,56 @@
+from contextlib import contextmanager
+from typing import Any
 from uuid import uuid4
 
+from agreement_intelligence_worker import review_workflow
 from agreement_intelligence_worker.review_workflow import (
+    PostgresWorkflowCheckpointStore,
     SQLAlchemyWorkflowEventProcessor,
     workflow_events,
     workflow_metadata,
     workflows,
 )
 from sqlalchemy import create_engine, insert, select
+
+
+def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
+    monkeypatch: Any,
+) -> None:
+    calls: list[str] = []
+
+    class FakeCheckpointer:
+        def setup(self) -> None:
+            calls.append("setup")
+
+    @contextmanager
+    def saver_factory(database_url: str) -> Any:
+        assert database_url == "postgresql://worker"
+        yield FakeCheckpointer()
+
+    store = PostgresWorkflowCheckpointStore(
+        "postgresql://worker",
+        saver_factory=saver_factory,
+    )
+
+    assert calls == ["setup"]
+
+    class FakeGraph:
+        def invoke(self, state: object, *, config: object) -> None:
+            calls.append("invoke")
+
+    monkeypatch.setattr(
+        review_workflow,
+        "_compiled_checkpoint_graph",
+        lambda checkpointer: FakeGraph(),
+    )
+
+    store.persist(
+        checkpoint_id=uuid4(),
+        workflow_id=uuid4(),
+        event_type="review.workflow.resume",
+    )
+
+    assert calls == ["setup", "invoke"]
 
 
 class RecordingCheckpointStore:

@@ -189,30 +189,47 @@ def test_transient_completion_handler_failure_recovers_on_redelivery() -> None:
     ]
 
 
-def test_completing_a_job_updates_the_parent_agreement_state(tmp_path: Path) -> None:
-    from agreement_intelligence_worker.processing import agreements, processing_jobs
+def test_completing_a_version_job_updates_agreement_and_version_state(tmp_path: Path) -> None:
+    from agreement_intelligence_worker.processing import (
+        agreement_versions,
+        agreements,
+        processing_jobs,
+    )
 
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'processing.db'}")
     create_processing_tables(engine)
     job_id = uuid4()
     agreement_id = uuid4()
+    version_id = uuid4()
     organization_id = uuid4()
+    workspace_id = uuid4()
     now = datetime.now(UTC)
     with engine.begin() as connection:
         connection.execute(
             agreements.insert().values(
                 id=agreement_id,
                 organization_id=organization_id,
+                current_version_id=version_id,
                 processing_state="queued",
                 updated_at=now,
+            )
+        )
+        connection.execute(
+            agreement_versions.insert().values(
+                id=version_id,
+                agreement_id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                processing_state="queued",
             )
         )
         connection.execute(
             processing_jobs.insert().values(
                 id=job_id,
                 organization_id=organization_id,
-                workspace_id=uuid4(),
+                workspace_id=workspace_id,
                 agreement_id=agreement_id,
+                version_id=version_id,
                 idempotency_key="processing-v1",
                 profile="baseline",
                 state="processing",
@@ -235,11 +252,17 @@ def test_completing_a_job_updates_the_parent_agreement_state(tmp_path: Path) -> 
     )
 
     with engine.connect() as connection:
-        state = connection.execute(
+        agreement_state = connection.execute(
             select(agreements.c.processing_state).where(agreements.c.id == agreement_id),
         ).scalar_one()
+        version_state = connection.execute(
+            select(agreement_versions.c.processing_state).where(
+                agreement_versions.c.id == version_id
+            ),
+        ).scalar_one()
 
-    assert state == "completed"
+    assert agreement_state == "completed"
+    assert version_state == "completed"
 
 
 def test_completing_a_deleted_job_is_a_safe_no_op(tmp_path: Path) -> None:

@@ -95,11 +95,18 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     .fill("Escalate uncapped liability for legal approval.");
   await ruleForm.getByRole("button", { name: "Add rule" }).click();
   await expect(
-    page.locator('input[value="Prohibit unlimited liability"]'),
+    page.getByRole("heading", {
+      name: "Edit rule: Prohibit unlimited liability",
+    }),
   ).toBeVisible();
 
   await page.reload();
-  await page.getByRole("button", { name: "Add rule" }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Edit rule: Prohibit unlimited liability",
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Add another rule" }).click();
   const secondRuleForm = page
     .getByRole("heading", { name: "Add rule" })
     .locator("..");
@@ -122,7 +129,9 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     .fill("Confirm the survival period.");
   await secondRuleForm.getByRole("button", { name: "Add rule" }).click();
   await expect(
-    page.locator('input[value="Confidentiality survival"]'),
+    page.getByRole("heading", {
+      name: "Edit rule: Confidentiality survival",
+    }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Publish version" }).click();
   await expect(page.getByText(/^Published · Version \d+$/)).toBeVisible();
@@ -208,7 +217,7 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
 
   await page.keyboard.press("Tab");
   const liabilityFinding = page.getByRole("button", {
-    name: /Liability — Prohibit unlimited liability.*High severity/,
+    name: /Limitation of liability — Prohibit unlimited liability.*High severity/,
   });
   await expect(liabilityFinding).toBeFocused();
   await expect(liabilityFinding).toHaveAttribute("aria-pressed", "false");

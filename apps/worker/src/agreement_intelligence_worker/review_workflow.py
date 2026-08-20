@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 from uuid import UUID
@@ -85,19 +87,32 @@ class SQSWorkflowMessageReceiver:
 
 
 class PostgresWorkflowCheckpointStore:
-    def __init__(self, database_url: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        saver_factory: Callable[[str], AbstractContextManager[Any]] | None = None,
+    ) -> None:
         self._database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+        self._saver_factory = saver_factory or (
+            lambda connection_string: PostgresSaver.from_conn_string(connection_string)
+        )
+        with self._saver_factory(self._database_url) as checkpointer:
+            checkpointer.setup()
 
     def persist(self, *, checkpoint_id: UUID, workflow_id: UUID, event_type: str) -> None:
-        graph = StateGraph(GraphState)
-        graph.add_node("checkpoint", lambda state: state)
-        graph.add_edge(START, "checkpoint")
-        with PostgresSaver.from_conn_string(self._database_url) as checkpointer:
-            checkpointer.setup()
-            graph.compile(checkpointer=checkpointer).invoke(
+        with self._saver_factory(self._database_url) as checkpointer:
+            _compiled_checkpoint_graph(checkpointer).invoke(
                 {"workflow_id": str(workflow_id), "event_type": event_type},
                 config={"configurable": {"thread_id": str(checkpoint_id)}},
             )
+
+
+def _compiled_checkpoint_graph(checkpointer: Any) -> Any:
+    graph = StateGraph(GraphState)
+    graph.add_node("checkpoint", lambda state: state)
+    graph.add_edge(START, "checkpoint")
+    return graph.compile(checkpointer=checkpointer)
 
 
 class SQLAlchemyWorkflowEventProcessor:
