@@ -25,6 +25,7 @@ from agreement_intelligence_api.reviews.models import (
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowConflictError,
     ReviewWorkflowCoordinator,
+    _workflow_for_decision_update,
 )
 from agreement_intelligence_api.reviews.workflow_routes import (
     _store_verified_immutable,
@@ -74,6 +75,14 @@ def test_existing_immutable_package_object_must_match_the_expected_checksum() ->
             content=b"{}",
             content_type="application/json",
         )
+
+
+def test_decision_processing_locks_the_workflow_before_validating_revision() -> None:
+    statement = _workflow_for_decision_update(uuid4())
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
+
+    assert "FOR UPDATE OF review_workflows" in sql
 
 
 @pytest.fixture

@@ -18,6 +18,7 @@ from sqlalchemy.sql import Select
 
 
 class GraphState(TypedDict):
+    event_id: str
     workflow_id: str
     event_type: str
 
@@ -52,7 +53,14 @@ class WorkflowMessageReceiver(Protocol):
 
 
 class WorkflowCheckpointStore(Protocol):
-    def persist(self, *, checkpoint_id: UUID, workflow_id: UUID, event_type: str) -> None: ...
+    def persist(
+        self,
+        *,
+        event_id: UUID,
+        checkpoint_id: UUID,
+        workflow_id: UUID,
+        event_type: str,
+    ) -> None: ...
 
 
 class SQSWorkflowMessageReceiver:
@@ -101,11 +109,31 @@ class PostgresWorkflowCheckpointStore:
         with self._saver_factory(self._database_url) as checkpointer:
             checkpointer.setup()
 
-    def persist(self, *, checkpoint_id: UUID, workflow_id: UUID, event_type: str) -> None:
+    def persist(
+        self,
+        *,
+        event_id: UUID,
+        checkpoint_id: UUID,
+        workflow_id: UUID,
+        event_type: str,
+    ) -> None:
+        config = {
+            "configurable": {
+                "thread_id": str(checkpoint_id),
+                "checkpoint_ns": f"event:{event_id}",
+            }
+        }
         with self._saver_factory(self._database_url) as checkpointer:
-            _compiled_checkpoint_graph(checkpointer).invoke(
-                {"workflow_id": str(workflow_id), "event_type": event_type},
-                config={"configurable": {"thread_id": str(checkpoint_id)}},
+            graph = _compiled_checkpoint_graph(checkpointer)
+            if graph.get_state(config).values:
+                return
+            graph.invoke(
+                {
+                    "event_id": str(event_id),
+                    "workflow_id": str(workflow_id),
+                    "event_type": event_type,
+                },
+                config=config,
             )
 
 
@@ -127,6 +155,7 @@ class SQLAlchemyWorkflowEventProcessor:
             if row is None or row["processed_at"] is not None:
                 return False
             self._checkpoints.persist(
+                event_id=event_id,
                 checkpoint_id=row["checkpoint_id"],
                 workflow_id=row["workflow_id"],
                 event_type=row["event_type"],

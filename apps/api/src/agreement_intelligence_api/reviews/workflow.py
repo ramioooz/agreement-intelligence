@@ -20,6 +20,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.sql import Select
 
 from agreement_intelligence_api.approval_policies.models import (
     ApprovalPolicyStageRecord,
@@ -112,6 +113,20 @@ class WorkflowSnapshot:
     revision: int
     stages: tuple[WorkflowStageSnapshot, ...]
     pending_events: tuple[WorkflowEventSnapshot, ...]
+
+
+def _workflow_for_decision_update(
+    workflow_id: UUID,
+) -> Select[tuple[ReviewWorkflowRecord]]:
+    return (
+        select(ReviewWorkflowRecord)
+        .options(
+            selectinload(ReviewWorkflowRecord.stages),
+            selectinload(ReviewWorkflowRecord.outbox_events),
+        )
+        .where(ReviewWorkflowRecord.id == workflow_id)
+        .with_for_update(of=ReviewWorkflowRecord)
+    )
 
 
 class ReviewWorkflowCoordinator:
@@ -224,7 +239,9 @@ class ReviewWorkflowCoordinator:
         expected_revision: int,
         correlation_id: str,
     ) -> WorkflowSnapshot:
-        workflow = self._workflow(workflow_id)
+        workflow = self._session.scalar(_workflow_for_decision_update(workflow_id))
+        if workflow is None:
+            raise ReviewWorkflowConflictError
         existing = self._session.scalar(
             select(ReviewWorkflowDecisionRecord)
             .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)

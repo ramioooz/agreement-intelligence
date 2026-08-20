@@ -44,9 +44,20 @@ def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
 
     assert calls == ["setup"]
 
+    class Snapshot:
+        def __init__(self, values: dict[str, object]) -> None:
+            self.values = values
+
+    states: dict[str, dict[str, object]] = {}
+
     class FakeGraph:
-        def invoke(self, state: object, *, config: object) -> None:
+        def get_state(self, config: dict[str, dict[str, str]]) -> Snapshot:
+            namespace = config["configurable"]["checkpoint_ns"]
+            return Snapshot(states.get(namespace, {}))
+
+        def invoke(self, state: dict[str, object], *, config: dict[str, dict[str, str]]) -> None:
             calls.append("invoke")
+            states[config["configurable"]["checkpoint_ns"]] = state
 
     monkeypatch.setattr(
         review_workflow,
@@ -54,7 +65,15 @@ def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
         lambda checkpointer: FakeGraph(),
     )
 
+    event_id = uuid4()
     store.persist(
+        event_id=event_id,
+        checkpoint_id=uuid4(),
+        workflow_id=uuid4(),
+        event_type="review.workflow.resume",
+    )
+    store.persist(
+        event_id=event_id,
         checkpoint_id=uuid4(),
         workflow_id=uuid4(),
         event_type="review.workflow.resume",
@@ -65,10 +84,17 @@ def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
 
 class RecordingCheckpointStore:
     def __init__(self) -> None:
-        self.calls: list[tuple[object, object, object]] = []
+        self.calls: list[tuple[object, object, object, object]] = []
 
-    def persist(self, *, checkpoint_id: object, workflow_id: object, event_type: object) -> None:
-        self.calls.append((checkpoint_id, workflow_id, event_type))
+    def persist(
+        self,
+        *,
+        event_id: object,
+        checkpoint_id: object,
+        workflow_id: object,
+        event_type: object,
+    ) -> None:
+        self.calls.append((event_id, checkpoint_id, workflow_id, event_type))
 
 
 def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() -> None:
@@ -90,7 +116,7 @@ def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() ->
 
     assert processor.process(event_id) is True
     assert processor.process(event_id) is False
-    assert checkpoints.calls == [(checkpoint_id, workflow_id, "review.workflow.resume")]
+    assert checkpoints.calls == [(event_id, checkpoint_id, workflow_id, "review.workflow.resume")]
     with engine.connect() as connection:
         assert (
             connection.scalar(
