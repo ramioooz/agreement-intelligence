@@ -12,6 +12,7 @@ describe("DashboardShell", () => {
           name: "Legal Reviewer",
         }}
         signOutAction={() => undefined}
+        canManagePolicies
       />,
     );
 
