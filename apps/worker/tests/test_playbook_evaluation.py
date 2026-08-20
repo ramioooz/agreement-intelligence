@@ -70,6 +70,24 @@ def test_prohibited_language_in_grounded_clause_is_non_compliant() -> None:
     assert findings[0].severity == "critical"
 
 
+def test_liability_extraction_alias_matches_limitation_of_liability_rule() -> None:
+    findings = evaluate_playbook(
+        [
+            PlaybookRule(
+                id="prohibited-unlimited-liability",
+                clause_type="limitation_of_liability",
+                policy_type="prohibited",
+                preferred_language="unlimited liability",
+                severity="critical",
+            )
+        ],
+        _analysis(_clause("liability", "The supplier accepts unlimited liability.")),
+    )
+
+    assert findings[0].result is FindingResult.NON_COMPLIANT
+    assert findings[0].citation_ids == ["citation-liability"]
+
+
 def test_satisfied_findings_do_not_receive_fallback_suggestions() -> None:
     findings = evaluate_playbook(
         [

@@ -126,7 +126,7 @@ describe("PlaybookEditor", () => {
     expect(
       screen.queryByRole("heading", { name: "Add rule" }),
     ).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add another rule" }));
 
     expect(
       screen.getByRole("heading", { name: "Add rule" }),
@@ -141,12 +141,14 @@ describe("PlaybookEditor", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add another rule" }));
     fireEvent.click(screen.getByRole("button", { name: "Discard rule" }));
 
     expect(
       screen.queryByRole("heading", { name: "Add rule" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Add rule" })).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Add another rule" }),
+    ).toBeVisible();
   });
 });

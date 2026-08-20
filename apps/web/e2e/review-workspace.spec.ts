@@ -3,12 +3,6 @@ import { expect, test, type Page } from "@playwright/test";
 const adminPassword = process.env.DEMO_ADMIN_PASSWORD;
 const reviewerPassword = process.env.DEMO_REVIEWER_PASSWORD;
 
-if (!adminPassword || !reviewerPassword) {
-  throw new Error(
-    "DEMO_ADMIN_PASSWORD and DEMO_REVIEWER_PASSWORD must be set to run the review workspace E2E test.",
-  );
-}
-
 function pdfWithText(text: string): Buffer {
   const escapedText = text
     .replaceAll("\\", "\\\\")
@@ -48,6 +42,10 @@ async function signIn(page: Page, username: string, password: string) {
 test("a legal reviewer filters high-severity findings and opens cited evidence by keyboard", async ({
   page,
 }) => {
+  test.skip(
+    !adminPassword || !reviewerPassword,
+    "DEMO_ADMIN_PASSWORD and DEMO_REVIEWER_PASSWORD are required for this E2E test.",
+  );
   test.setTimeout(90_000);
   const unique = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const agreementFamily = "client_agreement";
@@ -95,11 +93,18 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     .fill("Escalate uncapped liability for legal approval.");
   await ruleForm.getByRole("button", { name: "Add rule" }).click();
   await expect(
-    page.locator('input[value="Prohibit unlimited liability"]'),
+    page.getByRole("heading", {
+      name: "Edit rule: Prohibit unlimited liability",
+    }),
   ).toBeVisible();
 
   await page.reload();
-  await page.getByRole("button", { name: "Add rule" }).click();
+  await expect(
+    page.getByRole("heading", {
+      name: "Edit rule: Prohibit unlimited liability",
+    }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Add another rule" }).click();
   const secondRuleForm = page
     .getByRole("heading", { name: "Add rule" })
     .locator("..");
@@ -122,7 +127,9 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     .fill("Confirm the survival period.");
   await secondRuleForm.getByRole("button", { name: "Add rule" }).click();
   await expect(
-    page.locator('input[value="Confidentiality survival"]'),
+    page.getByRole("heading", {
+      name: "Edit rule: Confidentiality survival",
+    }),
   ).toBeVisible();
   await page.getByRole("button", { name: "Publish version" }).click();
   await expect(page.getByText(/^Published · Version \d+$/)).toBeVisible();
@@ -208,7 +215,7 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
 
   await page.keyboard.press("Tab");
   const liabilityFinding = page.getByRole("button", {
-    name: /Liability — Prohibit unlimited liability.*High severity/,
+    name: /Limitation of liability — Prohibit unlimited liability.*High severity/,
   });
   await expect(liabilityFinding).toBeFocused();
   await expect(liabilityFinding).toHaveAttribute("aria-pressed", "false");

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypedDict
 from uuid import UUID
@@ -12,9 +14,11 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
 from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, select, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql import Select
 
 
 class GraphState(TypedDict):
+    event_id: str
     workflow_id: str
     event_type: str
 
@@ -49,7 +53,14 @@ class WorkflowMessageReceiver(Protocol):
 
 
 class WorkflowCheckpointStore(Protocol):
-    def persist(self, *, checkpoint_id: UUID, workflow_id: UUID, event_type: str) -> None: ...
+    def persist(
+        self,
+        *,
+        event_id: UUID,
+        checkpoint_id: UUID,
+        workflow_id: UUID,
+        event_type: str,
+    ) -> None: ...
 
 
 class SQSWorkflowMessageReceiver:
@@ -85,19 +96,53 @@ class SQSWorkflowMessageReceiver:
 
 
 class PostgresWorkflowCheckpointStore:
-    def __init__(self, database_url: str) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        saver_factory: Callable[[str], AbstractContextManager[Any]] | None = None,
+    ) -> None:
         self._database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
-
-    def persist(self, *, checkpoint_id: UUID, workflow_id: UUID, event_type: str) -> None:
-        graph = StateGraph(GraphState)
-        graph.add_node("checkpoint", lambda state: state)
-        graph.add_edge(START, "checkpoint")
-        with PostgresSaver.from_conn_string(self._database_url) as checkpointer:
+        self._saver_factory = saver_factory or (
+            lambda connection_string: PostgresSaver.from_conn_string(connection_string)
+        )
+        with self._saver_factory(self._database_url) as checkpointer:
             checkpointer.setup()
-            graph.compile(checkpointer=checkpointer).invoke(
-                {"workflow_id": str(workflow_id), "event_type": event_type},
-                config={"configurable": {"thread_id": str(checkpoint_id)}},
+
+    def persist(
+        self,
+        *,
+        event_id: UUID,
+        checkpoint_id: UUID,
+        workflow_id: UUID,
+        event_type: str,
+    ) -> None:
+        config = {
+            "configurable": {
+                # Each durable outbox event is its own top-level checkpoint thread.
+                # LangGraph reserves checkpoint namespaces for compiled subgraphs.
+                "thread_id": f"review-workflow-event:{event_id}",
+            }
+        }
+        with self._saver_factory(self._database_url) as checkpointer:
+            graph = _compiled_checkpoint_graph(checkpointer)
+            if graph.get_state(config).values:
+                return
+            graph.invoke(
+                {
+                    "event_id": str(event_id),
+                    "workflow_id": str(workflow_id),
+                    "event_type": event_type,
+                },
+                config=config,
             )
+
+
+def _compiled_checkpoint_graph(checkpointer: Any) -> Any:
+    graph = StateGraph(GraphState)
+    graph.add_node("checkpoint", lambda state: state)
+    graph.add_edge(START, "checkpoint")
+    return graph.compile(checkpointer=checkpointer)
 
 
 class SQLAlchemyWorkflowEventProcessor:
@@ -107,18 +152,11 @@ class SQLAlchemyWorkflowEventProcessor:
 
     def process(self, event_id: UUID) -> bool:
         with self._engine.begin() as connection:
-            row = (
-                connection.execute(
-                    select(workflow_events, workflows.c.checkpoint_id)
-                    .join(workflows, workflows.c.id == workflow_events.c.workflow_id)
-                    .where(workflow_events.c.id == event_id)
-                )
-                .mappings()
-                .one_or_none()
-            )
+            row = connection.execute(_workflow_event_for_update(event_id)).mappings().one_or_none()
             if row is None or row["processed_at"] is not None:
                 return False
             self._checkpoints.persist(
+                event_id=event_id,
                 checkpoint_id=row["checkpoint_id"],
                 workflow_id=row["workflow_id"],
                 event_type=row["event_type"],
@@ -130,6 +168,15 @@ class SQLAlchemyWorkflowEventProcessor:
                 .values(processed_at=func.now())
             )
         return True
+
+
+def _workflow_event_for_update(event_id: UUID) -> Select[Any]:
+    return (
+        select(workflow_events, workflows.c.checkpoint_id)
+        .join(workflows, workflows.c.id == workflow_events.c.workflow_id)
+        .where(workflow_events.c.id == event_id)
+        .with_for_update(of=workflow_events)
+    )
 
 
 async def run_workflow_loop(

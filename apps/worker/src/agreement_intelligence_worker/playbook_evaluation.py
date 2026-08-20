@@ -245,7 +245,8 @@ def evaluate_playbook(
         candidates = [
             clause
             for clause in clauses
-            if _normalized(clause.get("category")) == _normalized(rule.clause_type)
+            if _canonical_clause_type(clause.get("category"))
+            == _canonical_clause_type(rule.clause_type)
         ]
         finding, selected_clause = _deterministic_finding(rule, candidates)
         if _may_assess_semantically(rule, finding, selected_clause, semantic_assessor):
@@ -416,6 +417,13 @@ def _clauses(analysis: Mapping[str, object]) -> list[Mapping[str, object]]:
 
 def _normalized(value: object) -> str:
     return re.sub(r"[^a-z0-9]+", "_", _string(value, "").casefold()).strip("_")
+
+
+def _canonical_clause_type(value: object) -> str:
+    normalized = _normalized(value)
+    return {
+        "liability": "limitation_of_liability",
+    }.get(normalized, normalized)
 
 
 def _confidence(clause: Mapping[str, object]) -> float:

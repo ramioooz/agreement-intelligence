@@ -69,7 +69,7 @@ class SQLAlchemyAgreementRepository:
             select(AgreementRecord)
             .where(AgreementRecord.organization_id == organization_id)
             .where(AgreementRecord.workspace_id == workspace_id)
-            .order_by(AgreementRecord.created_at, AgreementRecord.id)
+            .order_by(AgreementRecord.created_at.desc(), AgreementRecord.id.desc())
         )
         if query is not None:
             statement = statement.where(func.lower(AgreementRecord.title).contains(query.lower()))

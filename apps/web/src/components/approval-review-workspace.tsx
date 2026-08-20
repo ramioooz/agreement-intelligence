@@ -27,6 +27,8 @@ export type FinalReviewPackage = {
   pdf_url: string;
   manifest_url: string;
   checksum: string;
+  manifest_checksum?: string | null;
+  pdf_checksum?: string | null;
   created_at: string;
 };
 
@@ -124,6 +126,12 @@ export function ApprovalReviewWorkspace({
           created_at: review.created_at,
         }
       : null);
+  const packageDownloadUrls = resolvedFinalPackage
+    ? {
+        pdf: `/api/reviews/${review.id}/final-package/pdf`,
+        manifest: `/api/reviews/${review.id}/final-package/manifest`,
+      }
+    : null;
 
   async function submitComment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -355,16 +363,26 @@ export function ApprovalReviewWorkspace({
                   Generated {dateTime(resolvedFinalPackage.created_at)} ·{" "}
                   {resolvedFinalPackage.checksum}
                 </p>
+                {resolvedFinalPackage.manifest_checksum ? (
+                  <p className="mt-2 break-all font-mono text-xs text-slate-600">
+                    Manifest {resolvedFinalPackage.manifest_checksum}
+                  </p>
+                ) : null}
+                {resolvedFinalPackage.pdf_checksum ? (
+                  <p className="mt-1 break-all font-mono text-xs text-slate-600">
+                    PDF {resolvedFinalPackage.pdf_checksum}
+                  </p>
+                ) : null}
                 <div className="mt-4 flex flex-wrap gap-3">
                   <a
                     className="rounded-lg bg-slate-950 px-4 py-2 text-sm font-semibold text-white"
-                    href={resolvedFinalPackage.pdf_url}
+                    href={packageDownloadUrls?.pdf}
                   >
                     Download final PDF
                   </a>
                   <a
                     className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold"
-                    href={resolvedFinalPackage.manifest_url}
+                    href={packageDownloadUrls?.manifest}
                   >
                     Download JSON manifest
                   </a>

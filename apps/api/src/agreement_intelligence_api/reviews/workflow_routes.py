@@ -7,11 +7,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Select
 
 from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.db import get_session
-from agreement_intelligence_api.documents.storage import storage_from_environment
+from agreement_intelligence_api.documents.storage import DocumentStorage, storage_from_environment
 from agreement_intelligence_api.identity.authz import Principal, current_principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -228,8 +229,17 @@ def _stored_package(session: Session, review: ReviewCaseRecord) -> ReviewFinalPa
 def _create_final_package(
     session: Session, review: ReviewCaseRecord, workflow: ReviewWorkflowRecord
 ) -> ReviewFinalPackageRecord:
+    locked_workflow = session.scalar(_workflow_for_package_update(review.id))
+    if locked_workflow is None:
+        raise HTTPException(status_code=409, detail="final_package_not_ready")
+    workflow = locked_workflow
     if workflow.state not in {"approved", "rejected", "revision_requested"}:
         raise HTTPException(status_code=409, detail="final_package_not_ready")
+    existing_package = session.scalar(
+        select(ReviewFinalPackageRecord).where(ReviewFinalPackageRecord.review_id == review.id)
+    )
+    if existing_package is not None:
+        return existing_package
     decisions = session.scalars(
         select(ReviewWorkflowDecisionRecord)
         .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)
@@ -342,10 +352,18 @@ def _create_final_package(
     manifest_key = f"{base}/manifest.json"
     pdf_key = f"{base}/report.pdf"
     storage = storage_from_environment()
-    storage.put_immutable(
-        manifest_key, manifest_content, content_type="application/json", sha256=manifest_checksum
+    _store_verified_immutable(
+        storage,
+        key=manifest_key,
+        content=manifest_content,
+        content_type="application/json",
     )
-    storage.put_immutable(pdf_key, pdf_content, content_type="application/pdf", sha256=pdf_checksum)
+    _store_verified_immutable(
+        storage,
+        key=pdf_key,
+        content=pdf_content,
+        content_type="application/pdf",
+    )
     package = ReviewFinalPackageRecord(
         organization_id=review.organization_id,
         workspace_id=review.workspace_id,
@@ -378,6 +396,38 @@ def _create_final_package(
     session.commit()
     session.refresh(package)
     return package
+
+
+def _workflow_for_package_update(review_id: UUID) -> Select[tuple[ReviewWorkflowRecord]]:
+    return (
+        select(ReviewWorkflowRecord)
+        .where(ReviewWorkflowRecord.review_id == review_id)
+        .with_for_update(of=ReviewWorkflowRecord)
+    )
+
+
+def _store_verified_immutable(
+    storage: DocumentStorage,
+    *,
+    key: str,
+    content: bytes,
+    content_type: str,
+) -> None:
+    checksum = sha256(content).hexdigest()
+    if storage.put_immutable(
+        key,
+        content,
+        content_type=content_type,
+        sha256=checksum,
+    ):
+        return
+    stored = storage.read(key)
+    if (
+        stored is None
+        or stored.content_type != content_type
+        or sha256(stored.content).hexdigest() != checksum
+    ):
+        raise HTTPException(status_code=409, detail="final_package_object_conflict")
 
 
 @router.post("/{review_id}/workflow/decisions", response_model=ReviewWorkflowResponse)

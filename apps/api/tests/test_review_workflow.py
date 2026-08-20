@@ -13,6 +13,7 @@ from agreement_intelligence_api.approval_policies.models import (
     ApprovalPolicyStageRecord,
     ApprovalPolicyVersionRecord,
 )
+from agreement_intelligence_api.documents.storage import StoredDocument
 from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -24,10 +25,65 @@ from agreement_intelligence_api.reviews.models import (
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowConflictError,
     ReviewWorkflowCoordinator,
+    _workflow_for_decision_update,
 )
+from agreement_intelligence_api.reviews.workflow_routes import (
+    _store_verified_immutable,
+    _workflow_for_package_update,
+)
+from fastapi import HTTPException
 from sqlalchemy import create_engine, event
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
+
+
+class _ImmutableStorage:
+    def __init__(self, existing: bytes | None = None) -> None:
+        self.existing = existing
+
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        if self.existing is not None:
+            return False
+        self.existing = content
+        return True
+
+    def read(self, key: str) -> StoredDocument | None:
+        if self.existing is None:
+            return None
+        return StoredDocument(content=self.existing, content_type="application/json")
+
+    def delete(self, key: str) -> None:
+        raise AssertionError("immutable final-package objects must not be deleted")
+
+
+def test_final_package_creation_locks_the_workflow_before_checking_for_an_existing_row() -> None:
+    statement = _workflow_for_package_update(uuid4())
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
+
+    assert "FOR UPDATE OF review_workflows" in sql
+
+
+def test_existing_immutable_package_object_must_match_the_expected_checksum() -> None:
+    storage = _ImmutableStorage(existing=b"different package")
+
+    with pytest.raises(HTTPException, match="final_package_object_conflict"):
+        _store_verified_immutable(
+            storage,
+            key="reviews/example/final-package/manifest.json",
+            content=b"{}",
+            content_type="application/json",
+        )
+
+
+def test_decision_processing_locks_the_workflow_before_validating_revision() -> None:
+    statement = _workflow_for_decision_update(uuid4())
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
+
+    assert "FOR UPDATE OF review_workflows" in sql
+    assert statement.get_execution_options()["populate_existing"] is True
 
 
 @pytest.fixture

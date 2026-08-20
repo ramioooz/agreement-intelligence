@@ -38,8 +38,18 @@ agreements = Table(
     processing_metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("current_version_id", Uuid(as_uuid=True), nullable=True),
     Column("processing_state", String(32), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+)
+agreement_versions = Table(
+    "agreement_versions",
+    processing_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("agreement_id", Uuid(as_uuid=True), nullable=False),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
+    Column("processing_state", String(32), nullable=False),
 )
 processing_jobs = Table(
     "processing_jobs",
@@ -48,6 +58,7 @@ processing_jobs = Table(
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("agreement_id", Uuid(as_uuid=True), nullable=False),
+    Column("version_id", Uuid(as_uuid=True), nullable=True),
     Column("idempotency_key", String(255), nullable=False),
     Column("profile", String(100), nullable=False),
     Column("source_storage_key", String(1024), nullable=True),
@@ -545,12 +556,26 @@ def _update_agreement_processing_state(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
             {"organization_id": str(job["organization_id"])},
         )
+    version_id = cast(UUID | None, job["version_id"])
+    agreement_scope = [
+        agreements.c.id == job["agreement_id"],
+        agreements.c.organization_id == job["organization_id"],
+    ]
+    if version_id is not None:
+        agreement_scope.append(agreements.c.current_version_id == version_id)
+        connection.execute(
+            update(agreement_versions)
+            .where(
+                agreement_versions.c.id == version_id,
+                agreement_versions.c.agreement_id == job["agreement_id"],
+                agreement_versions.c.organization_id == job["organization_id"],
+                agreement_versions.c.workspace_id == job["workspace_id"],
+            )
+            .values(processing_state=state)
+        )
     connection.execute(
         update(agreements)
-        .where(
-            agreements.c.id == job["agreement_id"],
-            agreements.c.organization_id == job["organization_id"],
-        )
+        .where(*agreement_scope)
         .values(processing_state=state, updated_at=updated_at)
     )
 

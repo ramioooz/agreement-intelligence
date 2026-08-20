@@ -323,7 +323,7 @@ def test_list_scopes_results_filters_and_uses_cursor_pagination(
     )
 
     assert first_page.status_code == 200
-    assert first_page.json()["items"] == [first.json()]
+    assert first_page.json()["items"] == [second.json()]
     assert first_page.json()["page"] == {"limit": 1, "next_cursor": "1"}
 
     second_page = client.get(
@@ -332,7 +332,7 @@ def test_list_scopes_results_filters_and_uses_cursor_pagination(
     )
 
     assert second_page.status_code == 200
-    assert second_page.json()["items"] == [second.json()]
+    assert second_page.json()["items"] == [first.json()]
     assert second_page.json()["page"] == {"limit": 1, "next_cursor": None}
 
     filtered = client.get(

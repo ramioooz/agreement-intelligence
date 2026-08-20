@@ -91,9 +91,11 @@ describe("ApprovalReviewWorkspace", () => {
         canDecide={false}
         comments={[]}
         finalPackage={{
-          manifest_url: "/api/reviews/review-1/package/manifest",
-          pdf_url: "/api/reviews/review-1/package/report",
+          manifest_url: "/reviews/review-1/final-package/manifest",
+          pdf_url: "/reviews/review-1/final-package/pdf",
           checksum: "sha256:package",
+          manifest_checksum: "sha256:manifest",
+          pdf_checksum: "sha256:pdf",
           created_at: "2026-08-05T13:00:00Z",
         }}
         review={{ ...review, state: "approved" }}
@@ -103,10 +105,12 @@ describe("ApprovalReviewWorkspace", () => {
 
     expect(
       screen.getByRole("link", { name: "Download final PDF" }),
-    ).toHaveAttribute("href", "/api/reviews/review-1/package/report");
+    ).toHaveAttribute("href", "/api/reviews/review-1/final-package/pdf");
     expect(
       screen.getByRole("link", { name: "Download JSON manifest" }),
-    ).toHaveAttribute("href", "/api/reviews/review-1/package/manifest");
+    ).toHaveAttribute("href", "/api/reviews/review-1/final-package/manifest");
+    expect(screen.getByText("Manifest sha256:manifest")).toBeVisible();
+    expect(screen.getByText("PDF sha256:pdf")).toBeVisible();
   });
 
   it("records an approval against the workflow revision", async () => {

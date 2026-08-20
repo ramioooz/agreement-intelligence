@@ -2,12 +2,6 @@ import { expect, test, type Page } from "@playwright/test";
 
 const adminPassword = process.env.DEMO_ADMIN_PASSWORD;
 
-if (!adminPassword) {
-  throw new Error(
-    "DEMO_ADMIN_PASSWORD must be set to run the grounded search E2E test.",
-  );
-}
-
 async function signIn(page: Page) {
   await page.getByRole("button", { name: "Continue with Keycloak" }).click();
   await page
@@ -20,6 +14,10 @@ async function signIn(page: Page) {
 test("an administrator runs a scoped search and sees grounded Q&A boundaries", async ({
   page,
 }) => {
+  test.skip(
+    !adminPassword,
+    "DEMO_ADMIN_PASSWORD is required for this E2E test.",
+  );
   await page.goto("/dashboard/search");
   await signIn(page);
   await page.getByRole("link", { name: "Search" }).click();

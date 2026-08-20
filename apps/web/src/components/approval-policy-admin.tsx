@@ -27,6 +27,7 @@ export type ApprovalPolicyDraft = {
 type ApprovalPolicyAdminProps = {
   policies: Array<{
     id: string;
+    policy_id: string;
     name: string;
     version: number;
     status: string;
@@ -290,7 +291,7 @@ export function ApprovalPolicyAdmin({
             {policy.status === "draft" && onPublish ? (
               <button
                 className="mt-4 rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold"
-                onClick={() => onPublish(policy.id, policy.version)}
+                onClick={() => onPublish(policy.policy_id, policy.version)}
                 type="button"
               >
                 Publish version {policy.version}

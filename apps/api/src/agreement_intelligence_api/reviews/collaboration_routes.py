@@ -63,6 +63,8 @@ def start_review(
         principal, organization_id=organization_id, workspace_id=workspace_id, request=request
     )
     if created:
+        identity = IdentityService(session)
+        identity.scope_organization(organization_id)
         agreement = session.scalar(
             select(AgreementRecord).where(
                 AgreementRecord.id == review.agreement_id,
@@ -76,7 +78,7 @@ def start_review(
             and agreement is not None
             and agreement.agreement_type in {"client_agreement", "liquidity_provider_agreement"}
         ):
-            routed = ApprovalPolicyService(session, IdentityService(session)).route(
+            routed = ApprovalPolicyService(session, identity).route(
                 principal,
                 organization_id=organization_id,
                 workspace_id=workspace_id,

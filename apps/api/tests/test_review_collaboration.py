@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
@@ -13,8 +14,10 @@ from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
 from agreement_intelligence_api.reviews.models import ReviewAssignmentRecord, ReviewCommentRecord
+from alembic import command
+from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -232,6 +235,50 @@ def test_business_approver_can_read_inbox(
     inbox = client_for_session(approver.id).get("/reviews/inbox", params=seeded.scope)
     assert inbox.status_code == 200
     assert inbox.json()[0]["assignee_id"] == str(approver.id)
+
+
+def test_review_start_reapplies_tenant_scope_after_creation_commit(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    scoped_organizations: list[UUID] = []
+    original_scope_organization = IdentityService.scope_organization
+
+    def track_scope(service: IdentityService, organization_id: UUID) -> None:
+        scoped_organizations.append(organization_id)
+        original_scope_organization(service, organization_id)
+
+    monkeypatch.setattr(IdentityService, "scope_organization", track_scope)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "review-tenant-scope",
+        },
+    )
+
+    assert response.status_code == 201
+    assert scoped_organizations == [seeded.organization_id]
+
+
+def test_notification_migration_adds_worker_processing_marker(tmp_path: Path) -> None:
+    database_path = tmp_path / "review-notifications.db"
+    config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", f"sqlite+pysqlite:///{database_path}")
+
+    command.upgrade(config, "head")
+
+    columns = {
+        column["name"]
+        for column in inspect(create_engine(f"sqlite+pysqlite:///{database_path}")).get_columns(
+            "review_notification_events"
+        )
+    }
+    assert "processed_at" in columns
 
 
 class _Scope:
