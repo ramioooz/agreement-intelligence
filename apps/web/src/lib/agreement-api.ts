@@ -48,6 +48,10 @@ export type WorkspaceCapabilities = {
   agreements_delete: boolean;
   agreements_update: boolean;
   playbooks_manage: boolean;
+  reviews_assign: boolean;
+  reviews_decide: boolean;
+  reviews_approve: boolean;
+  approval_policies_manage: boolean;
 };
 
 export type AgreementVersion = {

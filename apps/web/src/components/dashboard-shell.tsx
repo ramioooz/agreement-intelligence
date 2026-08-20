@@ -8,6 +8,7 @@ type DashboardUser = {
 type DashboardShellProps = {
   user: DashboardUser;
   signOutAction: () => void | Promise<void>;
+  canManagePolicies?: boolean;
 };
 
 const navigationItems: Array<{
@@ -43,7 +44,11 @@ const navigationItems: Array<{
   },
 ];
 
-export function DashboardShell({ user, signOutAction }: DashboardShellProps) {
+export function DashboardShell({
+  user,
+  signOutAction,
+  canManagePolicies = false,
+}: DashboardShellProps) {
   const displayName = user.name || "Authenticated user";
   const email = user.email || "No email claim provided";
 
@@ -86,38 +91,42 @@ export function DashboardShell({ user, signOutAction }: DashboardShellProps) {
           aria-label="Agreement workspace navigation"
           className="mt-8 grid gap-4 md:grid-cols-2 xl:grid-cols-5"
         >
-          {navigationItems.map((item) => (
-            <article
-              aria-label={item.label}
-              className="rounded-3xl border border-white/10 bg-white/[0.06] p-5"
-              key={item.label}
-            >
-              <div className="flex items-center justify-between gap-3">
-                {item.href ? (
-                  <Link
-                    className="font-semibold underline-offset-4 hover:underline"
-                    href={item.href}
-                  >
-                    {item.label}
-                  </Link>
-                ) : (
-                  <span className="font-semibold">{item.label}</span>
-                )}
-                {!item.href ? (
-                  <span className="rounded-full bg-amber-300/15 px-2.5 py-1 text-xs font-semibold text-amber-100">
-                    Coming soon
-                  </span>
-                ) : (
-                  <span className="rounded-full bg-emerald-300/15 px-2.5 py-1 text-xs font-semibold text-emerald-100">
-                    Available
-                  </span>
-                )}
-              </div>
-              <p className="mt-4 text-sm leading-6 text-slate-300">
-                {item.summary}
-              </p>
-            </article>
-          ))}
+          {navigationItems
+            .filter(
+              (item) => item.label !== "Administration" || canManagePolicies,
+            )
+            .map((item) => (
+              <article
+                aria-label={item.label}
+                className="rounded-3xl border border-white/10 bg-white/[0.06] p-5"
+                key={item.label}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  {item.href ? (
+                    <Link
+                      className="font-semibold underline-offset-4 hover:underline"
+                      href={item.href}
+                    >
+                      {item.label}
+                    </Link>
+                  ) : (
+                    <span className="font-semibold">{item.label}</span>
+                  )}
+                  {!item.href ? (
+                    <span className="rounded-full bg-amber-300/15 px-2.5 py-1 text-xs font-semibold text-amber-100">
+                      Coming soon
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-emerald-300/15 px-2.5 py-1 text-xs font-semibold text-emerald-100">
+                      Available
+                    </span>
+                  )}
+                </div>
+                <p className="mt-4 text-sm leading-6 text-slate-300">
+                  {item.summary}
+                </p>
+              </article>
+            ))}
         </nav>
       </section>
     </main>

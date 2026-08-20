@@ -99,7 +99,7 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
   ).toBeVisible();
 
   await page.reload();
-  await page.locator('button[type="button"]', { hasText: "Add rule" }).click();
+  await page.getByRole("button", { name: "Add rule" }).click();
   const secondRuleForm = page
     .getByRole("heading", { name: "Add rule" })
     .locator("..");

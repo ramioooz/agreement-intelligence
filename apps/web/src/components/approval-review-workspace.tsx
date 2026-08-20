@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 
 export type ApprovalReview = {
   id: string;
@@ -36,7 +36,15 @@ export type ApprovalWorkflow = {
     "waiting_for_approval" | "approved" | "rejected" | "revision_requested";
   active_stage_ordinal: number | null;
   revision: number;
-  stages?: Array<{ ordinal: number; state: string }>;
+  stages?: Array<{
+    ordinal: number;
+    state: string;
+    assignments?: Array<{
+      assignee_id: string;
+      status: string;
+      due_at: string | null;
+    }>;
+  }>;
 };
 
 type ApprovalReviewWorkspaceProps = {
@@ -46,6 +54,13 @@ type ApprovalReviewWorkspaceProps = {
   canDecide: boolean;
   workflow?: ApprovalWorkflow | null;
   finalPackage?: FinalReviewPackage | null;
+  assignments?: Array<{
+    id: string;
+    review_id: string;
+    assignee_id: string;
+    status: string;
+    due_at: string | null;
+  }>;
 };
 
 function label(value: string): string {
@@ -69,6 +84,7 @@ export function ApprovalReviewWorkspace({
   canDecide,
   workflow,
   finalPackage,
+  assignments = [],
 }: ApprovalReviewWorkspaceProps) {
   const [commentBody, setCommentBody] = useState("");
   const [commentItems, setCommentItems] = useState(comments);
@@ -76,6 +92,11 @@ export function ApprovalReviewWorkspace({
   const [error, setError] = useState<string>();
   const [activeWorkflow, setActiveWorkflow] = useState(workflow);
   const [deciding, setDeciding] = useState(false);
+  useEffect(() => {
+    if (activeWorkflow?.state !== "waiting_for_approval") return;
+    const timer = window.setTimeout(() => window.location.reload(), 10_000);
+    return () => window.clearTimeout(timer);
+  }, [activeWorkflow?.state, activeWorkflow?.revision]);
   const timeline = useMemo(
     () => [
       {
@@ -298,6 +319,26 @@ export function ApprovalReviewWorkspace({
                   </li>
                 ))}
               </ol>
+            ) : null}
+            {assignments.length > 0 ? (
+              <div className="mt-5 border-t border-slate-200 pt-4">
+                <h3 className="font-semibold">Assignments</h3>
+                <ul className="mt-2 space-y-2 text-sm">
+                  {assignments.map((assignment) => (
+                    <li
+                      className="flex justify-between gap-3"
+                      key={assignment.id}
+                    >
+                      <span className="font-mono text-xs">
+                        {assignment.assignee_id}
+                      </span>
+                      <span className="font-semibold">
+                        {label(assignment.status)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
           </section>
 

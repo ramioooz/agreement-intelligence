@@ -306,12 +306,20 @@ def test_workspace_capabilities_are_resolved_from_application_authorization(
         "agreements_delete": True,
         "agreements_update": True,
         "playbooks_manage": True,
+        "reviews_assign": True,
+        "reviews_decide": True,
+        "reviews_approve": True,
+        "approval_policies_manage": True,
     }
     assert reviewer_response.status_code == 200
     assert reviewer_response.json() == {
         "agreements_delete": False,
         "agreements_update": False,
         "playbooks_manage": False,
+        "reviews_assign": False,
+        "reviews_decide": True,
+        "reviews_approve": False,
+        "approval_policies_manage": False,
     }
 
 
