@@ -6,11 +6,21 @@ from agreement_intelligence_worker import review_workflow
 from agreement_intelligence_worker.review_workflow import (
     PostgresWorkflowCheckpointStore,
     SQLAlchemyWorkflowEventProcessor,
+    _workflow_event_for_update,
     workflow_events,
     workflow_metadata,
     workflows,
 )
 from sqlalchemy import create_engine, insert, select
+from sqlalchemy.dialects import postgresql
+
+
+def test_workflow_event_delivery_locks_the_outbox_row_before_checkpointing() -> None:
+    statement = _workflow_event_for_update(uuid4())
+
+    sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
+
+    assert "FOR UPDATE OF review_workflow_outbox" in sql
 
 
 def test_postgres_checkpoint_schema_is_initialized_before_event_processing(

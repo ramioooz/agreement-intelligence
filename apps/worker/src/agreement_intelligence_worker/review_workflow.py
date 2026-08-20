@@ -14,6 +14,7 @@ from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
 from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, select, update
 from sqlalchemy.engine import Engine
+from sqlalchemy.sql import Select
 
 
 class GraphState(TypedDict):
@@ -122,15 +123,7 @@ class SQLAlchemyWorkflowEventProcessor:
 
     def process(self, event_id: UUID) -> bool:
         with self._engine.begin() as connection:
-            row = (
-                connection.execute(
-                    select(workflow_events, workflows.c.checkpoint_id)
-                    .join(workflows, workflows.c.id == workflow_events.c.workflow_id)
-                    .where(workflow_events.c.id == event_id)
-                )
-                .mappings()
-                .one_or_none()
-            )
+            row = connection.execute(_workflow_event_for_update(event_id)).mappings().one_or_none()
             if row is None or row["processed_at"] is not None:
                 return False
             self._checkpoints.persist(
@@ -145,6 +138,15 @@ class SQLAlchemyWorkflowEventProcessor:
                 .values(processed_at=func.now())
             )
         return True
+
+
+def _workflow_event_for_update(event_id: UUID) -> Select[Any]:
+    return (
+        select(workflow_events, workflows.c.checkpoint_id)
+        .join(workflows, workflows.c.id == workflow_events.c.workflow_id)
+        .where(workflow_events.c.id == event_id)
+        .with_for_update(of=workflow_events)
+    )
 
 
 async def run_workflow_loop(
