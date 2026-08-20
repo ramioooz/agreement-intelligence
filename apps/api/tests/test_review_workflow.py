@@ -83,6 +83,7 @@ def test_decision_processing_locks_the_workflow_before_validating_revision() -> 
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
 
     assert "FOR UPDATE OF review_workflows" in sql
+    assert statement.get_execution_options()["populate_existing"] is True
 
 
 @pytest.fixture

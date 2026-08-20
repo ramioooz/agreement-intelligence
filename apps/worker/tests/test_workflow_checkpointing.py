@@ -11,6 +11,7 @@ from agreement_intelligence_worker.review_workflow import (
     workflow_metadata,
     workflows,
 )
+from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.dialects import postgresql
 
@@ -21,6 +22,25 @@ def test_workflow_event_delivery_locks_the_outbox_row_before_checkpointing() -> 
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
 
     assert "FOR UPDATE OF review_workflow_outbox" in sql
+
+
+def test_checkpoint_graph_accepts_an_event_derived_top_level_thread() -> None:
+    graph = review_workflow._compiled_checkpoint_graph(InMemorySaver())
+    event_id = uuid4()
+    config = {"configurable": {"thread_id": f"review-workflow-event:{event_id}"}}
+
+    assert graph.get_state(config).values == {}
+
+    graph.invoke(
+        {
+            "event_id": str(event_id),
+            "workflow_id": str(uuid4()),
+            "event_type": "review.workflow.resume",
+        },
+        config=config,
+    )
+
+    assert graph.get_state(config).values["event_id"] == str(event_id)
 
 
 def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
@@ -52,12 +72,13 @@ def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
 
     class FakeGraph:
         def get_state(self, config: dict[str, dict[str, str]]) -> Snapshot:
-            namespace = config["configurable"]["checkpoint_ns"]
-            return Snapshot(states.get(namespace, {}))
+            assert "checkpoint_ns" not in config["configurable"]
+            thread_id = config["configurable"]["thread_id"]
+            return Snapshot(states.get(thread_id, {}))
 
         def invoke(self, state: dict[str, object], *, config: dict[str, dict[str, str]]) -> None:
             calls.append("invoke")
-            states[config["configurable"]["checkpoint_ns"]] = state
+            states[config["configurable"]["thread_id"]] = state
 
     monkeypatch.setattr(
         review_workflow,

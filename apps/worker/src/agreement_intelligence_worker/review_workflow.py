@@ -119,8 +119,9 @@ class PostgresWorkflowCheckpointStore:
     ) -> None:
         config = {
             "configurable": {
-                "thread_id": str(checkpoint_id),
-                "checkpoint_ns": f"event:{event_id}",
+                # Each durable outbox event is its own top-level checkpoint thread.
+                # LangGraph reserves checkpoint namespaces for compiled subgraphs.
+                "thread_id": f"review-workflow-event:{event_id}",
             }
         }
         with self._saver_factory(self._database_url) as checkpointer:

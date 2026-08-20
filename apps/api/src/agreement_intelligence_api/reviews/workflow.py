@@ -126,6 +126,7 @@ def _workflow_for_decision_update(
         )
         .where(ReviewWorkflowRecord.id == workflow_id)
         .with_for_update(of=ReviewWorkflowRecord)
+        .execution_options(populate_existing=True)
     )
 
 
