@@ -117,7 +117,7 @@ def answer_question(
         [(snippet.anchor.anchor_id, snippet.text) for snippet in authorized_evidence],
         {snippet.anchor.anchor_id for snippet in authorized_evidence},
     )
-    if guardrail_decision.status == "block":
+    if guardrail_decision.status != "allow":
         return _refusal(
             "insufficient_evidence",
             "The authorized evidence cannot be used safely for this question.",

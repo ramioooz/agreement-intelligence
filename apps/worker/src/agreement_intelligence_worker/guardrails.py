@@ -24,6 +24,10 @@ _TOOL_OR_WRITE_ACTION = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _BASE64_TOKEN = re.compile(r"\b(?:[A-Za-z0-9+/]{4})+(?:={0,2})\b")
+_HEX_TOKEN = re.compile(r"\b(?:[0-9a-fA-F]{2}){8,}\b")
+_MAX_DECODE_DEPTH = 2
+_MAX_DECODE_CANDIDATES = 8
+_MAX_DECODE_CHARACTERS = 4_096
 
 
 @dataclass(frozen=True)
@@ -82,14 +86,34 @@ def validate_untrusted_evidence(
 
 def _decoded_text_candidates(text: str) -> tuple[str, ...]:
     candidates: list[str] = []
-    for token in _BASE64_TOKEN.findall(text):
-        try:
-            decoded = base64.b64decode(token, validate=True).decode("utf-8")
-        except (UnicodeDecodeError, binascii.Error):
-            continue
-        if decoded.isprintable():
-            candidates.append(decoded)
+    pending = [text[:_MAX_DECODE_CHARACTERS]]
+    for _ in range(_MAX_DECODE_DEPTH):
+        next_pending: list[str] = []
+        for value in pending:
+            for token in (*_BASE64_TOKEN.findall(value), *_HEX_TOKEN.findall(value)):
+                decoded = _decode_token(token)
+                if decoded is not None and decoded not in candidates:
+                    candidates.append(decoded)
+                    next_pending.append(decoded)
+                    if len(candidates) >= _MAX_DECODE_CANDIDATES:
+                        return tuple(candidates)
+        pending = next_pending
+        if not pending:
+            break
     return tuple(candidates)
+
+
+def _decode_token(token: str) -> str | None:
+    try:
+        if _HEX_TOKEN.fullmatch(token):
+            decoded = bytes.fromhex(token)
+        else:
+            padded = token + "=" * (-len(token) % 4)
+            decoded = base64.urlsafe_b64decode(padded)
+        value = decoded.decode("utf-8")
+    except (UnicodeDecodeError, ValueError, binascii.Error):
+        return None
+    return value if value.isprintable() and len(value) <= _MAX_DECODE_CHARACTERS else None
 
 
 def _is_prohibited_decoded_request(text: str) -> bool:

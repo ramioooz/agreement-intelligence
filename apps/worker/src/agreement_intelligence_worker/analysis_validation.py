@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
@@ -97,7 +97,7 @@ class ValidatedAnalysis:
 
 
 def validate_provider_analysis(
-    analysis: ProviderAnalysis, allowed_anchor_ids: set[str]
+    analysis: ProviderAnalysis, allowed_anchor_ids: Mapping[str, str] | set[str]
 ) -> ValidatedAnalysis:
     """Validate and bound provider output before it becomes an artifact."""
     allowed_anchors = _allowed_anchors(allowed_anchor_ids)
@@ -111,13 +111,18 @@ def validate_provider_analysis(
     return ValidatedAnalysis(classification, clauses, risks, summaries, provenance)
 
 
-def _allowed_anchors(anchors: set[str]) -> set[str]:
+def _allowed_anchors(anchors: Mapping[str, str] | set[str]) -> dict[str, str]:
     if len(anchors) > MAX_CITATION_ANCHORS * MAX_CLAUSES:
         raise ProviderOutputValidationError("Too many allowed citation anchors")
-    return {_string(anchor, "citation anchor") for anchor in anchors}
+    if isinstance(anchors, Mapping):
+        return {
+            _string(anchor, "citation anchor"): _string(text, "requested evidence")
+            for anchor, text in anchors.items()
+        }
+    return {_string(anchor, "citation anchor"): "" for anchor in anchors}
 
 
-def _classification(value: object, allowed_anchors: set[str]) -> Classification:
+def _classification(value: object, allowed_anchors: dict[str, str]) -> Classification:
     payload = _mapping(value, "classification")
     _required_keys(payload, {"family", "confidence", "rationale", "citation_anchor_ids"})
     rationale = _string(payload["rationale"], "classification rationale")
@@ -135,7 +140,7 @@ def _classification(value: object, allowed_anchors: set[str]) -> Classification:
     return claim
 
 
-def _clause(value: object, allowed_anchors: set[str]) -> Clause:
+def _clause(value: object, allowed_anchors: dict[str, str]) -> Clause:
     payload = _mapping(value, "clause")
     _required_keys(
         payload,
@@ -154,10 +159,17 @@ def _clause(value: object, allowed_anchors: set[str]) -> Clause:
         "citation_anchor_ids": _citations(payload["citation_anchor_ids"], allowed_anchors),
     }
     _require_evidence(claim["citation_anchor_ids"])
+    if not any(
+        _excerpt_is_in_requested_evidence(claim["source_excerpt"], allowed_anchors[anchor_id])
+        for anchor_id in claim["citation_anchor_ids"]
+    ):
+        raise ProviderOutputValidationError(
+            "Provider source excerpt is not supported by cited evidence"
+        )
     return claim
 
 
-def _risk(value: object, allowed_anchors: set[str]) -> Risk:
+def _risk(value: object, allowed_anchors: dict[str, str]) -> Risk:
     payload = _mapping(value, "risk")
     _required_keys(
         payload,
@@ -180,7 +192,7 @@ def _risk(value: object, allowed_anchors: set[str]) -> Risk:
     return claim
 
 
-def _summaries(value: object, allowed_anchors: set[str]) -> dict[str, Summary]:
+def _summaries(value: object, allowed_anchors: dict[str, str]) -> dict[str, Summary]:
     payload = _mapping(value, "summaries")
     if set(payload) != SUMMARY_TYPES:
         raise ProviderOutputValidationError("Provider response is missing required summaries")
@@ -236,8 +248,8 @@ def _provenance(analysis: ProviderAnalysis) -> Provenance:
 def _claims[Claim](
     values: object,
     limit: int,
-    validator: Callable[[object, set[str]], Claim],
-    allowed_anchors: set[str],
+    validator: Callable[[object, dict[str, str]], Claim],
+    allowed_anchors: dict[str, str],
     name: str,
 ) -> list[Claim]:
     items = _list(values, name)
@@ -254,13 +266,21 @@ def _normalized_field(value: object) -> NormalizedField:
     }
 
 
-def _citations(value: object, allowed_anchors: set[str]) -> list[str]:
+def _citations(value: object, allowed_anchors: dict[str, str]) -> list[str]:
     citations = _list(value, "citation anchors")
     _bounded_collection(citations, MAX_CITATION_ANCHORS, "citation anchors")
     anchor_ids = [_string(anchor, "citation anchor") for anchor in citations]
     if not set(anchor_ids).issubset(allowed_anchors):
         raise ProviderOutputValidationError("Provider referenced an unknown citation anchor")
     return anchor_ids
+
+
+def _excerpt_is_in_requested_evidence(excerpt: str, evidence: str) -> bool:
+    return not evidence or _normalized_evidence_text(excerpt) in _normalized_evidence_text(evidence)
+
+
+def _normalized_evidence_text(value: str) -> str:
+    return " ".join(value.casefold().replace("’", "'").replace("‘", "'").split())
 
 
 def _require_evidence(citation_anchor_ids: list[str]) -> None:

@@ -32,6 +32,8 @@ _PIPELINE_VERSION = "sprint-2.v1"
 _PROVIDER_ANALYSIS_VERSION = "provider-hybrid.v1"
 _PROVIDER_SCHEMA_VERSION = "agreement-analysis.v1"
 _PROVIDER_PROMPT_VERSION = "agreement-analysis.v1"
+_MAX_PROVIDER_BLOCKS = 100
+_MAX_PROVIDER_BLOCK_CHARACTERS = 4_000
 
 
 class ObjectStorage(Protocol):
@@ -142,18 +144,24 @@ def _manifest(
     analysis_provider: AnalysisProvider | None,
 ) -> dict[str, object]:
     blocks = [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
-    guardrail_decision = validate_untrusted_evidence(blocks, {anchor_id for anchor_id, _ in blocks})
+    provider_blocks = [
+        (anchor_id, text[:_MAX_PROVIDER_BLOCK_CHARACTERS])
+        for anchor_id, text in blocks[:_MAX_PROVIDER_BLOCKS]
+    ]
+    guardrail_decision = validate_untrusted_evidence(
+        provider_blocks, {anchor_id for anchor_id, _ in provider_blocks}
+    )
     manifest = _deterministic_manifest(parsed, source, blocks)
     if analysis_provider is None:
         manifest["analysis_provenance"] = _deterministic_provenance(
             "provider_not_configured", guardrail_decision
         )
         return manifest
-    if guardrail_decision.status == "block":
+    if guardrail_decision.status != "allow":
         return _provider_fallback(manifest, guardrail_decision)
 
     try:
-        provider_analysis = analysis_provider.analyze(blocks)
+        provider_analysis = analysis_provider.analyze(provider_blocks)
     except (ProviderTransientError, TimeoutError, ConnectionError) as error:
         raise TransientProcessingError("Provider enrichment temporarily unavailable") from error
     except Exception:
@@ -162,7 +170,7 @@ def _manifest(
     try:
         enriched = validate_provider_analysis(
             provider_analysis,
-            {anchor_id for anchor_id, _ in blocks},
+            dict(provider_blocks),
         )
     except ProviderOutputValidationError:
         return _provider_fallback(manifest, guardrail_decision)

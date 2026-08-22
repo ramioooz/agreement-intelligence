@@ -67,6 +67,20 @@ def test_validator_rejects_a_claim_with_an_unknown_anchor() -> None:
         validate_provider_analysis(unknown_anchor_response, {"citation-a"})
 
 
+def test_validator_rejects_a_clause_excerpt_not_supported_by_its_requested_anchor() -> None:
+    response = ProviderAnalysis(
+        **{
+            **VALID_RESPONSE.__dict__,
+            "clauses": [{**VALID_RESPONSE.clauses[0], "source_excerpt": "Invented obligation."}],
+        }
+    )
+
+    with pytest.raises(ProviderOutputValidationError, match="source excerpt"):
+        validate_provider_analysis(
+            response, {"citation-a": "Either party may terminate with 30 days' notice."}
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

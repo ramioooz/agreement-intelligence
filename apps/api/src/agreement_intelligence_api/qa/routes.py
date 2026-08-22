@@ -138,10 +138,13 @@ def _gateway_answerer(gateway: ModelGateway | None) -> Answerer:
             payload={
                 "question": request.question,
                 "conversation_context": list(request.conversation_context),
-                "evidence": [
-                    {"anchor_id": item.anchor.anchor_id, "text": item.text}
-                    for item in request.evidence
-                ],
+                "evidence": {
+                    "trust": "untrusted",
+                    "blocks": [
+                        {"anchor_id": item.anchor.anchor_id, "text": item.text}
+                        for item in request.evidence
+                    ],
+                },
                 "response_contract": {
                     "claims": [
                         {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from agreement_intelligence_worker.evidence_validation import (
@@ -15,6 +15,7 @@ from agreement_intelligence_worker.evidence_validation import (
     GroundedAnswer,
     answer_question,
 )
+from agreement_intelligence_worker.guardrails import GuardrailDecision
 
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.permissions import PermissionKey
@@ -407,6 +408,22 @@ def _turn_from_record(record: QuestionTurnRecord) -> QuestionTurn:
         for payload in record.claims
         if isinstance(payload, dict) and isinstance(payload.get("text"), str)
     )
+    guardrail_decision = _guardrail_decision_from_payload(record.retrieval_provenance)
+    if guardrail_decision is None:
+        return QuestionTurn(
+            id=record.id,
+            question=record.question,
+            answer=GroundedAnswer(
+                status="insufficient_evidence",
+                claims=(),
+                message="Prior evidence provenance is unavailable.",
+                guardrail_decision=GuardrailDecision(
+                    "review", ("invalid_persisted_guardrail_provenance",)
+                ),
+            ),
+            created_at=record.created_at,
+            citation_sources={},
+        )
     return QuestionTurn(
         id=record.id,
         question=record.question,
@@ -414,9 +431,29 @@ def _turn_from_record(record: QuestionTurnRecord) -> QuestionTurn:
             status=_answer_status(record.answer_status),
             claims=claims,
             message=record.answer_message,
+            guardrail_decision=guardrail_decision,
         ),
         created_at=record.created_at,
         citation_sources=_citation_sources_from_payload(record.retrieval_provenance),
+    )
+
+
+def _guardrail_decision_from_payload(payload: dict[str, object]) -> GuardrailDecision | None:
+    value = payload.get("guardrail")
+    if not isinstance(value, dict) or set(value) != {"policy_version", "status", "reason_codes"}:
+        return None
+    version = value.get("policy_version")
+    status = value.get("status")
+    reasons = value.get("reason_codes")
+    if (
+        version != "untrusted-evidence.v1"
+        or status not in {"allow", "review", "block"}
+        or not isinstance(reasons, list)
+        or not all(isinstance(reason, str) for reason in reasons)
+    ):
+        return None
+    return GuardrailDecision(
+        cast(Literal["allow", "review", "block"], status), tuple(reasons), version
     )
 
 

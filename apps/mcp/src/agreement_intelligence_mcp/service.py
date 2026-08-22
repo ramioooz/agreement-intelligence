@@ -177,7 +177,7 @@ class McpReadService:
                     "guardrail_reason_codes": list(decision.reason_codes),
                 }
             )
-            if decision.status == "block":
+            if decision.status != "allow":
                 raise ResourceNotFoundError
             return citation
 
