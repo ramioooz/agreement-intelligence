@@ -428,9 +428,17 @@ def _turn_from_record(record: QuestionTurnRecord) -> QuestionTurn:
         id=record.id,
         question=record.question,
         answer=GroundedAnswer(
-            status=_answer_status(record.answer_status),
-            claims=claims,
-            message=record.answer_message,
+            status=(
+                _answer_status(record.answer_status)
+                if guardrail_decision.status == "allow"
+                else "insufficient_evidence"
+            ),
+            claims=claims if guardrail_decision.status == "allow" else (),
+            message=(
+                record.answer_message
+                if guardrail_decision.status == "allow"
+                else "Prior evidence requires review."
+            ),
             guardrail_decision=guardrail_decision,
         ),
         created_at=record.created_at,
@@ -463,6 +471,7 @@ def _validated_context(turns: list[QuestionTurn]) -> tuple[str, ...]:
         claim.text
         for turn in turns
         if turn.answer.status in {"answered", "partial"}
+        and turn.answer.guardrail_decision.status == "allow"
         for claim in turn.answer.claims
     )
 

@@ -95,7 +95,7 @@ class HostedAnalysisProvider:
         guardrail_decision = validate_untrusted_evidence(
             blocks, {anchor_id for anchor_id, _ in blocks}
         )
-        if guardrail_decision.status == "block":
+        if guardrail_decision.status != "allow":
             raise ProviderPermanentError("Untrusted evidence could not be analyzed safely")
         try:
             response = self._gateway.generate_json(

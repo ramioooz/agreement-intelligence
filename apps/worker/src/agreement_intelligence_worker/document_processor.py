@@ -148,9 +148,7 @@ def _manifest(
         (anchor_id, text[:_MAX_PROVIDER_BLOCK_CHARACTERS])
         for anchor_id, text in blocks[:_MAX_PROVIDER_BLOCKS]
     ]
-    guardrail_decision = validate_untrusted_evidence(
-        provider_blocks, {anchor_id for anchor_id, _ in provider_blocks}
-    )
+    guardrail_decision = validate_untrusted_evidence(blocks, {anchor_id for anchor_id, _ in blocks})
     manifest = _deterministic_manifest(parsed, source, blocks)
     if analysis_provider is None:
         manifest["analysis_provenance"] = _deterministic_provenance(
