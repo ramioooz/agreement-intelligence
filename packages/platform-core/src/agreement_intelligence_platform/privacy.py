@@ -170,10 +170,9 @@ def _redact_node(node: object, parent_key: str) -> object:
                 redacted[key] = REDACTED
         return redacted
     if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
-        parent_is_allowed = (
-            classify_key(parent_key) is DataClass.OPERATIONAL
-            or _is_allowed_restricted(parent_key)
-        )
+        parent_is_allowed = classify_key(
+            parent_key
+        ) is DataClass.OPERATIONAL or _is_allowed_restricted(parent_key)
         return [
             _redact_node(item, parent_key)
             if isinstance(item, Mapping) or _is_sequence(item)
@@ -203,10 +202,9 @@ def _safe_node(node: object, parent_key: str) -> object | None:
                 safe[key] = value
         return safe
     if isinstance(node, Sequence) and not isinstance(node, (str, bytes, bytearray)):
-        parent_is_allowed = (
-            classify_key(parent_key) is DataClass.OPERATIONAL
-            or _is_allowed_restricted(parent_key)
-        )
+        parent_is_allowed = classify_key(
+            parent_key
+        ) is DataClass.OPERATIONAL or _is_allowed_restricted(parent_key)
         safe_items: list[object] = []
         for value in node:
             if isinstance(value, Mapping) or _is_sequence(value):
@@ -243,6 +241,5 @@ def _unsafe_scalar(key: str, value: object) -> bool:
     if "@" in value:
         return True
     return (
-        _normalize_key(key).rsplit(".", 1)[-1] == "message"
-        and value not in _ALLOWED_LOG_MESSAGES
+        _normalize_key(key).rsplit(".", 1)[-1] == "message" and value not in _ALLOWED_LOG_MESSAGES
     )

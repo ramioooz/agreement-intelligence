@@ -184,9 +184,7 @@ def _principal_from_headers(headers: Mapping[str, str]) -> Principal:
 
 def _safe_context_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {
-        key: value
-        for key, value in safe_event_metadata(headers).items()
-        if isinstance(value, str)
+        key: value for key, value in safe_event_metadata(headers).items() if isinstance(value, str)
     }
 
 
