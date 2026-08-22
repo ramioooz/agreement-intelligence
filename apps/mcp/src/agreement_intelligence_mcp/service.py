@@ -22,6 +22,7 @@ from agreement_intelligence_api.reviews.models import (
     PlaybookEvaluationRecord,
     PlaybookFindingRecord,
 )
+from agreement_intelligence_platform.privacy import safe_event_metadata
 from opentelemetry.context.context import Context as OtelContext
 from opentelemetry.propagate import extract
 from opentelemetry.trace import get_current_span, get_tracer
@@ -324,7 +325,7 @@ class McpReadService:
                 outcome=outcome,
                 trace_id=f"{trace_id:032x}" if trace_id else None,
                 span_id=f"{span_id:016x}" if span_id else None,
-                attributes=attributes,
+                attributes=safe_event_metadata(attributes),
             )
         )
         self._session.commit()

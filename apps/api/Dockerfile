@@ -8,8 +8,10 @@ WORKDIR /workspace
 COPY pyproject.toml uv.lock ./
 COPY apps/api/pyproject.toml apps/api/pyproject.toml
 COPY apps/worker/pyproject.toml apps/worker/pyproject.toml
+COPY packages/platform-core/pyproject.toml packages/platform-core/pyproject.toml
 COPY apps/api/src apps/api/src
 COPY apps/worker/src apps/worker/src
+COPY packages/platform-core/src packages/platform-core/src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync \
       --frozen \

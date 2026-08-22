@@ -7,6 +7,12 @@
 !pyproject.toml
 !uv.lock
 
+!packages/
+!packages/platform-core/
+!packages/platform-core/pyproject.toml
+!packages/platform-core/src/
+!packages/platform-core/src/**
+
 !apps/
 apps/*
 

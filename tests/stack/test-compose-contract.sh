@@ -9,6 +9,30 @@ test -f compose.yaml || {
   exit 1
 }
 
+for pattern in \
+  '!packages/' \
+  '!packages/platform-core/' \
+  '!packages/platform-core/pyproject.toml' \
+  '!packages/platform-core/src/' \
+  '!packages/platform-core/src/**'; do
+  grep -Fqx -- "$pattern" .dockerignore || {
+    echo ".dockerignore must include shared platform build context: $pattern"
+    exit 1
+  }
+done
+
+for dockerfile in apps/api/Dockerfile apps/worker/Dockerfile apps/mcp/Dockerfile; do
+  grep -q 'COPY packages/platform-core/pyproject.toml packages/platform-core/pyproject.toml' \
+    "$dockerfile" || {
+    echo "$dockerfile must install the shared platform package metadata"
+    exit 1
+  }
+  grep -q 'COPY packages/platform-core/src packages/platform-core/src' "$dockerfile" || {
+    echo "$dockerfile must install the shared platform package source"
+    exit 1
+  }
+done
+
 env_file=$(mktemp)
 config_file=$(mktemp)
 json_file=$(mktemp)
@@ -102,6 +126,8 @@ for (const expectedState of ["available", "running"]) {
 
 for (const [serviceName, expected] of Object.entries({
   api: [
+    "APPLICATION_LOG_RETENTION_DAYS",
+    "AUDIT_RETENTION_DAYS",
     "SQS_PROCESSING_QUEUE",
     "OIDC_ISSUER",
     "OIDC_INTERNAL_ISSUER",
@@ -112,9 +138,21 @@ for (const [serviceName, expected] of Object.entries({
     "KEYCLOAK_BOOTSTRAP_ADMIN_USERNAME",
     "KEYCLOAK_BOOTSTRAP_ADMIN_PASSWORD",
     "DEMO_REVIEWER_SUBJECT",
+    "TELEMETRY_RETENTION_DAYS",
   ],
   web: ["API_ORGANIZATION_ID", "API_WORKSPACE_ID"],
-  worker: ["SQS_PROCESSING_QUEUE", "EMBEDDING_FALLBACK_MODEL"],
+  worker: [
+    "APPLICATION_LOG_RETENTION_DAYS",
+    "AUDIT_RETENTION_DAYS",
+    "SQS_PROCESSING_QUEUE",
+    "EMBEDDING_FALLBACK_MODEL",
+    "TELEMETRY_RETENTION_DAYS",
+  ],
+  mcp: [
+    "APPLICATION_LOG_RETENTION_DAYS",
+    "AUDIT_RETENTION_DAYS",
+    "TELEMETRY_RETENTION_DAYS",
+  ],
   "keycloak-bootstrap": ["DEMO_REVIEWER_SUBJECT"],
 })) {
   const environment = config.services?.[serviceName]?.environment ?? {};
@@ -216,6 +254,17 @@ for replacement in \
   sed "$replacement" "$env_file" >"$config_file"
   if STACK_ENV_FILE="$config_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
     echo "Invalid environment unexpectedly passed: $replacement"
+    exit 1
+  fi
+done
+
+for replacement in \
+  's/AUDIT_RETENTION_DAYS=2555/AUDIT_RETENTION_DAYS=0/' \
+  's/TELEMETRY_RETENTION_DAYS=30/TELEMETRY_RETENTION_DAYS=-1/' \
+  's/APPLICATION_LOG_RETENTION_DAYS=14/APPLICATION_LOG_RETENTION_DAYS=not-a-number/'; do
+  sed "$replacement" "$env_file" >"$config_file"
+  if STACK_ENV_FILE="$config_file" scripts/validate-stack-env.sh >/dev/null 2>&1; then
+    echo "Invalid retention unexpectedly passed: $replacement"
     exit 1
   fi
 done

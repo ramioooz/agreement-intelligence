@@ -7,6 +7,7 @@ members = [
     "agreement-intelligence",
     "agreement-intelligence-api",
     "agreement-intelligence-mcp",
+    "agreement-intelligence-platform",
     "agreement-intelligence-worker",
 ]
 
@@ -42,6 +43,7 @@ name = "agreement-intelligence-api"
 version = "0.1.0"
 source = { editable = "apps/api" }
 dependencies = [
+    { name = "agreement-intelligence-platform" },
     { name = "agreement-intelligence-worker" },
     { name = "alembic" },
     { name = "boto3" },
@@ -63,6 +65,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agreement-intelligence-platform", editable = "packages/platform-core" },
     { name = "agreement-intelligence-worker", editable = "apps/worker" },
     { name = "alembic", specifier = "==1.16.4" },
     { name = "boto3", specifier = "==1.43.60" },
@@ -88,6 +91,7 @@ version = "0.1.0"
 source = { editable = "apps/mcp" }
 dependencies = [
     { name = "agreement-intelligence-api" },
+    { name = "agreement-intelligence-platform" },
     { name = "mcp" },
     { name = "opentelemetry-api" },
 ]
@@ -95,15 +99,22 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "agreement-intelligence-api", editable = "apps/api" },
+    { name = "agreement-intelligence-platform", editable = "packages/platform-core" },
     { name = "mcp", specifier = "==2.0.0" },
     { name = "opentelemetry-api", specifier = "==1.38.0" },
 ]
+
+[[package]]
+name = "agreement-intelligence-platform"
+version = "0.1.0"
+source = { editable = "packages/platform-core" }
 
 [[package]]
 name = "agreement-intelligence-worker"
 version = "0.1.0"
 source = { editable = "apps/worker" }
 dependencies = [
+    { name = "agreement-intelligence-platform" },
     { name = "boto3" },
     { name = "langgraph" },
     { name = "langgraph-checkpoint-postgres" },
@@ -118,6 +129,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agreement-intelligence-platform", editable = "packages/platform-core" },
     { name = "boto3", specifier = "==1.43.60" },
     { name = "langgraph", specifier = ">=1.0,<2" },
     { name = "langgraph-checkpoint-postgres", specifier = ">=3.0,<4" },

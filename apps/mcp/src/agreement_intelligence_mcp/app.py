@@ -8,6 +8,7 @@ from uuid import UUID
 from agreement_intelligence_api.db import engine
 from agreement_intelligence_api.documents.storage import DocumentStorage, storage_from_environment
 from agreement_intelligence_api.identity.authz import Principal, authenticate_access_token
+from agreement_intelligence_platform.privacy import safe_event_metadata
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.context import Context
@@ -165,7 +166,7 @@ def _call(
         return operation(
             McpReadService(session, storage_factory()),
             principal,
-            ToolCallContext.from_headers(tool_name, headers),
+            ToolCallContext.from_headers(tool_name, _safe_context_headers(headers)),
         )
     finally:
         session.close()
@@ -179,6 +180,12 @@ def _principal_from_headers(headers: Mapping[str, str]) -> Principal:
     if not token:
         raise PermissionError("bearer authentication is required")
     return authenticate_access_token(token)
+
+
+def _safe_context_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    return {
+        key: value for key, value in safe_event_metadata(headers).items() if isinstance(value, str)
+    }
 
 
 def _new_session() -> Session:
