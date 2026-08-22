@@ -180,7 +180,9 @@ class GroundedQuestionService:
             answerer=lambda request: self._answerer(
                 replace(
                     request,
-                    conversation_context=_validated_context(self._load_turns(persisted)[-10:]),
+                    conversation_context=_validated_context(
+                        self._redact_inaccessible_turns(persisted)[-10:]
+                    ),
                 )
             ),
         )

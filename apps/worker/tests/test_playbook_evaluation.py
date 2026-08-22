@@ -52,30 +52,34 @@ def test_required_clause_without_extracted_evidence_requires_human_review() -> N
     assert findings[0].confidence == 0.0
 
 
-def test_provider_only_clause_cannot_turn_deterministic_absence_into_compliance() -> None:
-    provider_clause = _clause(
-        "termination",
-        "Either party may terminate with 30 days' notice.",
-        confidence=1.0,
-    )
-    provider_clause["extraction_version"] = "provider-hybrid.v1"
+def test_unrecognized_clause_provenance_cannot_become_compliance_evidence() -> None:
+    for extraction_version in ("provider-hybrid.v1", "provider-hybrid.v2", None):
+        provider_clause = _clause(
+            "termination",
+            "Either party may terminate with 30 days' notice.",
+            confidence=1.0,
+        )
+        if extraction_version is None:
+            provider_clause.pop("extraction_version")
+        else:
+            provider_clause["extraction_version"] = extraction_version
 
-    findings = evaluate_playbook(
-        [
-            PlaybookRule(
-                id="required-termination",
-                clause_type="termination",
-                policy_type="required",
-                preferred_language="either party may terminate",
-                severity="high",
-            )
-        ],
-        _analysis(provider_clause),
-    )
+        findings = evaluate_playbook(
+            [
+                PlaybookRule(
+                    id="required-termination",
+                    clause_type="termination",
+                    policy_type="required",
+                    preferred_language="either party may terminate",
+                    severity="high",
+                )
+            ],
+            _analysis(provider_clause),
+        )
 
-    assert findings[0].result is FindingResult.NEEDS_REVIEW
-    assert findings[0].citation_ids == []
-    assert findings[0].confidence == 0.0
+        assert findings[0].result is FindingResult.NEEDS_REVIEW
+        assert findings[0].citation_ids == []
+        assert findings[0].confidence == 0.0
 
 
 def test_prohibited_language_in_grounded_clause_is_non_compliant() -> None:

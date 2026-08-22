@@ -23,10 +23,13 @@ from agreement_intelligence_api.reviews.models import (
     PlaybookFindingRecord,
 )
 from agreement_intelligence_platform.privacy import safe_event_metadata
-from agreement_intelligence_worker.guardrails import validate_untrusted_evidence
+from agreement_intelligence_worker.guardrails import (
+    record_guardrail_span_provenance,
+    validate_untrusted_evidence,
+)
 from opentelemetry.context.context import Context as OtelContext
 from opentelemetry.propagate import extract
-from opentelemetry.trace import get_current_span, get_tracer
+from opentelemetry.trace import Span, get_current_span, get_tracer
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
@@ -147,12 +150,7 @@ class McpReadService:
     ) -> dict[str, object]:
         if not citation_id.startswith("citation-") or len(citation_id) > 128:
             raise ValueError("citation_id is invalid")
-        audit_attributes: dict[str, object] = {
-            "citation_id": citation_id,
-            "guardrail_policy_version": "untrusted-evidence.v1",
-            "guardrail_status": "allow",
-            "guardrail_reason_codes": [],
-        }
+        audit_attributes: dict[str, object] = {"citation_id": citation_id}
         with self._audit_scope(
             principal,
             organization_id=organization_id,
@@ -160,7 +158,7 @@ class McpReadService:
             agreement_id=agreement_id,
             context=context,
             attributes=audit_attributes,
-        ):
+        ) as span:
             self._agreement(agreement_id, organization_id, workspace_id)
             artifact_key = self._completed_artifact_key(agreement_id, organization_id, workspace_id)
             document = self._storage.read(artifact_key) if artifact_key else None
@@ -170,6 +168,7 @@ class McpReadService:
             decision = validate_untrusted_evidence(
                 [(citation_id, str(citation["excerpt"]))], {citation_id}
             )
+            record_guardrail_span_provenance(decision, span=span)
             audit_attributes.update(
                 {
                     "guardrail_policy_version": decision.policy_version,
@@ -236,7 +235,7 @@ class McpReadService:
         agreement_id: UUID | None,
         context: ToolCallContext,
         attributes: dict[str, object],
-    ) -> Iterator[None]:
+    ) -> Iterator[Span]:
         with _tracer.start_as_current_span(
             f"mcp.tool.{context.tool_name}", context=context.parent_context
         ) as span:
@@ -245,9 +244,8 @@ class McpReadService:
                 span_context = get_current_span(context.parent_context).get_span_context()
             try:
                 self._authorize(principal, organization_id, workspace_id)
-                yield
+                yield span
             except (ResourceNotFoundError, ValueError):
-                _record_guardrail_span_provenance(span, attributes)
                 self._record_audit(
                     principal,
                     organization_id,
@@ -261,7 +259,6 @@ class McpReadService:
                 )
                 raise
             except Exception:
-                _record_guardrail_span_provenance(span, attributes)
                 self._record_audit(
                     principal,
                     organization_id,
@@ -275,7 +272,6 @@ class McpReadService:
                 )
                 raise
             else:
-                _record_guardrail_span_provenance(span, attributes)
                 self._record_audit(
                     principal,
                     organization_id,
@@ -351,24 +347,6 @@ class McpReadService:
             )
         )
         self._session.commit()
-
-
-def _record_guardrail_span_provenance(span: object, attributes: dict[str, object]) -> None:
-    """Attach only privacy-approved guardrail metadata to the active span."""
-
-    setter = getattr(span, "set_attribute", None)
-    if not callable(setter):
-        return
-    safe_attributes = safe_event_metadata(attributes)
-    policy_version = safe_attributes.get("guardrail_policy_version")
-    status = safe_attributes.get("guardrail_status")
-    reason_codes = safe_attributes.get("guardrail_reason_codes")
-    if isinstance(policy_version, str):
-        setter("guardrail.policy_version", policy_version)
-    if isinstance(status, str):
-        setter("guardrail.status", status)
-    if isinstance(reason_codes, list) and all(isinstance(reason, str) for reason in reason_codes):
-        setter("guardrail.reason_codes", reason_codes)
 
 
 def _citation_from_artifact(

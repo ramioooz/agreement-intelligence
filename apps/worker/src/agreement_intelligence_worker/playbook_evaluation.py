@@ -247,7 +247,7 @@ def evaluate_playbook(
             for clause in clauses
             if _canonical_clause_type(clause.get("category"))
             == _canonical_clause_type(rule.clause_type)
-            and clause.get("extraction_version") != "provider-hybrid.v1"
+            and _is_deterministic_clause(clause)
         ]
         finding, selected_clause = _deterministic_finding(rule, candidates)
         if _may_assess_semantically(rule, finding, selected_clause, semantic_assessor):
@@ -433,8 +433,12 @@ def _confidence(clause: Mapping[str, object]) -> float:
 
 
 def _clause_authority(clause: Mapping[str, object]) -> tuple[bool, float]:
-    is_deterministic = clause.get("extraction_version") != "provider-hybrid.v1"
-    return is_deterministic, _confidence(clause)
+    return _is_deterministic_clause(clause), _confidence(clause)
+
+
+def _is_deterministic_clause(clause: Mapping[str, object]) -> bool:
+    version = clause.get("extraction_version")
+    return isinstance(version, str) and version.startswith("clause-rules.")
 
 
 def _citations(clause: Mapping[str, object]) -> list[str]:

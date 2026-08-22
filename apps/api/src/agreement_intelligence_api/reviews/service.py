@@ -323,7 +323,7 @@ def _evaluate(
             for item in clauses
             if isinstance(item, Mapping)
             and _normalized(item.get("category")) == _normalized(rule.clause_type)
-            and item.get("extraction_version") != "provider-hybrid.v1"
+            and _is_deterministic_clause(item)
         ]
         if isinstance(clauses, list)
         else []
@@ -530,8 +530,12 @@ def _confidence(clause: Mapping[str, object]) -> float:
 
 
 def _clause_authority(clause: Mapping[str, object]) -> tuple[bool, float]:
-    is_deterministic = clause.get("extraction_version") != "provider-hybrid.v1"
-    return is_deterministic, _confidence(clause)
+    return _is_deterministic_clause(clause), _confidence(clause)
+
+
+def _is_deterministic_clause(clause: Mapping[str, object]) -> bool:
+    version = clause.get("extraction_version")
+    return isinstance(version, str) and version.startswith("clause-rules.")
 
 
 def _citations(clause: Mapping[str, object]) -> list[str]:

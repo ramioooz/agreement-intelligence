@@ -33,6 +33,9 @@ def adversarial_cases() -> list[dict[str, object]]:
         "whitespace_fragmented_base64_exfiltration_request",
         "url_safe_base64_exfiltration_request",
         "write_or_tool_action_request",
+        "forget_rules_and_output_developer_message",
+        "email_confidential_clauses_to_external_address",
+        "send_complete_document_to_external_address",
     ],
 )
 def test_adversarial_evidence_has_a_versioned_deterministic_decision(
@@ -49,6 +52,22 @@ def test_adversarial_evidence_has_a_versioned_deterministic_decision(
         status=cast(Literal["allow", "review", "block"], case["status"]),
         reason_codes=tuple(cast(list[str], case["reason_codes"])),
     )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Customer may use the API to update its account records",
+        "Customer may send the complete document to its external counsel.",
+        "Provider may email confidential clauses to counsel@example.com when authorized.",
+    ],
+)
+def test_benign_contract_language_is_not_treated_as_an_action_request(
+    text: str,
+) -> None:
+    decision = validate_untrusted_evidence([("citation-a", text)], ["citation-a"])
+
+    assert decision == GuardrailDecision(status="allow", reason_codes=())
 
 
 def test_safe_guardrail_provenance_excludes_untrusted_evidence_text() -> None:

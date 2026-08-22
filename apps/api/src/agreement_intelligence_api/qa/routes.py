@@ -8,6 +8,7 @@ from agreement_intelligence_worker.evidence_validation import (
     Answerer,
     Citation,
     GroundedClaim,
+    extract_supporting_quote,
 )
 from agreement_intelligence_worker.model_gateway import (
     GroundedAnswerRequest,
@@ -142,17 +143,21 @@ def _gateway_answerer(gateway: ModelGateway | None) -> Answerer:
                 conversation_context=request.conversation_context,
             )
         )
+        citations = tuple(
+            Citation(
+                anchor_id=anchor_id,
+                supporting_quote=extract_supporting_quote(
+                    result.answer, requested_evidence[anchor_id]
+                )
+                or "",
+            )
+            for anchor_id in result.citation_ids
+        )
         return AnswerCandidate(
             claims=(
                 GroundedClaim(
                     text=result.answer,
-                    citations=tuple(
-                        Citation(
-                            anchor_id=anchor_id,
-                            supporting_quote=requested_evidence[anchor_id],
-                        )
-                        for anchor_id in result.citation_ids
-                    ),
+                    citations=citations,
                 ),
             )
         )

@@ -92,31 +92,33 @@ def test_manual_evaluation_prefers_deterministic_clause_over_provider_enrichment
     assert extraction_version == "clause-rules.v1"
 
 
-def test_manual_evaluation_keeps_review_when_only_provider_clause_exists() -> None:
+def test_manual_evaluation_keeps_review_for_unrecognized_clause_provenance() -> None:
     rule = PlaybookRuleRecord(
         clause_type="termination",
         policy_type="required",
         preferred_language="either party may terminate",
     )
-    analysis = {
-        "clauses": [
-            {
-                "category": "termination",
-                "source_text": "Either party may terminate with 30 days' notice.",
-                "confidence": 1.0,
-                "citation_anchor_ids": ["citation-provider"],
-                "extraction_version": "provider-hybrid.v1",
-            }
-        ]
+    clause = {
+        "category": "termination",
+        "source_text": "Either party may terminate with 30 days' notice.",
+        "confidence": 1.0,
+        "citation_anchor_ids": ["citation-provider"],
     }
 
-    _, result, confidence, citations, method, extraction_version = _evaluate(rule, analysis)
+    for extraction_version in ("provider-hybrid.v1", "provider-hybrid.v2", None):
+        candidate = dict(clause)
+        if extraction_version is not None:
+            candidate["extraction_version"] = extraction_version
 
-    assert result.value == "needs_review"
-    assert confidence == 0.0
-    assert citations == []
-    assert method == "deterministic"
-    assert extraction_version == "unknown"
+        _, result, confidence, citations, method, version = _evaluate(
+            rule, {"clauses": [candidate]}
+        )
+
+        assert result.value == "needs_review"
+        assert confidence == 0.0
+        assert citations == []
+        assert method == "deterministic"
+        assert version == "unknown"
 
 
 def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(

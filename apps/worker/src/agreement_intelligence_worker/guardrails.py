@@ -9,19 +9,28 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from agreement_intelligence_platform.privacy import safe_event_metadata
+from opentelemetry.trace import Span, get_current_span
+
 _POLICY_VERSION = "untrusted-evidence.v1"
 _INSTRUCTION_OVERRIDE = re.compile(
-    r"\b(?:ignore|disregard|override)\b.{0,48}\b(?:instructions?|system|developer|message)\b",
+    r"\b(?:forget|ignore|disregard|override)\b.{0,48}"
+    r"\b(?:instructions?|rules?|system|developer|message)\b",
     re.IGNORECASE | re.DOTALL,
 )
 _PROMPT_EXFILTRATION = re.compile(
-    r"\b(?:reveal|show|print|expose)\b.{0,48}\b(?:system|developer|hidden|prompt|instruction)\b",
+    r"\b(?:reveal|show|print|expose|output)\b.{0,48}"
+    r"\b(?:system|developer|hidden|prompt|instruction)\b",
     re.IGNORECASE | re.DOTALL,
 )
 _TOOL_OR_WRITE_ACTION = re.compile(
-    r"\b(?:use|call|invoke|run|execute)\b.{0,32}\b(?:tool|function|mcp|api)\b"
-    r"|\b(?:delete|write|update|upload|send)\b.{0,32}\b(?:file|database|record|agreement|external|http)\b",
-    re.IGNORECASE | re.DOTALL,
+    r"(?:^|(?<=[.!?]))\s*(?:please\s+)?(?:"
+    r"(?:use|call|invoke|run|execute)\b.{0,32}\b(?:tool|function|mcp|api)\b"
+    r"|(?:delete|write|update|upload|send)\b.{0,32}"
+    r"\b(?:file|database|record|agreement|external|http)\b"
+    r"|(?:email|send)\b.{0,48}\b(?:confidential\s+clauses?|complete\s+document)\b"
+    r")",
+    re.IGNORECASE | re.DOTALL | re.MULTILINE,
 )
 _BASE64_TOKEN = re.compile(
     r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{8,4096}(?:={1,2})?(?![A-Za-z0-9+/_=-])"
@@ -49,6 +58,34 @@ class GuardrailDecision:
             "status": self.status,
             "reason_codes": list(self.reason_codes),
         }
+
+
+def record_guardrail_span_provenance(
+    decision: GuardrailDecision, *, span: Span | None = None
+) -> None:
+    """Attach only privacy-approved decision metadata to an evaluated span."""
+
+    safe_attributes = safe_event_metadata(
+        {
+            "guardrail_policy_version": decision.policy_version,
+            "guardrail_status": decision.status,
+            "guardrail_reason_codes": list(decision.reason_codes),
+        }
+    )
+    target = get_current_span() if span is None else span
+    policy_version = safe_attributes.get("guardrail_policy_version")
+    status = safe_attributes.get("guardrail_status")
+    reason_codes = safe_attributes.get("guardrail_reason_codes")
+    if isinstance(policy_version, str):
+        target.set_attribute("guardrail.policy_version", policy_version)
+    if isinstance(status, str):
+        target.set_attribute("guardrail.status", status)
+    if isinstance(reason_codes, list):
+        safe_reason_codes = [reason for reason in reason_codes if isinstance(reason, str)]
+        if len(safe_reason_codes) == len(reason_codes):
+            target.set_attribute("guardrail.reason_codes", safe_reason_codes)
+    elif not decision.reason_codes:
+        target.set_attribute("guardrail.reason_codes", [])
 
 
 def validate_untrusted_evidence(
