@@ -9,6 +9,7 @@ from docx import Document
 from pypdf import PdfReader
 
 BlockKind = Literal["heading", "paragraph", "list_item", "table"]
+EvidenceTrust = Literal["untrusted"]
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class DocumentBlock:
     text: str
     start_offset: int
     end_offset: int
+    trust: EvidenceTrust = "untrusted"
 
 
 @dataclass(frozen=True)

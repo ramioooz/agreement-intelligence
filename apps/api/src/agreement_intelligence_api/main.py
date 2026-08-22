@@ -1,3 +1,6 @@
+import os
+
+from agreement_intelligence_platform.telemetry import configure_telemetry
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
 
@@ -56,6 +59,8 @@ from agreement_intelligence_api.reviews.workflow_routes import (
 )
 from agreement_intelligence_api.reviews.workflow_routes import workflow_conflict_handler
 from agreement_intelligence_api.search.routes import router as search_router
+
+configure_telemetry("agreement-intelligence-api", environment=os.environ)
 
 app = FastAPI(
     title="Agreement Intelligence API",

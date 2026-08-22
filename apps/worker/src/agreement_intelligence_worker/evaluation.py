@@ -44,7 +44,7 @@ def evaluate(
         anchor_id = f"evaluation-{index}"
         try:
             analysis = validate_provider_analysis(
-                provider.analyze([(anchor_id, case["text"])]), {anchor_id}
+                provider.analyze([(anchor_id, case["text"])]), {anchor_id: case["text"]}
             )
         except (ProviderOutputValidationError, ValueError):
             continue

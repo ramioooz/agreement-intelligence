@@ -247,6 +247,7 @@ def evaluate_playbook(
             for clause in clauses
             if _canonical_clause_type(clause.get("category"))
             == _canonical_clause_type(rule.clause_type)
+            and _is_deterministic_clause(clause)
         ]
         finding, selected_clause = _deterministic_finding(rule, candidates)
         if _may_assess_semantically(rule, finding, selected_clause, semantic_assessor):
@@ -284,7 +285,7 @@ def _deterministic_finding(
 ) -> tuple[EvaluatedFinding, Mapping[str, object] | None]:
     if not candidates:
         return _finding(rule, FindingResult.NEEDS_REVIEW, 0.0, [], "unknown"), None
-    clause = max(candidates, key=_confidence)
+    clause = max(candidates, key=_clause_authority)
     confidence = _confidence(clause)
     citations = _citations(clause)
     extraction_version = _string(clause.get("extraction_version"), "unknown")
@@ -429,6 +430,15 @@ def _canonical_clause_type(value: object) -> str:
 def _confidence(clause: Mapping[str, object]) -> float:
     value = clause.get("confidence")
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0.0
+
+
+def _clause_authority(clause: Mapping[str, object]) -> tuple[bool, float]:
+    return _is_deterministic_clause(clause), _confidence(clause)
+
+
+def _is_deterministic_clause(clause: Mapping[str, object]) -> bool:
+    version = clause.get("extraction_version")
+    return isinstance(version, str) and version.startswith("clause-rules.")
 
 
 def _citations(clause: Mapping[str, object]) -> list[str]:

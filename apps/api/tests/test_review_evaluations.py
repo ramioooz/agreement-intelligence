@@ -18,7 +18,7 @@ from agreement_intelligence_api.processing.models import (
 )
 from agreement_intelligence_api.reviews.models import PlaybookFindingRecord
 from agreement_intelligence_api.reviews.schemas import SubmitPlaybookEvaluationRequest
-from agreement_intelligence_api.reviews.service import PlaybookEvaluationService
+from agreement_intelligence_api.reviews.service import PlaybookEvaluationService, _evaluate
 from fastapi.testclient import TestClient
 from pytest import fixture, mark
 from sqlalchemy import create_engine, event
@@ -56,6 +56,69 @@ def client_for_session(session: Session) -> Generator[Callable[[UUID], TestClien
         app.dependency_overrides.clear()
         if hasattr(app.state, "document_storage"):
             del app.state.document_storage
+
+
+def test_manual_evaluation_prefers_deterministic_clause_over_provider_enrichment() -> None:
+    rule = PlaybookRuleRecord(
+        clause_type="limitation_of_liability",
+        policy_type="required",
+        preferred_language="fees paid",
+    )
+    analysis = {
+        "clauses": [
+            {
+                "category": "limitation_of_liability",
+                "source_text": "Liability is capped at fees paid.",
+                "confidence": 0.91,
+                "citation_anchor_ids": ["citation-deterministic"],
+                "extraction_version": "clause-rules.v1",
+            },
+            {
+                "category": "limitation_of_liability",
+                "source_text": "Liability terms require review.",
+                "confidence": 1.0,
+                "citation_anchor_ids": ["citation-provider"],
+                "extraction_version": "provider-hybrid.v1",
+            },
+        ]
+    }
+
+    _, result, confidence, citations, method, extraction_version = _evaluate(rule, analysis)
+
+    assert result.value == "satisfied"
+    assert confidence == 0.91
+    assert citations == ["citation-deterministic"]
+    assert method == "deterministic"
+    assert extraction_version == "clause-rules.v1"
+
+
+def test_manual_evaluation_keeps_review_for_unrecognized_clause_provenance() -> None:
+    rule = PlaybookRuleRecord(
+        clause_type="termination",
+        policy_type="required",
+        preferred_language="either party may terminate",
+    )
+    clause = {
+        "category": "termination",
+        "source_text": "Either party may terminate with 30 days' notice.",
+        "confidence": 1.0,
+        "citation_anchor_ids": ["citation-provider"],
+    }
+
+    for extraction_version in ("provider-hybrid.v1", "provider-hybrid.v2", None):
+        candidate = dict(clause)
+        if extraction_version is not None:
+            candidate["extraction_version"] = extraction_version
+
+        _, result, confidence, citations, method, version = _evaluate(
+            rule, {"clauses": [candidate]}
+        )
+
+        assert result.value == "needs_review"
+        assert confidence == 0.0
+        assert citations == []
+        assert method == "deterministic"
+        assert version == "unknown"
 
 
 def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(

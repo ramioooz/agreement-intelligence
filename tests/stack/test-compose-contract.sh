@@ -151,6 +151,7 @@ for (const [serviceName, expected] of Object.entries({
   mcp: [
     "APPLICATION_LOG_RETENTION_DAYS",
     "AUDIT_RETENTION_DAYS",
+    "OTEL_EXPORTER_OTLP_ENDPOINT",
     "TELEMETRY_RETENTION_DAYS",
   ],
   "keycloak-bootstrap": ["DEMO_REVIEWER_SUBJECT"],

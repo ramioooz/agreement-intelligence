@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from agreement_intelligence_worker.evidence_validation import (
@@ -15,6 +15,7 @@ from agreement_intelligence_worker.evidence_validation import (
     GroundedAnswer,
     answer_question,
 )
+from agreement_intelligence_worker.guardrails import GuardrailDecision
 
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.permissions import PermissionKey
@@ -25,6 +26,7 @@ from agreement_intelligence_api.qa.models import (
 )
 from agreement_intelligence_api.qa.repository import SQLAlchemyQuestionRepository
 from agreement_intelligence_api.search.schemas import SearchFilters, SearchResponse
+from agreement_intelligence_api.telemetry import operation_span
 
 
 @dataclass(frozen=True)
@@ -173,16 +175,19 @@ class GroundedQuestionService:
             filters=SearchFilters(query=question, agreement_ids=persisted.agreement_ids),
         )
         citation_sources = _citation_sources_from_search(results)
-        answer = answer_question(
-            question=question,
-            authorized_evidence=_evidence_from_search(results, citation_sources),
-            answerer=lambda request: self._answerer(
-                replace(
-                    request,
-                    conversation_context=_validated_context(self._load_turns(persisted)[-10:]),
-                )
-            ),
-        )
+        with operation_span("qa.answer.guardrails"):
+            answer = answer_question(
+                question=question,
+                authorized_evidence=_evidence_from_search(results, citation_sources),
+                answerer=lambda request: self._answerer(
+                    replace(
+                        request,
+                        conversation_context=_validated_context(
+                            self._redact_inaccessible_turns(persisted)[-10:]
+                        ),
+                    )
+                ),
+            )
         turn = QuestionTurn(
             id=uuid4(),
             question=question,
@@ -206,6 +211,7 @@ class GroundedQuestionService:
                         retrieval_provenance={
                             "result_count": len(results.items),
                             "citation_sources": _citation_sources_payload(citation_sources),
+                            "guardrail": turn.answer.guardrail_decision.provenance(),
                         },
                     )
                 )
@@ -406,16 +412,79 @@ def _turn_from_record(record: QuestionTurnRecord) -> QuestionTurn:
         for payload in record.claims
         if isinstance(payload, dict) and isinstance(payload.get("text"), str)
     )
+    guardrail_decision = _guardrail_decision_from_payload(record.retrieval_provenance)
+    if guardrail_decision is None:
+        return QuestionTurn(
+            id=record.id,
+            question=record.question,
+            answer=GroundedAnswer(
+                status="insufficient_evidence",
+                claims=(),
+                message="Prior evidence provenance is unavailable.",
+                guardrail_decision=GuardrailDecision(
+                    "review", ("invalid_persisted_guardrail_provenance",)
+                ),
+            ),
+            created_at=record.created_at,
+            citation_sources={},
+        )
     return QuestionTurn(
         id=record.id,
         question=record.question,
         answer=GroundedAnswer(
-            status=_answer_status(record.answer_status),
-            claims=claims,
-            message=record.answer_message,
+            status=(
+                _answer_status(record.answer_status)
+                if guardrail_decision.status == "allow"
+                else "insufficient_evidence"
+            ),
+            claims=claims if guardrail_decision.status == "allow" else (),
+            message=(
+                record.answer_message
+                if guardrail_decision.status == "allow"
+                else "Prior evidence requires review."
+            ),
+            guardrail_decision=guardrail_decision,
         ),
         created_at=record.created_at,
         citation_sources=_citation_sources_from_payload(record.retrieval_provenance),
+    )
+
+
+def _guardrail_decision_from_payload(payload: dict[str, object]) -> GuardrailDecision | None:
+    value = payload.get("guardrail")
+    if not isinstance(value, dict) or set(value) != {"policy_version", "status", "reason_codes"}:
+        return None
+    version = value.get("policy_version")
+    status = value.get("status")
+    reasons = value.get("reason_codes")
+    if (
+        version != "untrusted-evidence.v1"
+        or status not in {"allow", "review", "block"}
+        or not isinstance(reasons, list)
+        or not all(isinstance(reason, str) for reason in reasons)
+    ):
+        return None
+    blocking_reasons = {
+        "unknown_anchor_id",
+        "prompt_exfiltration_request",
+        "encoded_exfiltration_request",
+        "tool_or_write_action_request",
+    }
+    review_reasons = {"instruction_override_marker"}
+    known_reasons = blocking_reasons | review_reasons
+    if len(reasons) != len(set(reasons)) or any(reason not in known_reasons for reason in reasons):
+        return None
+    if (
+        (status == "allow" and reasons)
+        or (
+            status == "review"
+            and (not reasons or any(reason not in review_reasons for reason in reasons))
+        )
+        or (status == "block" and not any(reason in blocking_reasons for reason in reasons))
+    ):
+        return None
+    return GuardrailDecision(
+        cast(Literal["allow", "review", "block"], status), tuple(reasons), version
     )
 
 
@@ -425,6 +494,7 @@ def _validated_context(turns: list[QuestionTurn]) -> tuple[str, ...]:
         claim.text
         for turn in turns
         if turn.answer.status in {"answered", "partial"}
+        and turn.answer.guardrail_decision.status == "allow"
         for claim in turn.answer.claims
     )
 
