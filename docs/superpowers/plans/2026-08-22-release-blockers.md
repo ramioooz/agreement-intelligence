@@ -41,7 +41,7 @@
 Add the Python auditor to the locked development toolchain:
 
 ```bash
-uv add --dev --exact pip-audit
+uv add --dev "pip-audit==2.10.1"
 ```
 
 Run:

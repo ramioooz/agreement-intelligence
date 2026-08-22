@@ -111,10 +111,12 @@ Run the narrow checks during development and the complete relevant checks
 before requesting review.
 
 Pull requests targeting `main` run the source-quality CI gate automatically.
-The current gate installs locked dependencies, runs `make check`, and checks
-for whitespace errors with `git diff --check`. Docker stack checks, dependency
-audits, secret scanning, and container scanning are intentionally handled by
-later security-hardening work.
+The current gate installs locked dependencies, rejects high or critical
+production JavaScript vulnerabilities, audits locked Python dependencies, runs
+`make check`, checks for whitespace errors with `git diff --check`, validates
+Terraform, and scans the complete checked-out history for leaked secrets.
+Container image scanning and fresh-stack browser verification run through the
+release-rehearsal workflow described in the operations documentation.
 
 | Change | Minimum evidence |
 | --- | --- |
