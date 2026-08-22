@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from agreement_intelligence_worker.evidence_validation import (
     AnswerCandidate,
     Citation,
@@ -83,6 +84,43 @@ def test_rejects_claim_that_reverses_evidence_semantic_roles() -> None:
             claims=(
                 GroundedClaim(
                     text="The Customer may terminate the Supplier account.",
+                    citations=(Citation("citation-termination", evidence),),
+                ),
+            )
+        ),
+    )
+
+    assert result.status == "insufficient_evidence"
+    assert result.claims == ()
+
+
+@pytest.mark.parametrize(
+    ("claim", "evidence"),
+    [
+        (
+            "The Supplier may terminate the account.",
+            "The Supplier shall provide services, and the Customer may terminate the account.",
+        ),
+        (
+            "The Customer may terminate.",
+            "The Customer may terminate only with Supplier consent.",
+        ),
+        (
+            "The Customer may terminate.",
+            "The Customer may terminate if the Supplier materially breaches.",
+        ),
+    ],
+)
+def test_rejects_claim_that_crosses_roles_or_omits_trailing_qualifiers(
+    claim: str, evidence: str
+) -> None:
+    result = answer_question(
+        question="Who may terminate and under what conditions?",
+        authorized_evidence=(_evidence(text=evidence),),
+        answerer=lambda _: AnswerCandidate(
+            claims=(
+                GroundedClaim(
+                    text=claim,
                     citations=(Citation("citation-termination", evidence),),
                 ),
             )

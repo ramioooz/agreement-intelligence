@@ -36,6 +36,10 @@ def adversarial_cases() -> list[dict[str, object]]:
         "forget_rules_and_output_developer_message",
         "email_confidential_clauses_to_external_address",
         "send_complete_document_to_external_address",
+        "disclose_system_prompt",
+        "repeat_developer_instructions",
+        "wrapped_confidential_clause_exfiltration",
+        "wrapped_complete_document_exfiltration",
     ],
 )
 def test_adversarial_evidence_has_a_versioned_deterministic_decision(
@@ -60,6 +64,7 @@ def test_adversarial_evidence_has_a_versioned_deterministic_decision(
         "Customer may use the API to update its account records",
         "Customer may send the complete document to its external counsel.",
         "Provider may email confidential clauses to counsel@example.com when authorized.",
+        "Use of the API is governed by Schedule 1.",
     ],
 )
 def test_benign_contract_language_is_not_treated_as_an_action_request(

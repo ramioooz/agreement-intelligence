@@ -26,6 +26,7 @@ from agreement_intelligence_api.qa.models import (
 )
 from agreement_intelligence_api.qa.repository import SQLAlchemyQuestionRepository
 from agreement_intelligence_api.search.schemas import SearchFilters, SearchResponse
+from agreement_intelligence_api.telemetry import operation_span
 
 
 @dataclass(frozen=True)
@@ -174,18 +175,19 @@ class GroundedQuestionService:
             filters=SearchFilters(query=question, agreement_ids=persisted.agreement_ids),
         )
         citation_sources = _citation_sources_from_search(results)
-        answer = answer_question(
-            question=question,
-            authorized_evidence=_evidence_from_search(results, citation_sources),
-            answerer=lambda request: self._answerer(
-                replace(
-                    request,
-                    conversation_context=_validated_context(
-                        self._redact_inaccessible_turns(persisted)[-10:]
-                    ),
-                )
-            ),
-        )
+        with operation_span("qa.answer.guardrails"):
+            answer = answer_question(
+                question=question,
+                authorized_evidence=_evidence_from_search(results, citation_sources),
+                answerer=lambda request: self._answerer(
+                    replace(
+                        request,
+                        conversation_context=_validated_context(
+                            self._redact_inaccessible_turns(persisted)[-10:]
+                        ),
+                    )
+                ),
+            )
         turn = QuestionTurn(
             id=uuid4(),
             question=question,

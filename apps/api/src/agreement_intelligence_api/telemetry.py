@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any, cast
 
 from agreement_intelligence_platform.privacy import safe_event_metadata
-from opentelemetry.trace import get_tracer
+from agreement_intelligence_platform.telemetry import operation_span as platform_operation_span
+from opentelemetry.trace import Span
 
 
 def redact_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
@@ -22,11 +22,10 @@ def redact_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
 
 
 @contextmanager
-def operation_span(name: str, attributes: Mapping[str, object] | None = None) -> Iterator[None]:
+def operation_span(name: str, attributes: Mapping[str, object] | None = None) -> Iterator[Span]:
     """Create a short-lived span with only redacted operational metadata."""
 
-    tracer = get_tracer("agreement-intelligence.api")
-    with tracer.start_as_current_span(
-        name, attributes=cast(Any, redact_attributes(attributes or {}))
-    ):
-        yield
+    with platform_operation_span(
+        "agreement-intelligence.api", name, redact_attributes(attributes or {})
+    ) as span:
+        yield span

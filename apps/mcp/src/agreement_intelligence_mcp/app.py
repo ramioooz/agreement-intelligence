@@ -9,6 +9,7 @@ from agreement_intelligence_api.db import engine
 from agreement_intelligence_api.documents.storage import DocumentStorage, storage_from_environment
 from agreement_intelligence_api.identity.authz import Principal, authenticate_access_token
 from agreement_intelligence_platform.privacy import safe_event_metadata
+from agreement_intelligence_platform.telemetry import configure_telemetry
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.context import Context
@@ -143,6 +144,7 @@ def create_server(
 
 
 def create_app() -> Any:
+    configure_telemetry("agreement-intelligence-mcp", environment=os.environ)
     server = create_server(_new_session, storage_from_environment)
     return server.streamable_http_app(
         streamable_http_path="/mcp",

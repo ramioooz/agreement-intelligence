@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Protocol, cast
 
+from agreement_intelligence_platform.telemetry import operation_span
 from botocore.exceptions import ClientError
 
 from agreement_intelligence_worker.analysis_provider import AnalysisProvider, ProviderTransientError
@@ -149,8 +150,11 @@ def _manifest(
         (anchor_id, text[:_MAX_PROVIDER_BLOCK_CHARACTERS])
         for anchor_id, text in blocks[:_MAX_PROVIDER_BLOCKS]
     ]
-    guardrail_decision = validate_untrusted_evidence(blocks, {anchor_id for anchor_id, _ in blocks})
-    record_guardrail_span_provenance(guardrail_decision)
+    with operation_span("agreement-intelligence.worker", "document.analysis.guardrails") as span:
+        guardrail_decision = validate_untrusted_evidence(
+            blocks, {anchor_id for anchor_id, _ in blocks}
+        )
+        record_guardrail_span_provenance(guardrail_decision, span=span)
     manifest = _deterministic_manifest(parsed, source, blocks)
     if analysis_provider is None:
         manifest["analysis_provenance"] = _deterministic_provenance(

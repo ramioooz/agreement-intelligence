@@ -4,6 +4,7 @@ import signal
 from dataclasses import dataclass
 
 import boto3
+from agreement_intelligence_platform.telemetry import configure_telemetry
 
 from agreement_intelligence_worker.analysis_provider import (
     fallback_comparator_from_environment,
@@ -188,6 +189,7 @@ def workflow_runtime_from_environment() -> WorkflowRuntime | None:
 
 
 def main() -> None:
+    configure_telemetry("agreement-intelligence-worker", environment=os.environ)
     configure_logging()
     asyncio.run(serve())
 
