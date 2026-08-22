@@ -23,7 +23,9 @@ _TOOL_OR_WRITE_ACTION = re.compile(
     r"|\b(?:delete|write|update|upload|send)\b.{0,32}\b(?:file|database|record|agreement|external|http)\b",
     re.IGNORECASE | re.DOTALL,
 )
-_BASE64_TOKEN = re.compile(r"\b(?:[A-Za-z0-9+/]{4})+(?:={0,2})\b")
+_BASE64_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9+/_-])(?:[A-Za-z0-9+/_-]{4})+(?:={0,2})(?![A-Za-z0-9+/_-])"
+)
 _HEX_TOKEN = re.compile(r"\b(?:[0-9a-fA-F]{2}){8,}\b")
 _MAX_DECODE_DEPTH = 2
 _MAX_DECODE_CANDIDATES = 8
@@ -96,7 +98,7 @@ def _decoded_text_candidates(text: str) -> tuple[str, ...]:
                     candidates.append(decoded)
                     next_pending.append(decoded)
                     if len(candidates) >= _MAX_DECODE_CANDIDATES:
-                        return tuple(candidates)
+                        return tuple(candidates + ["__decode_candidate_cap__"])
         pending = next_pending
         if not pending:
             break
@@ -117,6 +119,8 @@ def _decode_token(token: str) -> str | None:
 
 
 def _is_prohibited_decoded_request(text: str) -> bool:
+    if text == "__decode_candidate_cap__":
+        return True
     return bool(
         _PROMPT_EXFILTRATION.search(text)
         or _TOOL_OR_WRITE_ACTION.search(text)

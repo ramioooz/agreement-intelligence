@@ -460,6 +460,21 @@ def _guardrail_decision_from_payload(payload: dict[str, object]) -> GuardrailDec
         or not all(isinstance(reason, str) for reason in reasons)
     ):
         return None
+    blocking_reasons = {
+        "unknown_anchor_id",
+        "prompt_exfiltration_request",
+        "encoded_exfiltration_request",
+        "tool_or_write_action_request",
+    }
+    known_reasons = blocking_reasons | {"instruction_override_marker"}
+    if any(reason not in known_reasons for reason in reasons):
+        return None
+    if (
+        (status == "allow" and reasons)
+        or (status == "review" and any(reason in blocking_reasons for reason in reasons))
+        or (status == "block" and not any(reason in blocking_reasons for reason in reasons))
+    ):
+        return None
     return GuardrailDecision(
         cast(Literal["allow", "review", "block"], status), tuple(reasons), version
     )
