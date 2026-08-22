@@ -173,7 +173,7 @@ def _manifest(
     except ProviderOutputValidationError:
         return _provider_fallback(manifest, guardrail_decision)
 
-    manifest.update(_provider_artifact_fields(enriched))
+    _merge_provider_enrichment(manifest, enriched)
     manifest["analysis_provenance"] = _provider_provenance(enriched, guardrail_decision)
     return manifest
 
@@ -220,11 +220,6 @@ def _provider_fallback(
 
 
 def _provider_artifact_fields(enriched: ValidatedAnalysis) -> dict[str, object]:
-    classification: dict[str, object] = {
-        **enriched.classification,
-        "version": _PROVIDER_ANALYSIS_VERSION,
-        "evidence_terms": [],
-    }
     clauses = [
         {
             "category": clause["category"],
@@ -249,11 +244,72 @@ def _provider_artifact_fields(enriched: ValidatedAnalysis) -> dict[str, object]:
         for summary_type, summary in enriched.summaries.items()
     }
     return {
-        "classification": classification,
         "clauses": clauses,
         "risks": enriched.risks,
         "summaries": summaries,
     }
+
+
+def _merge_provider_enrichment(manifest: dict[str, object], enriched: ValidatedAnalysis) -> None:
+    provider_fields = _provider_artifact_fields(enriched)
+    manifest["clauses"] = _merge_cited_items(
+        cast(list[dict[str, object]], manifest["clauses"]),
+        cast(list[dict[str, object]], provider_fields["clauses"]),
+        identity_field="category",
+    )
+    manifest["risks"] = _merge_cited_items(
+        cast(list[dict[str, object]], manifest["risks"]),
+        cast(list[dict[str, object]], provider_fields["risks"]),
+        identity_field="affected_category",
+    )
+    manifest["summaries"] = _merge_summary_claims(
+        cast(dict[str, object], manifest["summaries"]),
+        cast(dict[str, object], provider_fields["summaries"]),
+    )
+
+
+def _merge_summary_claims(
+    deterministic: dict[str, object], enrichment: dict[str, object]
+) -> dict[str, object]:
+    for summary_type, summary_value in deterministic.items():
+        summary = cast(dict[str, object], summary_value)
+        provider_summary = cast(dict[str, object], enrichment[summary_type])
+        summary["claims"] = _merge_cited_items(
+            cast(list[dict[str, object]], summary["claims"]),
+            cast(list[dict[str, object]], provider_summary["claims"]),
+            identity_field=None,
+        )
+    return deterministic
+
+
+def _merge_cited_items(
+    deterministic: list[dict[str, object]],
+    enrichment: list[dict[str, object]],
+    *,
+    identity_field: str | None,
+) -> list[dict[str, object]]:
+    merged = list(deterministic)
+    identities = {_cited_identity(item, identity_field) for item in deterministic}
+    for item in enrichment:
+        identity = _cited_identity(item, identity_field)
+        if identity in identities:
+            continue
+        merged.append(item)
+        identities.add(identity)
+    return merged
+
+
+def _cited_identity(
+    item: dict[str, object], identity_field: str | None
+) -> tuple[object, tuple[str, ...]]:
+    identity = item.get(identity_field) if identity_field is not None else None
+    citations = item.get("citation_anchor_ids")
+    citation_ids = (
+        tuple(sorted({citation for citation in citations if isinstance(citation, str)}))
+        if isinstance(citations, list)
+        else ()
+    )
+    return identity, citation_ids
 
 
 def _deterministic_provenance(

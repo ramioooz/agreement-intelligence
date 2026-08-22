@@ -284,7 +284,7 @@ def _deterministic_finding(
 ) -> tuple[EvaluatedFinding, Mapping[str, object] | None]:
     if not candidates:
         return _finding(rule, FindingResult.NEEDS_REVIEW, 0.0, [], "unknown"), None
-    clause = max(candidates, key=_confidence)
+    clause = max(candidates, key=_clause_authority)
     confidence = _confidence(clause)
     citations = _citations(clause)
     extraction_version = _string(clause.get("extraction_version"), "unknown")
@@ -429,6 +429,11 @@ def _canonical_clause_type(value: object) -> str:
 def _confidence(clause: Mapping[str, object]) -> float:
     value = clause.get("confidence")
     return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0.0
+
+
+def _clause_authority(clause: Mapping[str, object]) -> tuple[bool, float]:
+    is_deterministic = clause.get("extraction_version") != "provider-hybrid.v1"
+    return is_deterministic, _confidence(clause)
 
 
 def _citations(clause: Mapping[str, object]) -> list[str]:
