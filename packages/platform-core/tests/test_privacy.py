@@ -1,3 +1,6 @@
+from importlib.resources import files
+
+import agreement_intelligence_platform
 import pytest
 from agreement_intelligence_platform.privacy import (
     DataClass,
@@ -6,6 +9,10 @@ from agreement_intelligence_platform.privacy import (
     retention_policy_metadata,
     safe_event_metadata,
 )
+
+
+def test_platform_package_declares_inline_types() -> None:
+    assert files(agreement_intelligence_platform).joinpath("py.typed").is_file()
 
 
 @pytest.mark.parametrize(
