@@ -92,6 +92,33 @@ def test_manual_evaluation_prefers_deterministic_clause_over_provider_enrichment
     assert extraction_version == "clause-rules.v1"
 
 
+def test_manual_evaluation_keeps_review_when_only_provider_clause_exists() -> None:
+    rule = PlaybookRuleRecord(
+        clause_type="termination",
+        policy_type="required",
+        preferred_language="either party may terminate",
+    )
+    analysis = {
+        "clauses": [
+            {
+                "category": "termination",
+                "source_text": "Either party may terminate with 30 days' notice.",
+                "confidence": 1.0,
+                "citation_anchor_ids": ["citation-provider"],
+                "extraction_version": "provider-hybrid.v1",
+            }
+        ]
+    }
+
+    _, result, confidence, citations, method, extraction_version = _evaluate(rule, analysis)
+
+    assert result.value == "needs_review"
+    assert confidence == 0.0
+    assert citations == []
+    assert method == "deterministic"
+    assert extraction_version == "unknown"
+
+
 def test_reviewer_submits_and_reads_a_scoped_evaluation_with_provenance(
     session: Session, client_for_session: Callable[[UUID], TestClient]
 ) -> None:

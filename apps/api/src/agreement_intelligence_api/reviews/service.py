@@ -323,6 +323,7 @@ def _evaluate(
             for item in clauses
             if isinstance(item, Mapping)
             and _normalized(item.get("category")) == _normalized(rule.clause_type)
+            and item.get("extraction_version") != "provider-hybrid.v1"
         ]
         if isinstance(clauses, list)
         else []

@@ -247,6 +247,7 @@ def evaluate_playbook(
             for clause in clauses
             if _canonical_clause_type(clause.get("category"))
             == _canonical_clause_type(rule.clause_type)
+            and clause.get("extraction_version") != "provider-hybrid.v1"
         ]
         finding, selected_clause = _deterministic_finding(rule, candidates)
         if _may_assess_semantically(rule, finding, selected_clause, semantic_assessor):
