@@ -21,7 +21,7 @@ from agreement_intelligence_api.reviews.models import (
     PlaybookEvaluationRecord,
     PlaybookFindingRecord,
 )
-from agreement_intelligence_mcp.app import create_server
+from agreement_intelligence_mcp.app import _safe_context_headers, create_server
 from agreement_intelligence_mcp.auth import OidcBearerTokenVerifier
 from agreement_intelligence_mcp.models import McpAuditEventRecord
 from agreement_intelligence_mcp.service import (
@@ -137,6 +137,19 @@ def test_sdk_server_exposes_only_the_read_only_tools() -> None:
     }
 
 
+def test_mcp_context_headers_exclude_credentials_and_untrusted_baggage() -> None:
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+    assert _safe_context_headers(
+        {
+            "Authorization": "Bearer private-token",
+            "baggage": "email=private.person@example.test",
+            "traceparent": traceparent,
+            "tracestate": "vendor=value",
+        }
+    ) == {"traceparent": traceparent}
+
+
 def test_search_returns_no_results_with_an_immutable_audit_event(session: Session) -> None:
     principal, organization, workspace = _scope(session)
     service = McpReadService(session, MemoryStorage({}))
@@ -155,6 +168,31 @@ def test_search_returns_no_results_with_an_immutable_audit_event(session: Sessio
     assert event is not None
     assert event.tool_name == "search_agreements"
     assert event.outcome == "success"
+
+
+def test_mcp_audit_attributes_use_the_shared_privacy_boundary(session: Session) -> None:
+    principal, organization, workspace = _scope(session)
+    service = McpReadService(session, MemoryStorage({}))
+
+    with service._audit_scope(
+        principal,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=None,
+        context=_context("search_agreements"),
+        attributes={
+            "prompt": "private prompt",
+            "provider_output": "private response",
+            "authorization": "Bearer private-token",
+            "custom_context": "not approved for persistence",
+            "status": "completed",
+        },
+    ):
+        pass
+
+    event = session.scalar(select(McpAuditEventRecord))
+    assert event is not None
+    assert event.attributes == {"status": "completed"}
 
 
 def test_cross_tenant_scope_is_hidden(session: Session) -> None:

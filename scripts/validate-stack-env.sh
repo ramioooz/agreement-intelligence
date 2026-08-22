@@ -47,6 +47,9 @@ OIDC_INTERNAL_ISSUER
 WEB_PUBLIC_ORIGIN
 AUTH_URL
 AUTH_SECRET
+AUDIT_RETENTION_DAYS
+TELEMETRY_RETENTION_DAYS
+APPLICATION_LOG_RETENTION_DAYS
 DEMO_REVIEWER_USERNAME
 DEMO_REVIEWER_EMAIL
 DEMO_REVIEWER_FIRST_NAME
@@ -91,6 +94,14 @@ for variable in $required_variables; do
       exit 1
       ;;
   esac
+done
+
+for variable in AUDIT_RETENTION_DAYS TELEMETRY_RETENTION_DAYS APPLICATION_LOG_RETENTION_DAYS; do
+  value=$(effective_value "$variable")
+  printf '%s\n' "$value" | grep -Eq '^[1-9][0-9]*$' || {
+    echo "$variable must be a positive integer."
+    exit 1
+  }
 done
 
 for variable in APP_DB_NAME APP_DB_USER KEYCLOAK_DB_NAME KEYCLOAK_DB_USER; do

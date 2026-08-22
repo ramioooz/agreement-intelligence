@@ -11,27 +11,14 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any, cast
 
+from agreement_intelligence_platform.privacy import safe_event_metadata
 from opentelemetry.trace import get_tracer
-
-_SENSITIVE_KEYS = frozenset(
-    {
-        "document_text",
-        "prompt",
-        "provider_output",
-        "access_token",
-        "authorization",
-        "api_key",
-        "secret",
-        "email",
-        "raw_text",
-    }
-)
 
 
 def redact_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
     """Return attributes safe for telemetry exporters."""
 
-    return {key: value for key, value in attributes.items() if key.lower() not in _SENSITIVE_KEYS}
+    return safe_event_metadata(attributes)
 
 
 @contextmanager

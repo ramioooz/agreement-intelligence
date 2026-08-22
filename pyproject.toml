@@ -18,7 +18,7 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["apps/api", "apps/mcp", "apps/worker"]
+members = ["apps/api", "apps/mcp", "apps/worker", "packages/platform-core"]
 
 [tool.ruff]
 target-version = "py313"
@@ -29,7 +29,12 @@ select = ["B", "E", "F", "I", "SIM", "UP"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
-testpaths = ["apps/api/tests", "apps/mcp/tests", "apps/worker/tests"]
+testpaths = [
+  "apps/api/tests",
+  "apps/mcp/tests",
+  "apps/worker/tests",
+  "packages/platform-core/tests",
+]
 
 [tool.mypy]
 python_version = "3.13"

@@ -92,3 +92,19 @@ def test_worker_structured_logs_do_not_emit_sensitive_fields() -> None:
         "message": "[redacted]",
         "service": "worker",
     }
+
+
+def test_worker_structured_logs_redact_email_addresses_in_messages() -> None:
+    record = logging.LogRecord(
+        name="agreement_intelligence.worker",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=1,
+        msg="job completed for private.person@example.test",
+        args=(),
+        exc_info=None,
+    )
+
+    payload = json.loads(JsonFormatter().format(record))
+
+    assert payload["message"] == "[redacted]"

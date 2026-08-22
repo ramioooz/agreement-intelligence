@@ -1,12 +1,8 @@
 import json
 import logging
-import re
 from typing import Any
 
-SENSITIVE_MESSAGE_PATTERN = re.compile(
-    r"\b(agreement|bearer|credential|password|secret|token)\b",
-    re.IGNORECASE,
-)
+from agreement_intelligence_platform.privacy import redact_mapping
 
 
 class JsonFormatter(logging.Formatter):
@@ -15,12 +11,12 @@ class JsonFormatter(logging.Formatter):
             "correlation_id": getattr(record, "correlation_id", "unavailable"),
             "event": getattr(record, "event", "log"),
             "level": record.levelname,
-            "message": _safe_message(record.getMessage()),
+            "message": record.getMessage(),
             "service": getattr(record, "service", "worker"),
         }
 
         return json.dumps(
-            payload,
+            redact_mapping(payload),
             separators=(",", ":"),
             sort_keys=True,
         )
@@ -35,10 +31,3 @@ def configure_logging() -> None:
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
     logger.propagate = False
-
-
-def _safe_message(message: str) -> str:
-    if SENSITIVE_MESSAGE_PATTERN.search(message):
-        return "[redacted]"
-
-    return message
