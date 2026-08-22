@@ -94,6 +94,27 @@ def test_rejects_claim_that_reverses_evidence_semantic_roles() -> None:
     assert result.claims == ()
 
 
+def test_rejects_claim_that_changes_punctuation_sensitive_meaning() -> None:
+    evidence = "The subsidiaries, which are insolvent, are excluded."
+    claim = "The subsidiaries which are insolvent are excluded."
+
+    result = answer_question(
+        question="Which subsidiaries are excluded?",
+        authorized_evidence=(_evidence(text=evidence),),
+        answerer=lambda _: AnswerCandidate(
+            claims=(
+                GroundedClaim(
+                    text=claim,
+                    citations=(Citation("citation-termination", evidence),),
+                ),
+            )
+        ),
+    )
+
+    assert result.status == "insufficient_evidence"
+    assert result.claims == ()
+
+
 @pytest.mark.parametrize(
     ("claim", "evidence"),
     [

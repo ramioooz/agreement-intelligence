@@ -19,16 +19,18 @@ _INSTRUCTION_OVERRIDE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _PROMPT_EXFILTRATION = re.compile(
-    r"\b(?:disclose|repeat|reveal|show|print|expose|output)\b.{0,48}"
+    r"\b(?:disclose|repeat|reveal|show|print|expose|output|tell(?:\s+me)?)\b.{0,48}"
     r"\b(?:system|developer|hidden|prompt|instruction)\b",
     re.IGNORECASE | re.DOTALL,
 )
 _TOOL_OR_WRITE_ACTION = re.compile(
     r"(?:^|(?<=[.!?]))\s*(?:(?:please|you\s+(?:must|should))\s+|instruction\s*:\s*)?(?:"
-    r"(?:use(?!\s+of\b)|call|invoke|run|execute)\b.{0,32}\b(?:tool|function|mcp|api)\b"
+    r"(?:use(?!\s+of\b)|call(?!\s+of\b)|invoke|run|execute)\b.{0,32}"
+    r"\b(?:tool|function|mcp|api)\b"
     r"|(?:delete|write|update|upload|send)\b.{0,32}"
     r"\b(?:file|database|record|agreement|external|http)\b"
-    r"|(?:email|send)\b.{0,48}\b(?:confidential\s+clauses?|complete\s+document)\b"
+    r"|(?:email|send|forward)\b.{0,48}"
+    r"\b(?:confidential\s+clauses?|complete\s+document)\b"
     r")",
     re.IGNORECASE | re.DOTALL | re.MULTILINE,
 )

@@ -182,11 +182,15 @@ def extract_supporting_quote(claim: str, evidence: str) -> str | None:
     one complete evidence sentence so roles, conditions, exceptions, and trailing
     qualifiers cannot be skipped by a token-subsequence match.
     """
-    claim_tokens = _tokens(claim)
-    if not claim_tokens:
+    normalized_claim = _normalized_sentence(claim)
+    if not _tokens(claim):
         return None
     return next(
-        (sentence for sentence in _sentences(evidence) if _tokens(sentence) == claim_tokens),
+        (
+            sentence
+            for sentence in _sentences(evidence)
+            if _normalized_sentence(sentence) == normalized_claim
+        ),
         None,
     )
 
@@ -282,6 +286,12 @@ def _sentences(value: str) -> tuple[str, ...]:
 
 def _tokens(value: str) -> tuple[str, ...]:
     return tuple(match.group() for match in re.finditer(r"[^\W_]+", value.casefold()))
+
+
+def _normalized_sentence(value: str) -> str:
+    """Normalize casing and whitespace while preserving meaning-bearing punctuation."""
+
+    return " ".join(value.casefold().split())
 
 
 def _valid_question(question: str) -> bool:
