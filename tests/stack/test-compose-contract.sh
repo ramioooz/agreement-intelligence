@@ -9,6 +9,18 @@ test -f compose.yaml || {
   exit 1
 }
 
+for pattern in \
+  '!packages/' \
+  '!packages/platform-core/' \
+  '!packages/platform-core/pyproject.toml' \
+  '!packages/platform-core/src/' \
+  '!packages/platform-core/src/**'; do
+  grep -Fqx -- "$pattern" .dockerignore || {
+    echo ".dockerignore must include shared platform build context: $pattern"
+    exit 1
+  }
+done
+
 for dockerfile in apps/api/Dockerfile apps/worker/Dockerfile apps/mcp/Dockerfile; do
   grep -q 'COPY packages/platform-core/pyproject.toml packages/platform-core/pyproject.toml' \
     "$dockerfile" || {
