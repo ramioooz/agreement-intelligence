@@ -8,7 +8,9 @@ from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
     EmbeddingRequest,
     GatewayConfigurationError,
+    GatewayResponseError,
     GatewayUnavailableError,
+    GroundedAnswerRequest,
     ModelGatewayConfiguration,
     OpenAIModelGateway,
     embedding_configuration_from_environment,
@@ -196,6 +198,29 @@ def test_unavailable_compatible_endpoint_has_a_safe_failure_reason_without_fallb
         gateway.generate_json(instruction="Return JSON.", payload={"input": "x"})
 
     assert error.value.safe_reason == "compatible_endpoint_unavailable"
+
+
+def test_grounded_answer_rejects_a_citation_outside_the_request_allow_list() -> None:
+    gateway = OpenAIModelGateway(
+        ModelGatewayConfiguration(
+            mode="openai",
+            model="gpt-5.4-mini",
+            endpoint_kind="hosted",
+            base_url=None,
+            api_key="test-key",
+        ),
+        client=_HostedClient(
+            _Response(json.dumps({"answer": "Unsupported.", "citation_ids": ["citation-z"]}))
+        ),
+    )
+
+    with raises(GatewayResponseError, match="unknown citation"):
+        gateway.answer(
+            GroundedAnswerRequest(
+                question="What is the termination right?",
+                evidence=(("citation-a", "Termination is permitted on notice."),),
+            )
+        )
 
 
 class _FailingCompatibleClient:

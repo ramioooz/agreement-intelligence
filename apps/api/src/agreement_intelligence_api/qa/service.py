@@ -206,6 +206,7 @@ class GroundedQuestionService:
                         retrieval_provenance={
                             "result_count": len(results.items),
                             "citation_sources": _citation_sources_payload(citation_sources),
+                            "guardrail": turn.answer.guardrail_decision.provenance(),
                         },
                     )
                 )

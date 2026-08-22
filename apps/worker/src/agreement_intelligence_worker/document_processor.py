@@ -15,6 +15,10 @@ from agreement_intelligence_worker.analysis_validation import (
 from agreement_intelligence_worker.classification import classify_document
 from agreement_intelligence_worker.clause_extraction import extract_clauses
 from agreement_intelligence_worker.document_understanding import ParsedDocument, parse_document
+from agreement_intelligence_worker.guardrails import (
+    GuardrailDecision,
+    validate_untrusted_evidence,
+)
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     PermanentProcessingError,
@@ -138,20 +142,22 @@ def _manifest(
     analysis_provider: AnalysisProvider | None,
 ) -> dict[str, object]:
     blocks = [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
+    guardrail_decision = validate_untrusted_evidence(blocks, {anchor_id for anchor_id, _ in blocks})
     manifest = _deterministic_manifest(parsed, source, blocks)
     if analysis_provider is None:
-        manifest["analysis_provenance"] = {
-            "mode": "deterministic",
-            "fallback_reason": "provider_not_configured",
-        }
+        manifest["analysis_provenance"] = _deterministic_provenance(
+            "provider_not_configured", guardrail_decision
+        )
         return manifest
+    if guardrail_decision.status == "block":
+        return _provider_fallback(manifest, guardrail_decision)
 
     try:
         provider_analysis = analysis_provider.analyze(blocks)
     except (ProviderTransientError, TimeoutError, ConnectionError) as error:
         raise TransientProcessingError("Provider enrichment temporarily unavailable") from error
     except Exception:
-        return _provider_fallback(manifest)
+        return _provider_fallback(manifest, guardrail_decision)
 
     try:
         enriched = validate_provider_analysis(
@@ -159,10 +165,10 @@ def _manifest(
             {anchor_id for anchor_id, _ in blocks},
         )
     except ProviderOutputValidationError:
-        return _provider_fallback(manifest)
+        return _provider_fallback(manifest, guardrail_decision)
 
     manifest.update(_provider_artifact_fields(enriched))
-    manifest["analysis_provenance"] = _provider_provenance(enriched)
+    manifest["analysis_provenance"] = _provider_provenance(enriched, guardrail_decision)
     return manifest
 
 
@@ -190,7 +196,9 @@ def _deterministic_manifest(
     }
 
 
-def _provider_fallback(manifest: dict[str, object]) -> dict[str, object]:
+def _provider_fallback(
+    manifest: dict[str, object], guardrail_decision: GuardrailDecision
+) -> dict[str, object]:
     diagnostics = cast(list[dict[str, object]], manifest["diagnostics"])
     diagnostics.append(
         {
@@ -199,10 +207,9 @@ def _provider_fallback(manifest: dict[str, object]) -> dict[str, object]:
             "page_numbers": [],
         }
     )
-    manifest["analysis_provenance"] = {
-        "mode": "deterministic",
-        "fallback_reason": "provider_fallback",
-    }
+    manifest["analysis_provenance"] = _deterministic_provenance(
+        "provider_fallback", guardrail_decision
+    )
     return manifest
 
 
@@ -243,7 +250,19 @@ def _provider_artifact_fields(enriched: ValidatedAnalysis) -> dict[str, object]:
     }
 
 
-def _provider_provenance(enriched: ValidatedAnalysis) -> dict[str, object]:
+def _deterministic_provenance(
+    fallback_reason: str, guardrail_decision: GuardrailDecision
+) -> dict[str, object]:
+    return {
+        "mode": "deterministic",
+        "fallback_reason": fallback_reason,
+        "guardrail": guardrail_decision.provenance(),
+    }
+
+
+def _provider_provenance(
+    enriched: ValidatedAnalysis, guardrail_decision: GuardrailDecision
+) -> dict[str, object]:
     provenance: dict[str, object] = {
         "mode": "hybrid",
         "provider": "openai",
@@ -251,6 +270,7 @@ def _provider_provenance(enriched: ValidatedAnalysis) -> dict[str, object]:
         "schema_version": _PROVIDER_SCHEMA_VERSION,
         "prompt_version": _PROVIDER_PROMPT_VERSION,
         "latency_ms": enriched.provenance["latency_ms"],
+        "guardrail": guardrail_decision.provenance(),
     }
     if enriched.provenance["input_tokens"] is not None:
         provenance["input_tokens"] = enriched.provenance["input_tokens"]

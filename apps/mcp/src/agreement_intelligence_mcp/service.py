@@ -23,6 +23,7 @@ from agreement_intelligence_api.reviews.models import (
     PlaybookFindingRecord,
 )
 from agreement_intelligence_platform.privacy import safe_event_metadata
+from agreement_intelligence_worker.guardrails import validate_untrusted_evidence
 from opentelemetry.context.context import Context as OtelContext
 from opentelemetry.propagate import extract
 from opentelemetry.trace import get_current_span, get_tracer
@@ -146,19 +147,37 @@ class McpReadService:
     ) -> dict[str, object]:
         if not citation_id.startswith("citation-") or len(citation_id) > 128:
             raise ValueError("citation_id is invalid")
+        audit_attributes: dict[str, object] = {
+            "citation_id": citation_id,
+            "guardrail_policy_version": "untrusted-evidence.v1",
+            "guardrail_status": "allow",
+            "guardrail_reason_codes": [],
+        }
         with self._audit_scope(
             principal,
             organization_id=organization_id,
             workspace_id=workspace_id,
             agreement_id=agreement_id,
             context=context,
-            attributes={"citation_id": citation_id},
+            attributes=audit_attributes,
         ):
             self._agreement(agreement_id, organization_id, workspace_id)
             artifact_key = self._completed_artifact_key(agreement_id, organization_id, workspace_id)
             document = self._storage.read(artifact_key) if artifact_key else None
             citation = _citation_from_artifact(document, citation_id)
             if citation is None:
+                raise ResourceNotFoundError
+            decision = validate_untrusted_evidence(
+                [(citation_id, str(citation["excerpt"]))], {citation_id}
+            )
+            audit_attributes.update(
+                {
+                    "guardrail_policy_version": decision.policy_version,
+                    "guardrail_status": decision.status,
+                    "guardrail_reason_codes": list(decision.reason_codes),
+                }
+            )
+            if decision.status == "block":
                 raise ResourceNotFoundError
             return citation
 
@@ -228,6 +247,7 @@ class McpReadService:
                 self._authorize(principal, organization_id, workspace_id)
                 yield
             except (ResourceNotFoundError, ValueError):
+                _record_guardrail_span_provenance(span, attributes)
                 self._record_audit(
                     principal,
                     organization_id,
@@ -241,6 +261,7 @@ class McpReadService:
                 )
                 raise
             except Exception:
+                _record_guardrail_span_provenance(span, attributes)
                 self._record_audit(
                     principal,
                     organization_id,
@@ -254,6 +275,7 @@ class McpReadService:
                 )
                 raise
             else:
+                _record_guardrail_span_provenance(span, attributes)
                 self._record_audit(
                     principal,
                     organization_id,
@@ -329,6 +351,24 @@ class McpReadService:
             )
         )
         self._session.commit()
+
+
+def _record_guardrail_span_provenance(span: object, attributes: dict[str, object]) -> None:
+    """Attach only privacy-approved guardrail metadata to the active span."""
+
+    setter = getattr(span, "set_attribute", None)
+    if not callable(setter):
+        return
+    safe_attributes = safe_event_metadata(attributes)
+    policy_version = safe_attributes.get("guardrail_policy_version")
+    status = safe_attributes.get("guardrail_status")
+    reason_codes = safe_attributes.get("guardrail_reason_codes")
+    if isinstance(policy_version, str):
+        setter("guardrail.policy_version", policy_version)
+    if isinstance(status, str):
+        setter("guardrail.status", status)
+    if isinstance(reason_codes, list) and all(isinstance(reason, str) for reason in reason_codes):
+        setter("guardrail.reason_codes", reason_codes)
 
 
 def _citation_from_artifact(
