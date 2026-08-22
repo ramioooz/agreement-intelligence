@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 from agreement_intelligence_worker.analysis_provider import ProviderAnalysis
 from agreement_intelligence_worker.analysis_validation import (
@@ -48,9 +50,18 @@ VALID_RESPONSE = ProviderAnalysis(
     latency_ms=30,
 )
 
+REQUESTED_EVIDENCE = (
+    "The agreement governs a client account. "
+    "Either party may terminate with 30 days' notice. "
+    "Termination is available without cause. "
+    "The client account may be terminated on 30 days' notice. "
+    "The termination clause applies to either party."
+)
+ALLOWED_EVIDENCE = {"citation-a": REQUESTED_EVIDENCE}
+
 
 def test_validator_accepts_cited_clause_risk_and_summary() -> None:
-    validated = validate_provider_analysis(VALID_RESPONSE, {"citation-a"})
+    validated = validate_provider_analysis(VALID_RESPONSE, ALLOWED_EVIDENCE)
 
     assert validated.risks[0]["citation_anchor_ids"] == ["citation-a"]
 
@@ -64,7 +75,7 @@ def test_validator_rejects_a_claim_with_an_unknown_anchor() -> None:
     )
 
     with pytest.raises(ProviderOutputValidationError, match="unknown citation anchor"):
-        validate_provider_analysis(unknown_anchor_response, {"citation-a"})
+        validate_provider_analysis(unknown_anchor_response, ALLOWED_EVIDENCE)
 
 
 def test_validator_rejects_a_clause_excerpt_not_supported_by_its_requested_anchor() -> None:
@@ -76,9 +87,88 @@ def test_validator_rejects_a_clause_excerpt_not_supported_by_its_requested_ancho
     )
 
     with pytest.raises(ProviderOutputValidationError, match="source excerpt"):
-        validate_provider_analysis(
-            response, {"citation-a": "Either party may terminate with 30 days' notice."}
-        )
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
+
+
+def test_validator_rejects_an_empty_clause_excerpt() -> None:
+    response = ProviderAnalysis(
+        **{
+            **VALID_RESPONSE.__dict__,
+            "clauses": [{**VALID_RESPONSE.clauses[0], "source_excerpt": "   "}],
+        }
+    )
+
+    with pytest.raises(ProviderOutputValidationError, match="source excerpt"):
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
+
+
+def test_validator_rejects_an_ungrounded_classification_rationale() -> None:
+    response = ProviderAnalysis(
+        **{
+            **VALID_RESPONSE.__dict__,
+            "classification": {
+                **VALID_RESPONSE.classification,
+                "rationale": "Invented classification rationale.",
+            },
+        }
+    )
+
+    with pytest.raises(ProviderOutputValidationError, match="classification rationale"):
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
+
+
+def test_validator_rejects_an_ungrounded_risk_explanation() -> None:
+    response = ProviderAnalysis(
+        **{
+            **VALID_RESPONSE.__dict__,
+            "risks": [{**VALID_RESPONSE.risks[0], "explanation": "Invented unlimited exposure."}],
+        }
+    )
+
+    with pytest.raises(ProviderOutputValidationError, match="risk explanation"):
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
+
+
+def test_validator_rejects_an_ungrounded_summary_claim() -> None:
+    response = ProviderAnalysis(
+        **{
+            **VALID_RESPONSE.__dict__,
+            "summaries": {
+                **VALID_RESPONSE.summaries,
+                "business": {
+                    **VALID_RESPONSE.summaries["business"],
+                    "claim": "Invented business summary.",
+                },
+            },
+        }
+    )
+
+    with pytest.raises(ProviderOutputValidationError, match="summary claim"):
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
+
+
+def test_validator_rejects_ungrounded_normalized_fields() -> None:
+    response = ProviderAnalysis(
+        **{
+            **VALID_RESPONSE.__dict__,
+            "clauses": [
+                {
+                    **VALID_RESPONSE.clauses[0],
+                    "normalized_fields": [{"name": "period", "value": "90 days"}],
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ProviderOutputValidationError, match="normalized field"):
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
+
+
+def test_validator_rejects_the_evidence_free_anchor_set_compatibility_route() -> None:
+    evidence_free_anchors = cast(Any, {"citation-a"})
+
+    with pytest.raises(ProviderOutputValidationError, match="evidence mapping"):
+        validate_provider_analysis(VALID_RESPONSE, evidence_free_anchors)
 
 
 @pytest.mark.parametrize(
@@ -97,7 +187,7 @@ def test_validator_rejects_invalid_risk_claims(field: str, value: object, messag
     )
 
     with pytest.raises(ProviderOutputValidationError, match=message):
-        validate_provider_analysis(response, {"citation-a"})
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
 
 
 @pytest.mark.parametrize(
@@ -119,7 +209,7 @@ def test_validator_rejects_unknown_category_or_severity(
     )
 
     with pytest.raises(ProviderOutputValidationError):
-        validate_provider_analysis(response, {"citation-a"})
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
 
 
 def test_validator_rejects_oversized_content_before_artifact_creation() -> None:
@@ -137,7 +227,7 @@ def test_validator_rejects_oversized_content_before_artifact_creation() -> None:
     )
 
     with pytest.raises(ProviderOutputValidationError, match="maximum length"):
-        validate_provider_analysis(response, {"citation-a"})
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
 
 
 def test_validator_rejects_an_unknown_agreement_family() -> None:
@@ -149,7 +239,7 @@ def test_validator_rejects_an_unknown_agreement_family() -> None:
     )
 
     with pytest.raises(ProviderOutputValidationError, match="Unsupported agreement family"):
-        validate_provider_analysis(response, {"citation-a"})
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)
 
 
 @pytest.mark.parametrize("summaries", [{}, {"business": VALID_RESPONSE.summaries["business"]}])
@@ -159,4 +249,4 @@ def test_validator_rejects_omitted_or_empty_required_summaries(
     response = ProviderAnalysis(**{**VALID_RESPONSE.__dict__, "summaries": summaries})
 
     with pytest.raises(ProviderOutputValidationError, match="required summaries"):
-        validate_provider_analysis(response, {"citation-a"})
+        validate_provider_analysis(response, ALLOWED_EVIDENCE)

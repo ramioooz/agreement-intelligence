@@ -10,6 +10,7 @@ from agreement_intelligence_worker.evidence_validation import (
     GroundedClaim,
 )
 from agreement_intelligence_worker.model_gateway import (
+    GroundedAnswerRequest,
     ModelGateway,
     embedding_configuration_from_environment,
     embedding_gateway_from_environment,
@@ -133,50 +134,28 @@ def _gateway_answerer(gateway: ModelGateway | None) -> Answerer:
 
         if gateway is None or not isinstance(request, GroundedQuestionRequest):
             raise RuntimeError("model gateway unavailable")
-        result = gateway.generate_json(
-            instruction=request.instructions,
-            payload={
-                "question": request.question,
-                "conversation_context": list(request.conversation_context),
-                "evidence": {
-                    "trust": "untrusted",
-                    "blocks": [
-                        {"anchor_id": item.anchor.anchor_id, "text": item.text}
-                        for item in request.evidence
-                    ],
-                },
-                "response_contract": {
-                    "claims": [
-                        {
-                            "text": "string",
-                            "citations": [{"anchor_id": "string", "supporting_quote": "string"}],
-                        }
-                    ]
-                },
-            },
-        )
-        raw_claims = result.payload.get("claims")
-        if not isinstance(raw_claims, list):
-            return AnswerCandidate(claims=())
-        claims: list[GroundedClaim] = []
-        for raw_claim in raw_claims:
-            if not isinstance(raw_claim, dict) or not isinstance(raw_claim.get("text"), str):
-                continue
-            raw_citations = raw_claim.get("citations")
-            if not isinstance(raw_citations, list):
-                continue
-            citations = tuple(
-                Citation(
-                    anchor_id=item["anchor_id"],
-                    supporting_quote=item["supporting_quote"],
-                )
-                for item in raw_citations
-                if isinstance(item, dict)
-                and isinstance(item.get("anchor_id"), str)
-                and isinstance(item.get("supporting_quote"), str)
+        requested_evidence = {item.anchor.anchor_id: item.text for item in request.evidence}
+        result = gateway.answer(
+            GroundedAnswerRequest(
+                question=request.question,
+                evidence=tuple(requested_evidence.items()),
+                conversation_context=request.conversation_context,
             )
-            claims.append(GroundedClaim(text=raw_claim["text"], citations=citations))
-        return AnswerCandidate(claims=tuple(claims))
+        )
+        return AnswerCandidate(
+            claims=(
+                GroundedClaim(
+                    text=result.answer,
+                    citations=tuple(
+                        Citation(
+                            anchor_id=anchor_id,
+                            supporting_quote=requested_evidence[anchor_id],
+                        )
+                        for anchor_id in result.citation_ids
+                    ),
+                ),
+            )
+        )
 
     return answer
 

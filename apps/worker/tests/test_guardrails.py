@@ -28,6 +28,10 @@ def adversarial_cases() -> list[dict[str, object]]:
         "invented_citation_identifier",
         "cross_document_identifier",
         "encoded_exfiltration_request",
+        "padded_base64_exfiltration_request",
+        "unpadded_base64_exfiltration_request",
+        "whitespace_fragmented_base64_exfiltration_request",
+        "url_safe_base64_exfiltration_request",
         "write_or_tool_action_request",
     ],
 )
@@ -58,3 +62,24 @@ def test_safe_guardrail_provenance_excludes_untrusted_evidence_text() -> None:
         "reason_codes": ["prompt_exfiltration_request"],
     }
     assert suspicious_text not in repr(decision.provenance())
+
+
+def test_decoding_candidate_exhaustion_fails_safe() -> None:
+    encoded_printable_candidates = " ".join(
+        [
+            "c2FmZS0x",
+            "c2FmZS0y",
+            "c2FmZS0z",
+            "c2FmZS00",
+            "c2FmZS01",
+            "c2FmZS02",
+            "c2FmZS03",
+            "c2FmZS04",
+        ]
+    )
+
+    decision = validate_untrusted_evidence(
+        [("citation-a", encoded_printable_candidates)], ["citation-a"]
+    )
+
+    assert decision == GuardrailDecision("block", ("encoded_exfiltration_request",))

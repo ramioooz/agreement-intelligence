@@ -41,12 +41,12 @@ class InMemoryObjectStorage:
 
 class FakeProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
-        return _valid_provider_response(blocks[0][0])
+        return _valid_provider_response(*blocks[0])
 
 
 class ProvenancedProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
-        response = _valid_provider_response(blocks[0][0])
+        response = _valid_provider_response(*blocks[0])
         return ProviderAnalysis(
             **{
                 **response.__dict__,
@@ -76,6 +76,20 @@ class FailingProvider:
 class InvalidProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
         return _valid_provider_response("citation-not-from-this-document")
+
+
+class UngroundedEnrichmentProvider:
+    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+        response = _valid_provider_response(*blocks[0])
+        return ProviderAnalysis(
+            **{
+                **response.__dict__,
+                "classification": {
+                    **response.classification,
+                    "rationale": "Invented classification rationale.",
+                },
+            }
+        )
 
 
 class TimeoutProvider:
@@ -123,10 +137,10 @@ def test_processor_publishes_validated_provider_enrichment() -> None:
     assert manifest["classification"]["version"] == "provider-hybrid.v1"
     assert manifest["risks"][0]["severity"] == "high"
     assert manifest["clauses"][0]["source_text"] == (
-        "Either party may terminate with 30 days' notice."
+        "Either party may terminate with 30 days’ notice."
     )
     assert manifest["summaries"]["business"]["claims"][0]["text"] == (
-        "The client account may be terminated on 30 days' notice."
+        "Either party may terminate with 30 days’ notice."
     )
     assert manifest["analysis_provenance"] == {
         "mode": "hybrid",
@@ -214,6 +228,25 @@ def test_processor_rejects_invalid_provider_output_before_publishing() -> None:
         "message": "Provider enrichment was unavailable",
         "page_numbers": [],
     }
+
+
+def test_ungrounded_enrichment_falls_back_without_replacing_deterministic_findings() -> None:
+    baseline_storage, baseline_job = _processor_input()
+    baseline = _process_manifest(
+        DocumentUnderstandingProcessor(baseline_storage), baseline_storage, baseline_job
+    )
+    storage, job = _processor_input()
+    manifest = _process_manifest(
+        DocumentUnderstandingProcessor(storage, analysis_provider=UngroundedEnrichmentProvider()),
+        storage,
+        job,
+    )
+
+    assert manifest["classification"] == baseline["classification"]
+    assert manifest["clauses"] == baseline["clauses"]
+    assert manifest["risks"] == baseline["risks"]
+    assert manifest["summaries"] == baseline["summaries"]
+    assert manifest["diagnostics"][-1]["code"] == "provider_fallback"
 
 
 def test_review_document_evidence_keeps_deterministic_analysis_and_safe_provenance() -> None:
@@ -389,19 +422,22 @@ def _process_manifest(
     return cast(dict[str, Any], json.loads(storage.objects[artifact.key]))
 
 
-def _valid_provider_response(anchor_id: str) -> ProviderAnalysis:
+def _valid_provider_response(
+    anchor_id: str,
+    evidence_text: str = "Either party may terminate with 30 days' notice.",
+) -> ProviderAnalysis:
     return ProviderAnalysis(
         classification={
             "family": "client_agreement",
             "confidence": 0.91,
-            "rationale": "The agreement governs a client account.",
+            "rationale": evidence_text,
             "citation_anchor_ids": [anchor_id],
         },
         clauses=[
             {
                 "category": "termination",
                 "normalized_fields": [{"name": "notice", "value": "30 days"}],
-                "source_excerpt": "Either party may terminate with 30 days' notice.",
+                "source_excerpt": evidence_text,
                 "confidence": 0.88,
                 "citation_anchor_ids": [anchor_id],
             }
@@ -409,7 +445,7 @@ def _valid_provider_response(anchor_id: str) -> ProviderAnalysis:
         risks=[
             {
                 "severity": "high",
-                "explanation": "Termination is available without cause.",
+                "explanation": evidence_text,
                 "affected_category": "termination",
                 "confidence": 0.82,
                 "citation_anchor_ids": [anchor_id],
@@ -417,11 +453,11 @@ def _valid_provider_response(anchor_id: str) -> ProviderAnalysis:
         ],
         summaries={
             "business": {
-                "claim": "The client account may be terminated on 30 days' notice.",
+                "claim": evidence_text,
                 "citation_anchor_ids": [anchor_id],
             },
             "legal": {
-                "claim": "The termination clause applies to either party.",
+                "claim": evidence_text,
                 "citation_anchor_ids": [anchor_id],
             },
         },

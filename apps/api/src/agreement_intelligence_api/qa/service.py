@@ -466,12 +466,16 @@ def _guardrail_decision_from_payload(payload: dict[str, object]) -> GuardrailDec
         "encoded_exfiltration_request",
         "tool_or_write_action_request",
     }
-    known_reasons = blocking_reasons | {"instruction_override_marker"}
-    if any(reason not in known_reasons for reason in reasons):
+    review_reasons = {"instruction_override_marker"}
+    known_reasons = blocking_reasons | review_reasons
+    if len(reasons) != len(set(reasons)) or any(reason not in known_reasons for reason in reasons):
         return None
     if (
         (status == "allow" and reasons)
-        or (status == "review" and any(reason in blocking_reasons for reason in reasons))
+        or (
+            status == "review"
+            and (not reasons or any(reason not in review_reasons for reason in reasons))
+        )
         or (status == "block" and not any(reason in blocking_reasons for reason in reasons))
     ):
         return None

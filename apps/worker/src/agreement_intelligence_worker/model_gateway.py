@@ -93,6 +93,7 @@ class EmbeddingResponse:
 class GroundedAnswerRequest:
     question: str
     evidence: Sequence[tuple[str, str]]
+    conversation_context: Sequence[str] = ()
     model: str | None = None
 
 
@@ -266,12 +267,22 @@ class OpenAIModelGateway:
             ),
             payload={
                 "question": request.question,
+                "conversation_context": list(request.conversation_context),
                 "evidence": {
                     "trust": "untrusted",
                     "blocks": [
                         {"anchor_id": anchor_id, "text": text}
                         for anchor_id, text in request.evidence
                     ],
+                },
+            },
+            schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["answer", "citation_ids"],
+                "properties": {
+                    "answer": {"type": "string"},
+                    "citation_ids": {"type": "array", "items": {"type": "string"}},
                 },
             },
         )

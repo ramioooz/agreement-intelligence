@@ -80,18 +80,18 @@ class FakeProvider:
             classification={
                 "family": family,
                 "confidence": 0.9,
-                "rationale": "Agreement-family terms were found.",
+                "rationale": text,
                 "citation_anchor_ids": [anchor_id],
             },
             clauses=[],
             risks=[],
             summaries={
                 "business": {
-                    "claim": "The agreement has been classified.",
+                    "claim": text,
                     "citation_anchor_ids": [anchor_id],
                 },
                 "legal": {
-                    "claim": "The classification requires review.",
+                    "claim": text,
                     "citation_anchor_ids": [anchor_id],
                 },
             },

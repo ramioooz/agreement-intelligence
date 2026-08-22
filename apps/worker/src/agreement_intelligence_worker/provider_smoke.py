@@ -27,7 +27,7 @@ def main() -> None:
 
     try:
         analysis = provider.analyze(_SMOKE_BLOCKS)
-        validate_provider_analysis(analysis, {anchor_id for anchor_id, _ in _SMOKE_BLOCKS})
+        validate_provider_analysis(analysis, dict(_SMOKE_BLOCKS))
     except Exception as error:
         print(f"Provider smoke check failed: {type(error).__name__}", file=sys.stderr)
         raise SystemExit(1) from error
