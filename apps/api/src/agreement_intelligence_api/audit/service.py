@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
@@ -16,6 +17,7 @@ from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
 
 _REDACTED = "[REDACTED]"
+_MAX_SAFE_TEXT_LENGTH = 256
 _SENSITIVE_KEY_FRAGMENTS = (
     "agreement_text",
     "document_text",
@@ -31,6 +33,48 @@ _SENSITIVE_KEY_FRAGMENTS = (
     "credential",
     "api_key",
     "authorization",
+)
+_FREE_FORM_KEY_FRAGMENTS = (
+    "reason",
+    "note",
+    "comment",
+    "rationale",
+    "explanation",
+    "description",
+    "message",
+    "body",
+)
+_APPROVED_REASON_CODES = frozenset(
+    {
+        "business_exception",
+        "contractual_requirement",
+        "jurisdictional_requirement",
+        "risk_exception",
+        "other",
+    }
+)
+_CREDENTIAL_PATTERN = re.compile(
+    r"(?:\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_-]{8,}|"
+    r"\bAKIA[0-9A-Z]{16}\b|\bbearer\s+[A-Za-z0-9._~+/=-]{8,}|"
+    r"-----BEGIN [A-Z ]+PRIVATE KEY-----)",
+    re.IGNORECASE,
+)
+_JWT_PATTERN = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+_EMAIL_PATTERN = re.compile(r"\b[^\s@]+@[^\s@]+\.[^\s@]+\b")
+_PHONE_PATTERN = re.compile(r"(?<!\w)\+?\d(?:[\s().-]*\d){7,}(?!\w)")
+_UUID_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+_RESTRICTED_TEXT_PATTERN = re.compile(
+    r"(?:\bthis\s+(?:agreement|contract)\b|\bwhereas\b|\bgoverning\s+law\b|"
+    r"\bterms\s+and\s+conditions\b|\b(?:the\s+)?(?:supplier|customer|party|parties)\s+"
+    r"shall\b|\bthe\s+parties\s+agree\s+(?:to|that)\b|\b(?:ignore|disregard|override)\s+"
+    r"(?:all\s+)?(?:previous|prior|earlier)\s+"
+    r"(?:instructions?|directions?)\b|\bhidden\s+instructions?\b|\bsystem\s+prompt\b|"
+    r"\bprovider\s+(?:output|response)\b|\b(?:here\s+is\s+)?(?:the\s+)?assistant\s+"
+    r"(?:output|response)\b|\bmodel\s+(?:output|response|completion)\b)",
+    re.IGNORECASE,
 )
 
 
@@ -134,6 +178,8 @@ def _safe_mapping(value: Mapping[str, object] | None) -> dict[str, Any]:
 
 
 def _safe_value(key: str, value: object) -> Any:
+    if _is_reason_code_key(key):
+        return value if isinstance(value, str) and value in _APPROVED_REASON_CODES else _REDACTED
     if _is_sensitive_key(key):
         return _REDACTED
     if isinstance(value, Mapping):
@@ -142,11 +188,31 @@ def _safe_value(key: str, value: object) -> Any:
         return [_safe_value(key, item) for item in value]
     if isinstance(value, tuple):
         return [_safe_value(key, item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, str):
+        return _REDACTED if _is_restricted_text(value) else value
+    if isinstance(value, (int, float, bool)) or value is None:
         return value
-    return str(value)
+    return _REDACTED
 
 
 def _is_sensitive_key(key: str) -> bool:
     normalized = key.lower().replace("-", "_").replace(" ", "_")
-    return any(fragment in normalized for fragment in _SENSITIVE_KEY_FRAGMENTS)
+    return any(fragment in normalized for fragment in _SENSITIVE_KEY_FRAGMENTS) or any(
+        fragment in normalized for fragment in _FREE_FORM_KEY_FRAGMENTS
+    )
+
+
+def _is_reason_code_key(key: str) -> bool:
+    normalized = key.lower().replace("-", "_").replace(" ", "_")
+    return normalized == "reason_code" or normalized.endswith("_reason_code")
+
+
+def _is_restricted_text(value: str) -> bool:
+    return _UUID_PATTERN.fullmatch(value) is None and (
+        len(value) > _MAX_SAFE_TEXT_LENGTH
+        or _CREDENTIAL_PATTERN.search(value) is not None
+        or _JWT_PATTERN.search(value) is not None
+        or _EMAIL_PATTERN.search(value) is not None
+        or _PHONE_PATTERN.search(value) is not None
+        or _RESTRICTED_TEXT_PATTERN.search(value) is not None
+    )

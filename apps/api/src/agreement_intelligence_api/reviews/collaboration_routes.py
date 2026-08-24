@@ -57,8 +57,13 @@ def start_review(
     session: SessionDependency,
     response: Response,
 ) -> ReviewCaseResponse:
-    if request.policy_version_id is not None and not request.policy_override_reason:
-        raise HTTPException(status_code=400, detail="policy_override_reason_required")
+    if request.policy_override_note is not None:
+        raise HTTPException(status_code=422, detail="policy_override_note_not_supported")
+    override_reason_code = request.policy_override_reason_code
+    if request.policy_version_id is not None and override_reason_code is None:
+        override_reason_code = "other" if request.policy_override_reason is not None else None
+    if request.policy_version_id is not None and override_reason_code is None:
+        raise HTTPException(status_code=400, detail="policy_override_reason_code_required")
     review, created = service.start(
         principal, organization_id=organization_id, workspace_id=workspace_id, request=request
     )
@@ -96,7 +101,7 @@ def start_review(
                 policy_version_id=selected_policy_id,
                 correlation_id="review-start",
             )
-            if request.policy_version_id is not None:
+            if request.policy_version_id is not None and override_reason_code is not None:
                 AuditEventWriter(session).record(
                     organization_id=organization_id,
                     workspace_id=workspace_id,
@@ -108,11 +113,11 @@ def start_review(
                     correlation_id="review-policy-override",
                     before_ref={},
                     after_ref={"policy_version_id": str(selected_policy_id)},
-                    metadata={"reason": request.policy_override_reason},
+                    metadata={"reason_code": override_reason_code},
                 )
             ReviewWorkflowQueueDispatcher(
                 session, workflow_queue_publisher_from_environment()
-            ).dispatch_pending()
+            ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
     if not created:
         response.status_code = 200
     return review

@@ -32,7 +32,14 @@ class InMemoryRepository:
     job: ProcessingJob
     artifacts: list[CompletedArtifact]
 
-    def claim(self, job_id: UUID) -> ProcessingJob | None:
+    def claim(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> ProcessingJob | None:
+        del organization_id, workspace_id
         if self.job.id != job_id or self.job.state != "queued":
             return None
         self.job = replace(
@@ -43,7 +50,15 @@ class InMemoryRepository:
         )
         return self.job
 
-    def complete(self, job_id: UUID, artifact: CompletedArtifact) -> None:
+    def complete(
+        self,
+        job_id: UUID,
+        artifact: CompletedArtifact,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None:
+        del organization_id, workspace_id
         if self.job.id != job_id:
             raise LookupError(job_id)
         if self.job.state == "completed":
@@ -51,14 +66,29 @@ class InMemoryRepository:
         self.artifacts.append(artifact)
         self.job = replace(self.job, state="completed", completed_at=datetime.now(UTC))
 
-    def completed_artifact(self, job_id: UUID) -> tuple[ProcessingJob, CompletedArtifact] | None:
+    def completed_artifact(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> tuple[ProcessingJob, CompletedArtifact] | None:
+        del organization_id, workspace_id
         if self.job.id != job_id or self.job.state != "completed" or not self.artifacts:
             return None
         return self.job, self.artifacts[-1]
 
     def requeue(
-        self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime
+        self,
+        job_id: UUID,
+        *,
+        category: str,
+        message: str,
+        next_retry_at: datetime,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
     ) -> None:
+        del organization_id, workspace_id
         assert self.job.id == job_id
         self.job = replace(
             self.job,
@@ -68,7 +98,16 @@ class InMemoryRepository:
             next_retry_at=next_retry_at,
         )
 
-    def fail(self, job_id: UUID, *, category: str, message: str) -> None:
+    def fail(
+        self,
+        job_id: UUID,
+        *,
+        category: str,
+        message: str,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None:
+        del organization_id, workspace_id
         assert self.job.id == job_id
         self.job = replace(
             self.job, state="failed", failure_category=category, failure_message=message
@@ -77,10 +116,17 @@ class InMemoryRepository:
 
 @dataclass
 class InMemoryQueue:
-    retries: list[tuple[UUID, int]]
+    retries: list[tuple[UUID, UUID, UUID, int]]
 
-    def enqueue(self, job_id: UUID, *, delay_seconds: int) -> None:
-        self.retries.append((job_id, delay_seconds))
+    def enqueue(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        delay_seconds: int,
+    ) -> None:
+        self.retries.append((job_id, organization_id, workspace_id, delay_seconds))
 
 
 class PlaceholderProcessor:
@@ -102,7 +148,14 @@ class ParserSafetyProcessor:
 
 
 def _job() -> ProcessingJob:
-    return ProcessingJob(id=uuid4(), agreement_id=uuid4(), state="queued", attempt_count=0)
+    return ProcessingJob(
+        id=uuid4(),
+        agreement_id=uuid4(),
+        state="queued",
+        attempt_count=0,
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+    )
 
 
 def test_duplicate_delivery_does_not_duplicate_completed_artifacts() -> None:
@@ -162,7 +215,15 @@ def test_evaluation_recovery_runs_only_after_durable_completion() -> None:
 
 def test_completion_failure_does_not_run_evaluation_handler() -> None:
     class FailingRepository(InMemoryRepository):
-        def complete(self, job_id: UUID, artifact: CompletedArtifact) -> None:
+        def complete(
+            self,
+            job_id: UUID,
+            artifact: CompletedArtifact,
+            *,
+            organization_id: UUID | None = None,
+            workspace_id: UUID | None = None,
+        ) -> None:
+            del job_id, artifact, organization_id, workspace_id
             raise RuntimeError("database completion failed")
 
     repository = FailingRepository(job=_job(), artifacts=[])
@@ -224,9 +285,9 @@ def test_completing_a_version_job_updates_agreement_and_version_state(tmp_path: 
     create_processing_tables(engine)
     job_id = uuid4()
     agreement_id = uuid4()
-    version_id = uuid4()
     organization_id = uuid4()
     workspace_id = uuid4()
+    version_id = uuid4()
     now = datetime.now(UTC)
     with engine.begin() as connection:
         connection.execute(
@@ -507,14 +568,16 @@ def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path
     create_processing_tables(engine)
     job_id = uuid4()
     agreement_id = uuid4()
+    organization_id = uuid4()
+    workspace_id = uuid4()
     now = datetime.now(UTC)
     artifact_key = f"checkpoints/{job_id}/placeholder.json"
     with engine.begin() as connection:
         connection.execute(
             processing_jobs.insert().values(
                 id=job_id,
-                organization_id=uuid4(),
-                workspace_id=uuid4(),
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 agreement_id=agreement_id,
                 idempotency_key="processing-v1",
                 profile="baseline",
@@ -535,6 +598,8 @@ def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path
             processing_artifacts.insert().values(
                 id=uuid4(),
                 job_id=job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 agreement_id=agreement_id,
                 artifact_key=artifact_key,
                 created_at=now,
@@ -642,14 +707,26 @@ def test_sqs_retry_queue_omits_fifo_fields_for_standard_queue() -> None:
     client = RecordingSQSClient()
     job_id = uuid4()
 
+    organization_id = uuid4()
+    workspace_id = uuid4()
     SQSProcessingQueue(client=client, queue_url="https://sqs.example/processing").enqueue(
-        job_id, delay_seconds=2
+        job_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        delay_seconds=2,
     )
 
     assert client.messages == [
         {
             "QueueUrl": "https://sqs.example/processing",
-            "MessageBody": json.dumps({"job_id": str(job_id)}, sort_keys=True),
+            "MessageBody": json.dumps(
+                {
+                    "job_id": str(job_id),
+                    "organization_id": str(organization_id),
+                    "workspace_id": str(workspace_id),
+                },
+                sort_keys=True,
+            ),
             "DelaySeconds": 2,
         }
     ]
@@ -666,14 +743,26 @@ def test_sqs_retry_queue_uses_fifo_fields_for_fifo_queue() -> None:
     client = RecordingSQSClient()
     job_id = uuid4()
 
+    organization_id = uuid4()
+    workspace_id = uuid4()
     SQSProcessingQueue(client=client, queue_url="https://sqs.example/processing.fifo").enqueue(
-        job_id, delay_seconds=2
+        job_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        delay_seconds=2,
     )
 
     assert len(client.messages) == 1
     message = client.messages[0]
     assert message["QueueUrl"] == "https://sqs.example/processing.fifo"
-    assert message["MessageBody"] == json.dumps({"job_id": str(job_id)}, sort_keys=True)
+    assert message["MessageBody"] == json.dumps(
+        {
+            "job_id": str(job_id),
+            "organization_id": str(organization_id),
+            "workspace_id": str(workspace_id),
+        },
+        sort_keys=True,
+    )
     assert message["DelaySeconds"] == 2
     assert message["MessageGroupId"] == str(job_id)
     assert str(message["MessageDeduplicationId"]).startswith(f"{job_id}:retry:2:")
@@ -696,7 +785,14 @@ def test_transient_failure_is_requeued_with_bounded_backoff_without_sleeping() -
     assert repository.job.failure_category == "transient"
     assert repository.job.failure_message == "Temporary provider failure"
     assert repository.job.next_retry_at is not None
-    assert queue.retries == [(repository.job.id, 2)]
+    assert queue.retries == [
+        (
+            repository.job.id,
+            repository.job.organization_id,
+            repository.job.workspace_id,
+            2,
+        )
+    ]
 
 
 def test_transient_failure_stops_after_the_configured_attempt_bound() -> None:

@@ -248,7 +248,11 @@ def test_mcp_citation_decision_records_only_safe_guardrail_provenance(
     )
     session.add(
         ProcessingArtifactRecord(
-            job_id=job_id, agreement_id=agreement_id, artifact_key=artifact_key
+            job_id=job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            artifact_key=artifact_key,
         )
     )
     session.commit()
@@ -409,7 +413,11 @@ def test_citation_returns_only_the_requested_cited_excerpt(session: Session) -> 
     )
     session.add(
         ProcessingArtifactRecord(
-            job_id=job_id, agreement_id=agreement_id, artifact_key=artifact_key
+            job_id=job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            artifact_key=artifact_key,
         )
     )
     session.commit()
@@ -488,7 +496,11 @@ def test_citation_requiring_review_is_not_returned(session: Session) -> None:
     )
     session.add(
         ProcessingArtifactRecord(
-            job_id=job_id, agreement_id=agreement_id, artifact_key=artifact_key
+            job_id=job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            artifact_key=artifact_key,
         )
     )
     session.commit()

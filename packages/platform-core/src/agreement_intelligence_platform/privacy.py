@@ -64,6 +64,7 @@ _OPERATIONAL_KEYS = frozenset(
         "path",
         "processing_state",
         "query_present",
+        "reason_code",
         "service",
         "state",
         "status",
@@ -99,6 +100,16 @@ _ALLOWED_LOG_MESSAGES = frozenset(
         "review workflow queued",
         "worker started",
         "worker stopped",
+    }
+)
+
+_APPROVED_REASON_CODES = frozenset(
+    {
+        "business_exception",
+        "contractual_requirement",
+        "jurisdictional_requirement",
+        "risk_exception",
+        "other",
     }
 )
 
@@ -239,6 +250,8 @@ def _is_allowed_restricted(key: str) -> bool:
 
 
 def _unsafe_scalar(key: str, value: object) -> bool:
+    if _normalize_key(key).rsplit(".", 1)[-1] == "reason_code":
+        return not isinstance(value, str) or value not in _APPROVED_REASON_CODES
     if not isinstance(value, str):
         return False
     if "@" in value:

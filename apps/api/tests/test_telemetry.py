@@ -39,3 +39,16 @@ def test_telemetry_uses_recursive_fail_closed_event_metadata() -> None:
         "duration_ms": 42,
         "token_counts": {"input_tokens": 13, "output_tokens": 8},
     }
+
+
+def test_telemetry_exports_only_approved_reason_codes() -> None:
+    safe = redact_attributes(
+        {
+            "reason_code": "risk_exception",
+            "reason": "contact legal@example.test with token sk-proj-demo-secret",
+            "policy_override_note": "This Agreement is entered into by the parties.",
+            "nested": {"reason_code": 17},
+        }
+    )
+
+    assert safe == {"reason_code": "risk_exception"}

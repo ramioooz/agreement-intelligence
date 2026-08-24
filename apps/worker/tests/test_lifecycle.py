@@ -82,7 +82,14 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
         job: ProcessingJob
         artifact: CompletedArtifact | None = None
 
-        def claim(self, job_id: UUID) -> ProcessingJob | None:
+        def claim(
+            self,
+            job_id: UUID,
+            *,
+            organization_id: UUID | None = None,
+            workspace_id: UUID | None = None,
+        ) -> ProcessingJob | None:
+            del organization_id, workspace_id
             if self.job.id != job_id or self.job.state != "queued":
                 return None
             self.job = replace(
@@ -93,21 +100,54 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             )
             return self.job
 
-        def complete(self, job_id: UUID, artifact: CompletedArtifact) -> None:
+        def complete(
+            self,
+            job_id: UUID,
+            artifact: CompletedArtifact,
+            *,
+            organization_id: UUID | None = None,
+            workspace_id: UUID | None = None,
+        ) -> None:
+            del organization_id, workspace_id
             assert self.job.id == job_id
             self.artifact = artifact
             self.job = replace(self.job, state="completed", completed_at=datetime.now(UTC))
 
         def requeue(
-            self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime
+            self,
+            job_id: UUID,
+            *,
+            category: str,
+            message: str,
+            next_retry_at: datetime,
+            organization_id: UUID | None = None,
+            workspace_id: UUID | None = None,
         ) -> None:
+            del job_id, category, message, next_retry_at, organization_id, workspace_id
             raise AssertionError("unexpected retry")
 
-        def fail(self, job_id: UUID, *, category: str, message: str) -> None:
+        def fail(
+            self,
+            job_id: UUID,
+            *,
+            category: str,
+            message: str,
+            organization_id: UUID | None = None,
+            workspace_id: UUID | None = None,
+        ) -> None:
+            del job_id, category, message, organization_id, workspace_id
             raise AssertionError("unexpected failure")
 
     class Queue:
-        def enqueue(self, job_id: UUID, *, delay_seconds: int) -> None:
+        def enqueue(
+            self,
+            job_id: UUID,
+            *,
+            organization_id: UUID,
+            workspace_id: UUID,
+            delay_seconds: int,
+        ) -> None:
+            del job_id, organization_id, workspace_id, delay_seconds
             raise AssertionError("unexpected retry publish")
 
     class Processor:
@@ -130,7 +170,14 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             self._stop_event.set()
 
     async def exercise() -> None:
-        job = ProcessingJob(id=uuid4(), agreement_id=uuid4(), state="queued", attempt_count=0)
+        job = ProcessingJob(
+            id=uuid4(),
+            agreement_id=uuid4(),
+            state="queued",
+            attempt_count=0,
+            organization_id=uuid4(),
+            workspace_id=uuid4(),
+        )
         repository = Repository(job=job)
         stop_event = asyncio.Event()
         receiver = OneMessageReceiver(job.id, stop_event)

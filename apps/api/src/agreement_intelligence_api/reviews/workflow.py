@@ -18,7 +18,7 @@ from uuid import UUID, uuid4
 import boto3
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import Select
 
@@ -84,7 +84,13 @@ class SQSReviewWorkflowQueuePublisher:
         request: dict[str, object] = {
             "QueueUrl": self._queue_url,
             "MessageBody": json.dumps(
-                {"kind": "review-workflow", "event_id": str(event.id)}, sort_keys=True
+                {
+                    "kind": "review-workflow",
+                    "event_id": str(event.id),
+                    "organization_id": str(event.organization_id),
+                    "workspace_id": str(event.workspace_id),
+                },
+                sort_keys=True,
             ),
         }
         if self._queue_url.rsplit("/", 1)[-1].endswith(".fifo"):
@@ -227,6 +233,7 @@ class ReviewWorkflowCoordinator:
             occurred_at=now,
         )
         self._session.commit()
+        _scope_transaction(self._session, workflow.organization_id)
         self._session.refresh(workflow)
         return self._snapshot(workflow)
 
@@ -321,6 +328,7 @@ class ReviewWorkflowCoordinator:
             occurred_at=now,
         )
         self._session.commit()
+        _scope_transaction(self._session, workflow.organization_id)
         self._session.refresh(workflow)
         return self._snapshot(workflow)
 
@@ -656,7 +664,10 @@ class ReviewWorkflowOutboxDispatcher:
         self._session = session
         self._checkpointer = checkpointer
 
-    def dispatch_pending(self, *, limit: int = 50) -> int:
+    def dispatch_pending(
+        self, *, organization_id: UUID, workspace_id: UUID, limit: int = 50
+    ) -> int:
+        _scope_transaction(self._session, organization_id)
         events = self._session.scalars(
             select(ReviewWorkflowOutboxRecord)
             .join(ReviewWorkflowOutboxRecord.workflow)
@@ -679,7 +690,16 @@ class ReviewWorkflowOutboxDispatcher:
             event.delivered_at = datetime.now(UTC)
             self._session.commit()
             delivered += 1
+            _scope_transaction(self._session, organization_id)
         return delivered
+
+
+def _scope_transaction(session: Session, organization_id: UUID) -> None:
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
 
 
 class ReviewWorkflowQueueDispatcher:
@@ -689,7 +709,10 @@ class ReviewWorkflowQueueDispatcher:
         self._session = session
         self._publisher = publisher
 
-    def dispatch_pending(self, *, limit: int = 50) -> int:
+    def dispatch_pending(
+        self, *, organization_id: UUID, workspace_id: UUID, limit: int = 50
+    ) -> int:
+        _scope_transaction(self._session, organization_id)
         events = self._session.scalars(
             select(ReviewWorkflowOutboxRecord)
             .where(ReviewWorkflowOutboxRecord.delivered_at.is_(None))
@@ -706,6 +729,7 @@ class ReviewWorkflowQueueDispatcher:
             event.delivered_at = datetime.now(UTC)
             self._session.commit()
             delivered += 1
+            _scope_transaction(self._session, organization_id)
         return delivered
 
 

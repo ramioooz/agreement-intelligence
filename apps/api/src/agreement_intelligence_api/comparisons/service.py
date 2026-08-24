@@ -140,7 +140,7 @@ class VersionComparisonService:
         self._identity.session.commit()
         ProcessingOutboxDispatcher(
             session=self._identity.session, publisher=self._queue
-        ).dispatch_pending()
+        ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
         return self._repository.response(comparison), True
 
     def get(

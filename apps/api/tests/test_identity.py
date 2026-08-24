@@ -495,30 +495,66 @@ def test_tenant_isolation_migration_rejects_legacy_cross_tenant_workspace_member
 def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() -> None:
     postgres_url = os.environ.get("AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL")
     if not postgres_url:
-        pytest.skip(
-            "Set AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL to a disposable PostgreSQL database URL "
-            "to run the tenant isolation RLS integration test."
+        raise RuntimeError(
+            "AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL must reference a disposable PostgreSQL "
+            "database; tenant RLS verification may not be skipped."
         )
 
     schema_name = f"tenant_isolation_{uuid4().hex}"
+    application_role = f"tenant_rls_{uuid4().hex}"
+    application_password = "tenant-rls-test-password"
     base_url = make_url(postgres_url)
-    scoped_url = base_url.set(query={"options": f"-csearch_path={schema_name}"}).render_as_string(
-        hide_password=False
-    )
+    application_url = base_url.set(username=application_role, password=application_password)
+    scoped_url = application_url.set(
+        query={"options": f"-csearch_path={schema_name},public"}
+    ).render_as_string(hide_password=False)
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
     base_engine = create_engine(postgres_url.replace("postgresql://", "postgresql+psycopg://", 1))
     scoped_engine = create_engine(scoped_url.replace("postgresql://", "postgresql+psycopg://", 1))
     try:
         with base_engine.begin() as connection:
-            connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+            connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            connection.execute(
+                text(
+                    f'CREATE ROLE "{application_role}" LOGIN NOSUPERUSER NOBYPASSRLS '
+                    f"PASSWORD '{application_password}'"
+                )
+            )
+            connection.execute(
+                text(f'CREATE SCHEMA "{schema_name}" AUTHORIZATION "{application_role}"')
+            )
 
         command.upgrade(config, "head")
+
+        with scoped_engine.connect() as connection:
+            tables_missing_forced_rls = (
+                connection.execute(
+                    text(
+                        """
+                    SELECT relation.relname
+                    FROM pg_class AS relation
+                    JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                    JOIN pg_attribute AS attribute ON attribute.attrelid = relation.oid
+                    WHERE namespace.nspname = current_schema()
+                      AND relation.relkind = 'r'
+                      AND attribute.attname = 'organization_id'
+                      AND NOT attribute.attisdropped
+                      AND NOT (relation.relrowsecurity AND relation.relforcerowsecurity)
+                    ORDER BY relation.relname
+                    """
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert tables_missing_forced_rls == []
 
         organization_a = uuid4()
         organization_b = uuid4()
         workspace_a = uuid4()
         workspace_b = uuid4()
+        tenant_records: dict[UUID, dict[str, UUID]] = {}
         with scoped_engine.begin() as connection:
             connection.execute(
                 text(
@@ -562,11 +598,210 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                 text("SELECT set_config('app.organization_id', :organization_id, true)"),
                 {"organization_id": str(organization_a)},
             )
+            for organization_id, workspace_id, suffix in (
+                (organization_a, workspace_a, "a"),
+                (organization_b, workspace_b, "b"),
+            ):
+                connection.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(organization_id)},
+                )
+                records = {
+                    "agreement": uuid4(),
+                    "job": uuid4(),
+                    "baseline": uuid4(),
+                    "target": uuid4(),
+                    "comparison": uuid4(),
+                    "policy": uuid4(),
+                    "policy_version": uuid4(),
+                    "review": uuid4(),
+                    "workflow": uuid4(),
+                    "outbox": uuid4(),
+                }
+                tenant_records[organization_id] = records
+                parameters = {
+                    **records,
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                    "suffix": suffix,
+                    "actor_id": uuid4(),
+                }
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO agreements (
+                            id, organization_id, workspace_id, title, agreement_type, status,
+                            parties, files, processing_state, audit_metadata, audit_events
+                        ) VALUES (
+                            :agreement, :organization_id, :workspace_id, :suffix, 'nda', 'draft',
+                            '[]'::jsonb, '[]'::jsonb, 'queued', '{}'::jsonb, '[]'::jsonb
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO processing_jobs (
+                            id, organization_id, workspace_id, agreement_id, idempotency_key,
+                            profile, state, attempt_count, queued_at
+                        ) VALUES (
+                            :job, :organization_id, :workspace_id, :agreement, 'job-' || :suffix,
+                            'default', 'queued', 0, CURRENT_TIMESTAMP
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                for version_key, number in (("baseline", 1), ("target", 2)):
+                    connection.execute(
+                        text(
+                            """
+                            INSERT INTO agreement_versions (
+                                id, agreement_id, organization_id, workspace_id, version_number,
+                                file_name, content_type, storage_key, checksum, byte_size,
+                                uploaded_by, processing_state, analysis_provenance, idempotency_key
+                            ) VALUES (
+                                :version_id, :agreement, :organization_id, :workspace_id, :number,
+                                'agreement.pdf', 'application/pdf', :storage_key, :checksum, 1,
+                                :actor_id, 'completed', '{}'::jsonb, :idempotency_key
+                            )
+                            """
+                        ),
+                        {
+                            **parameters,
+                            "version_id": records[version_key],
+                            "number": number,
+                            "storage_key": f"versions/{suffix}/{number}",
+                            "checksum": f"checksum-{suffix}-{number}",
+                            "idempotency_key": f"version-{suffix}-{number}",
+                        },
+                    )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO version_comparison_runs (
+                            id, organization_id, workspace_id, agreement_id, baseline_version_id,
+                            target_version_id, processing_job_id, idempotency_key, analysis_version,
+                            state, analysis_provenance
+                        ) VALUES (
+                            :comparison, :organization_id, :workspace_id, :agreement, :baseline,
+                            :target, :job, 'comparison-' || :suffix, 'v1', 'queued', '{}'::jsonb
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO approval_policies (
+                            id, organization_id, workspace_id, name, agreement_family,
+                            document_direction, jurisdiction, materiality, precedence, created_by
+                        ) VALUES (
+                            :policy, :organization_id, :workspace_id, 'Policy ' || :suffix, 'nda',
+                            'any', 'any', 'any', 1, :actor_id
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO approval_policy_versions (
+                            id, organization_id, workspace_id, policy_id, version, status,
+                            submitter_may_approve, allow_cross_stage_same_approver, created_by
+                        ) VALUES (
+                            :policy_version, :organization_id, :workspace_id, :policy, 1,
+                            'published',
+                            false, false, :actor_id
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO review_cases (
+                            id, organization_id, workspace_id, agreement_id, state, created_by,
+                            idempotency_key, revision
+                        ) VALUES (
+                            :review, :organization_id, :workspace_id, :agreement, 'open', :actor_id,
+                            'review-' || :suffix, 0
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO review_workflows (
+                            id, organization_id, workspace_id, review_id, policy_version_id,
+                            checkpoint_id, state, active_stage_ordinal, revision
+                        ) VALUES (
+                            :workflow, :organization_id, :workspace_id, :review, :policy_version,
+                            :workflow, 'waiting_for_approval', 1, 0
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO review_workflow_outbox (
+                            id, workflow_id, organization_id, workspace_id, event_type,
+                            correlation_id, idempotency_key
+                        ) VALUES (
+                            :outbox, :workflow, :organization_id, :workspace_id, 'resume',
+                            'test', 'workflow-outbox-' || :suffix
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(organization_a)},
+            )
             scoped_workspace_ids = set(
                 connection.execute(text("SELECT id FROM workspaces")).scalars()
             )
+            scoped_newly_protected_ids = {
+                table_name: set(connection.execute(text(f"SELECT id FROM {table_name}")).scalars())
+                for table_name in (
+                    "processing_jobs",
+                    "version_comparison_runs",
+                    "review_workflow_outbox",
+                )
+            }
 
-            with pytest.raises(Exception, match="organization_id is immutable"):
+            assert scoped_newly_protected_ids == {
+                "processing_jobs": {tenant_records[organization_a]["job"]},
+                "version_comparison_runs": {tenant_records[organization_a]["comparison"]},
+                "review_workflow_outbox": {tenant_records[organization_a]["outbox"]},
+            }
+
+            with pytest.raises(Exception, match="row-level security"), connection.begin_nested():
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO workspaces (id, organization_id, name, slug)
+                        VALUES (:workspace_id, :organization_b, 'Cross-tenant', 'cross-tenant')
+                        """
+                    ),
+                    {"workspace_id": uuid4(), "organization_b": organization_b},
+                )
+
+            with (
+                pytest.raises(Exception, match="organization_id is immutable"),
+                connection.begin_nested(),
+            ):
                 connection.execute(
                     text(
                         """
@@ -578,11 +813,101 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     {"organization_b": organization_b, "workspace_id": workspace_a},
                 )
 
+            for table_name, values in (
+                (
+                    "processing_jobs",
+                    {
+                        "id": uuid4(),
+                        "organization_id": organization_b,
+                        "workspace_id": workspace_b,
+                        "agreement_id": tenant_records[organization_b]["agreement"],
+                        "idempotency_key": "cross-tenant-job",
+                    },
+                ),
+                (
+                    "version_comparison_runs",
+                    {
+                        "id": uuid4(),
+                        "organization_id": organization_b,
+                        "workspace_id": workspace_b,
+                        "agreement_id": tenant_records[organization_b]["agreement"],
+                        "baseline_version_id": tenant_records[organization_b]["baseline"],
+                        "target_version_id": tenant_records[organization_b]["target"],
+                        "processing_job_id": tenant_records[organization_b]["job"],
+                        "idempotency_key": "cross-tenant-comparison",
+                    },
+                ),
+                (
+                    "review_workflow_outbox",
+                    {
+                        "id": uuid4(),
+                        "organization_id": organization_b,
+                        "workspace_id": workspace_b,
+                        "workflow_id": tenant_records[organization_b]["workflow"],
+                        "idempotency_key": "cross-tenant-workflow-outbox",
+                    },
+                ),
+            ):
+                with (
+                    pytest.raises(Exception, match="row-level security"),
+                    connection.begin_nested(),
+                ):
+                    if table_name == "processing_jobs":
+                        connection.execute(
+                            text(
+                                """
+                                INSERT INTO processing_jobs (
+                                    id, organization_id, workspace_id, agreement_id,
+                                    idempotency_key,
+                                    profile, state, attempt_count, queued_at
+                                ) VALUES (
+                                    :id, :organization_id, :workspace_id, :agreement_id,
+                                    :idempotency_key, 'default', 'queued', 0, CURRENT_TIMESTAMP
+                                )
+                                """
+                            ),
+                            values,
+                        )
+                    elif table_name == "version_comparison_runs":
+                        connection.execute(
+                            text(
+                                """
+                                INSERT INTO version_comparison_runs (
+                                    id, organization_id, workspace_id, agreement_id,
+                                    baseline_version_id, target_version_id, processing_job_id,
+                                    idempotency_key, analysis_version,
+                                    state, analysis_provenance
+                                ) VALUES (
+                                    :id, :organization_id, :workspace_id, :agreement_id,
+                                    :baseline_version_id, :target_version_id, :processing_job_id,
+                                    :idempotency_key, 'v1', 'queued', '{}'::jsonb
+                                )
+                                """
+                            ),
+                            values,
+                        )
+                    else:
+                        connection.execute(
+                            text(
+                                """
+                                INSERT INTO review_workflow_outbox (
+                                    id, workflow_id, organization_id, workspace_id, event_type,
+                                    correlation_id, idempotency_key
+                                ) VALUES (
+                                    :id, :workflow_id, :organization_id, :workspace_id, 'resume',
+                                    'cross-tenant', :idempotency_key
+                                )
+                                """
+                            ),
+                            values,
+                        )
+
         assert scoped_workspace_ids == {workspace_a}
     finally:
         scoped_engine.dispose()
         with base_engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+            connection.execute(text(f'DROP ROLE IF EXISTS "{application_role}"'))
         base_engine.dispose()
 
 
@@ -599,3 +924,63 @@ def test_tenant_isolation_migration_enables_postgresql_row_level_security() -> N
     assert "current_setting('app.organization_id', true)::uuid" in migration_sql
     assert "CREATE TRIGGER prevent_{table_name}_organization_change" in migration_sql
     assert "prevent_organization_id_change" in migration_sql
+
+
+def test_tenant_rls_hardening_migration_covers_scoped_and_child_tables() -> None:
+    migration_path = (
+        Path(__file__).parents[1]
+        / "migrations"
+        / "versions"
+        / "20260824_0030_tenant_rls_hardening.py"
+    )
+    migration_sql = migration_path.read_text()
+
+    expected_tenant_tables = {
+        "workspaces",
+        "memberships",
+        "workspace_memberships",
+        "agreements",
+        "processing_jobs",
+        "agreement_deletion_audit_events",
+        "legal_playbooks",
+        "playbook_versions",
+        "playbook_rules",
+        "playbook_audit_events",
+        "playbook_evaluations",
+        "playbook_findings",
+        "review_decisions",
+        "review_audit_events",
+        "mcp_audit_events",
+        "retrieval_index_builds",
+        "retrieval_chunks",
+        "retrieval_chunk_embeddings",
+        "question_threads",
+        "question_turns",
+        "question_audit_events",
+        "agreement_versions",
+        "agreement_version_audit_events",
+        "version_comparison_runs",
+        "version_comparison_changes",
+        "audit_events",
+        "approval_policies",
+        "approval_policy_versions",
+        "approval_policy_stages",
+        "approval_policy_audit_events",
+        "review_cases",
+        "review_assignments",
+        "review_comments",
+        "review_notification_events",
+        "review_workflows",
+        "review_workflow_stages",
+        "review_workflow_decisions",
+        "review_workflow_outbox",
+        "review_final_packages",
+        "processing_artifacts",
+        "processing_outbox",
+    }
+
+    for table_name in expected_tenant_tables:
+        assert table_name in migration_sql
+    assert "ENABLE ROW LEVEL SECURITY" in migration_sql
+    assert "FORCE ROW LEVEL SECURITY" in migration_sql
+    assert "current_setting('app.organization_id', true)::uuid" in migration_sql

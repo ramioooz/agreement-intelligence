@@ -122,11 +122,21 @@ def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() ->
     engine = create_engine("sqlite+pysqlite:///:memory:")
     workflow_metadata.create_all(engine)
     workflow_id, event_id, checkpoint_id = uuid4(), uuid4(), uuid4()
+    organization_id, workspace_id = uuid4(), uuid4()
     with engine.begin() as connection:
-        connection.execute(insert(workflows).values(id=workflow_id, checkpoint_id=checkpoint_id))
+        connection.execute(
+            insert(workflows).values(
+                id=workflow_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                checkpoint_id=checkpoint_id,
+            )
+        )
         connection.execute(
             insert(workflow_events).values(
                 id=event_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 workflow_id=workflow_id,
                 event_type="review.workflow.resume",
                 processed_at=None,
@@ -135,8 +145,14 @@ def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() ->
     checkpoints = RecordingCheckpointStore()
     processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints)
 
-    assert processor.process(event_id) is True
-    assert processor.process(event_id) is False
+    assert (
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+        is True
+    )
+    assert (
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+        is False
+    )
     assert checkpoints.calls == [(event_id, checkpoint_id, workflow_id, "review.workflow.resume")]
     with engine.connect() as connection:
         assert (

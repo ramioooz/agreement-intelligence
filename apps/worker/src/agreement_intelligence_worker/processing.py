@@ -83,6 +83,8 @@ processing_artifacts = Table(
     processing_metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
     Column("job_id", Uuid(as_uuid=True), nullable=False, index=True),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("agreement_id", Uuid(as_uuid=True), nullable=False, index=True),
     Column("artifact_key", String(500), nullable=False),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
@@ -131,22 +133,59 @@ class CompletedArtifact:
 class ProcessingMessage:
     job_id: UUID
     receipt_handle: str
+    organization_id: UUID | None = None
+    workspace_id: UUID | None = None
 
 
 class JobRepository(Protocol):
-    def claim(self, job_id: UUID) -> ProcessingJob | None: ...
+    def claim(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> ProcessingJob | None: ...
 
-    def complete(self, job_id: UUID, artifact: CompletedArtifact) -> None: ...
-
-    def requeue(
-        self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime
+    def complete(
+        self,
+        job_id: UUID,
+        artifact: CompletedArtifact,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
     ) -> None: ...
 
-    def fail(self, job_id: UUID, *, category: str, message: str) -> None: ...
+    def requeue(
+        self,
+        job_id: UUID,
+        *,
+        category: str,
+        message: str,
+        next_retry_at: datetime,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None: ...
+
+    def fail(
+        self,
+        job_id: UUID,
+        *,
+        category: str,
+        message: str,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None: ...
 
 
 class ProcessingQueue(Protocol):
-    def enqueue(self, job_id: UUID, *, delay_seconds: int) -> None: ...
+    def enqueue(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        delay_seconds: int,
+    ) -> None: ...
 
 
 class ProcessingMessageReceiver(Protocol):
@@ -210,35 +249,61 @@ class JobProcessor:
         self._retry_policy = retry_policy or RetryPolicy()
         self._completion_handler = completion_handler
 
-    def handle(self, job_id: UUID) -> None:
-        job = self._repository.claim(job_id)
+    def handle(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None:
+        if organization_id is None or workspace_id is None:
+            job = self._repository.claim(job_id)
+        else:
+            job = self._repository.claim(
+                job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
         if job is None:
-            self._recover_completed_evaluation(job_id)
+            self._recover_completed_evaluation(
+                job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
             return
         try:
             artifact = self._processor.process(job)
         except TransientProcessingError as error:
             self._handle_transient_failure(job, str(error))
         except PermanentProcessingError as error:
-            self._repository.fail(
-                job.id,
-                category=error.category,
-                message=_safe_summary(str(error)),
-            )
+            self._fail(job, category=error.category, message=_safe_summary(str(error)))
         except Exception:
             self._handle_transient_failure(job, "Unexpected processing dependency failure")
         else:
-            self._repository.complete(job.id, artifact)
+            self._complete(job, artifact)
             if self._completion_handler is not None:
                 self._completion_handler.completed(job, artifact)
 
-    def _recover_completed_evaluation(self, job_id: UUID) -> None:
+    def _recover_completed_evaluation(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None,
+        workspace_id: UUID | None,
+    ) -> None:
         if self._completion_handler is None:
             return
         completed_artifact = getattr(self._repository, "completed_artifact", None)
         if not callable(completed_artifact):
             return
-        recovered = completed_artifact(job_id)
+        if organization_id is None or workspace_id is None:
+            recovered = completed_artifact(job_id)
+        else:
+            recovered = completed_artifact(
+                job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
         if recovered is None:
             return
         job, artifact = recovered
@@ -247,20 +312,47 @@ class JobProcessor:
     def _handle_transient_failure(self, job: ProcessingJob, message: str) -> None:
         safe_message = _safe_summary(message)
         if not self._retry_policy.may_retry(job.attempt_count):
-            self._repository.fail(
-                job.id,
-                category="transient_exhausted",
-                message=safe_message,
-            )
+            self._fail(job, category="transient_exhausted", message=safe_message)
             return
         delay_seconds = self._retry_policy.delay_seconds(job.attempt_count)
-        self._repository.requeue(
-            job.id,
-            category="transient",
+        self._requeue(
+            job,
             message=safe_message,
             next_retry_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
         )
-        self._queue.enqueue(job.id, delay_seconds=delay_seconds)
+        self._queue.enqueue(
+            job.id,
+            organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
+            workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+            delay_seconds=delay_seconds,
+        )
+
+    def _complete(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+        self._repository.complete(
+            job.id,
+            artifact,
+            organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
+            workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+        )
+
+    def _requeue(self, job: ProcessingJob, *, message: str, next_retry_at: datetime) -> None:
+        self._repository.requeue(
+            job.id,
+            category="transient",
+            message=message,
+            next_retry_at=next_retry_at,
+            organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
+            workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+        )
+
+    def _fail(self, job: ProcessingJob, *, category: str, message: str) -> None:
+        self._repository.fail(
+            job.id,
+            category=category,
+            message=message,
+            organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
+            workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+        )
 
 
 class PlaceholderAgreementProcessor:
@@ -273,10 +365,24 @@ class SQSProcessingQueue:
         self._client = client
         self._queue_url = queue_url
 
-    def enqueue(self, job_id: UUID, *, delay_seconds: int) -> None:
+    def enqueue(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        delay_seconds: int,
+    ) -> None:
         request: dict[str, object] = {
             "QueueUrl": self._queue_url,
-            "MessageBody": json.dumps({"job_id": str(job_id)}, sort_keys=True),
+            "MessageBody": json.dumps(
+                {
+                    "job_id": str(job_id),
+                    "organization_id": str(organization_id),
+                    "workspace_id": str(workspace_id),
+                },
+                sort_keys=True,
+            ),
             "DelaySeconds": delay_seconds,
         }
         if _is_fifo_queue(self._queue_url):
@@ -314,6 +420,8 @@ class SQSProcessingMessageReceiver:
         body = json.loads(str(message["Body"]))
         return ProcessingMessage(
             job_id=UUID(str(body["job_id"])),
+            organization_id=UUID(str(body["organization_id"])),
+            workspace_id=UUID(str(body["workspace_id"])),
             receipt_handle=str(message["ReceiptHandle"]),
         )
 
@@ -329,15 +437,32 @@ class SQLAlchemyProcessingJobRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    def claim(self, job_id: UUID) -> ProcessingJob | None:
+    def claim(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> ProcessingJob | None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
+            if connection.dialect.name == "postgresql":
+                if organization_id is None or workspace_id is None:
+                    raise ValueError("processing message is missing tenant scope")
+                connection.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(organization_id)},
+                )
             job = (
                 connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
                 .mappings()
                 .one_or_none()
             )
             if job is None:
+                return None
+            if organization_id is not None and job["organization_id"] != organization_id:
+                return None
+            if workspace_id is not None and job["workspace_id"] != workspace_id:
                 return None
             artifact_exists = (
                 connection.execute(
@@ -413,15 +538,25 @@ class SQLAlchemyProcessingJobRepository:
                 processing_started_at=now,
             )
 
-    def complete(self, job_id: UUID, artifact: CompletedArtifact) -> None:
+    def complete(
+        self,
+        job_id: UUID,
+        artifact: CompletedArtifact,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
+            _set_tenant_context(connection, organization_id, workspace_id)
             job = (
                 connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
                 .mappings()
                 .one_or_none()
             )
             if job is None:
+                return
+            if not _matches_tenant_scope(job, organization_id, workspace_id):
                 return
             existing_artifact = connection.execute(
                 select(processing_artifacts.c.id).where(
@@ -434,6 +569,8 @@ class SQLAlchemyProcessingJobRepository:
                     processing_artifacts.insert().values(
                         id=uuid4(),
                         job_id=job_id,
+                        organization_id=job["organization_id"],
+                        workspace_id=job["workspace_id"],
                         agreement_id=job["agreement_id"],
                         artifact_key=artifact.key,
                         created_at=now,
@@ -453,14 +590,23 @@ class SQLAlchemyProcessingJobRepository:
             )
             _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
 
-    def completed_artifact(self, job_id: UUID) -> tuple[ProcessingJob, CompletedArtifact] | None:
+    def completed_artifact(
+        self,
+        job_id: UUID,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> tuple[ProcessingJob, CompletedArtifact] | None:
         with self._engine.connect() as connection:
+            _set_tenant_context(connection, organization_id, workspace_id)
             job = (
                 connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
                 .mappings()
                 .one_or_none()
             )
             if job is None or job["state"] != "completed":
+                return None
+            if not _matches_tenant_scope(job, organization_id, workspace_id):
                 return None
             artifact = (
                 connection.execute(
@@ -492,12 +638,22 @@ class SQLAlchemyProcessingJobRepository:
             )
 
     def requeue(
-        self, job_id: UUID, *, category: str, message: str, next_retry_at: datetime
+        self,
+        job_id: UUID,
+        *,
+        category: str,
+        message: str,
+        next_retry_at: datetime,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
     ) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
+            _set_tenant_context(connection, organization_id, workspace_id)
             job = _job_for_update(connection, job_id)
             if job is None:
+                return
+            if not _matches_tenant_scope(job, organization_id, workspace_id):
                 return
             connection.execute(
                 update(processing_jobs)
@@ -512,11 +668,22 @@ class SQLAlchemyProcessingJobRepository:
             )
             _update_agreement_processing_state(connection, job, state="queued", updated_at=now)
 
-    def fail(self, job_id: UUID, *, category: str, message: str) -> None:
+    def fail(
+        self,
+        job_id: UUID,
+        *,
+        category: str,
+        message: str,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
+            _set_tenant_context(connection, organization_id, workspace_id)
             job = _job_for_update(connection, job_id)
             if job is None:
+                return
+            if not _matches_tenant_scope(job, organization_id, workspace_id):
                 return
             connection.execute(
                 update(processing_jobs)
@@ -549,6 +716,33 @@ def _job_for_update(connection: Any, job_id: UUID) -> Any | None:
         connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
         .mappings()
         .one_or_none()
+    )
+
+
+def _required_tenant_scope(value: UUID | None, field_name: str) -> UUID:
+    if value is None:
+        raise ValueError(f"processing job is missing {field_name}")
+    return value
+
+
+def _set_tenant_context(
+    connection: Any, organization_id: UUID | None, workspace_id: UUID | None
+) -> None:
+    if connection.dialect.name != "postgresql":
+        return
+    if organization_id is None or workspace_id is None:
+        raise ValueError("processing message is missing tenant scope")
+    connection.execute(
+        text("SELECT set_config('app.organization_id', :organization_id, true)"),
+        {"organization_id": str(organization_id)},
+    )
+
+
+def _matches_tenant_scope(
+    job: Any, organization_id: UUID | None, workspace_id: UUID | None
+) -> bool:
+    return (organization_id is None or job["organization_id"] == organization_id) and (
+        workspace_id is None or job["workspace_id"] == workspace_id
     )
 
 
@@ -601,7 +795,11 @@ async def run_processing_loop(
             await asyncio.sleep(idle_sleep_seconds)
             continue
         try:
-            processor.handle(message.job_id)
+            processor.handle(
+                message.job_id,
+                organization_id=message.organization_id,
+                workspace_id=message.workspace_id,
+            )
         except Exception:
             logger.exception(
                 "processing message handling failed",
