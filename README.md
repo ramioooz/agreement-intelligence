@@ -188,6 +188,8 @@ for the accepted scope and boundaries.
 Start with the [architecture overview](docs/architecture/overview.md). The
 initial decisions are recorded separately:
 
+- [Pre-publication security and architecture review](docs/reviews/2026-08-22-pre-publication-review.md)
+
 1. [Use a modular monorepo](docs/adr/0001-use-a-modular-monorepo.md)
 2. [Use Next.js and FastAPI](docs/adr/0002-use-nextjs-and-fastapi.md)
 3. [Use OIDC authentication](docs/adr/0003-use-oidc-authentication.md)
