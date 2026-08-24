@@ -1,8 +1,12 @@
 from dataclasses import dataclass
 from hashlib import sha256
-from io import BytesIO
 from pathlib import PurePath
-from zipfile import BadZipFile, ZipFile
+
+from agreement_intelligence_platform.document_safety import (
+    MAX_DOCUMENT_COMPRESSED_BYTES,
+    DocxArchiveSafetyError,
+    validate_docx_archive,
+)
 
 
 class DocumentValidationError(ValueError):
@@ -33,7 +37,7 @@ def validate_document(
         raise DocumentValidationError("The file name must not contain a path.")
     if not content:
         raise DocumentValidationError("The uploaded file is empty.")
-    if len(content) > max_bytes:
+    if len(content) > min(max_bytes, MAX_DOCUMENT_COMPRESSED_BYTES):
         raise DocumentValidationError("The uploaded file exceeds the maximum allowed size.")
 
     extension = PurePath(filename).suffix.lower()
@@ -47,8 +51,17 @@ def validate_document(
 
     if extension == ".pdf" and not content.startswith(b"%PDF-"):
         raise DocumentValidationError("The file content is not a valid PDF signature.")
-    if extension == ".docx" and not _is_docx(content):
-        raise DocumentValidationError("The file content is not a valid DOCX signature.")
+    if extension == ".docx":
+        try:
+            validate_docx_archive(content)
+        except DocxArchiveSafetyError as error:
+            if str(error) == "limits":
+                raise DocumentValidationError(
+                    "The DOCX archive exceeds document safety limits."
+                ) from error
+            raise DocumentValidationError(
+                "The DOCX archive has an invalid internal structure."
+            ) from error
 
     return ValidatedDocument(
         content=content,
@@ -57,14 +70,3 @@ def validate_document(
         filename=filename,
         sha256=sha256(content).hexdigest(),
     )
-
-
-def _is_docx(content: bytes) -> bool:
-    if not content.startswith(b"PK\x03\x04"):
-        return False
-    try:
-        with ZipFile(BytesIO(content)) as archive:
-            names = set(archive.namelist())
-    except BadZipFile:
-        return False
-    return "[Content_Types].xml" in names and "word/document.xml" in names

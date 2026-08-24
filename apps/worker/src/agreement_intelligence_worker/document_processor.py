@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict
 from typing import Any, Protocol, cast
 
+from agreement_intelligence_platform.document_safety import MAX_DOCUMENT_COMPRESSED_BYTES
 from agreement_intelligence_platform.telemetry import operation_span
 from botocore.exceptions import ClientError
 
@@ -15,7 +16,12 @@ from agreement_intelligence_worker.analysis_validation import (
 )
 from agreement_intelligence_worker.classification import classify_document
 from agreement_intelligence_worker.clause_extraction import extract_clauses
-from agreement_intelligence_worker.document_understanding import ParsedDocument, parse_document
+from agreement_intelligence_worker.document_understanding import (
+    DocumentParseError,
+    DocumentParserUnavailableError,
+    ParsedDocument,
+    parse_document,
+)
 from agreement_intelligence_worker.guardrails import (
     GuardrailDecision,
     record_guardrail_span_provenance,
@@ -56,6 +62,9 @@ class S3ObjectStorage:
             if str(error.response.get("Error", {}).get("Code", "")) in {"NoSuchKey", "404"}:
                 return None
             raise
+        content_length = response.get("ContentLength")
+        if isinstance(content_length, int) and content_length > MAX_DOCUMENT_COMPRESSED_BYTES:
+            raise DocumentParseError()
         return cast(bytes, response["Body"].read())
 
     def put_immutable(self, key: str, content: bytes, *, content_type: str) -> bool:
@@ -91,7 +100,15 @@ class DocumentUnderstandingProcessor:
 
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         source = _source_from(job)
-        content = self._storage.read(source.storage_key)
+        try:
+            content = self._storage.read(source.storage_key)
+        except DocumentParseError as error:
+            raise PermanentProcessingError(
+                "Document parsing was rejected by safety limits.",
+                category=error.category,
+            ) from error
+        except DocumentParserUnavailableError as error:
+            raise TransientProcessingError("Document parser temporarily unavailable") from error
         if content is None:
             raise PermanentProcessingError("The selected source document is unavailable")
         try:
@@ -100,6 +117,13 @@ class DocumentUnderstandingProcessor:
                 content_type=source.content_type,
                 source_checksum=source.checksum,
             )
+        except DocumentParseError as error:
+            raise PermanentProcessingError(
+                "Document parsing was rejected by safety limits.",
+                category=error.category,
+            ) from error
+        except DocumentParserUnavailableError as error:
+            raise TransientProcessingError("Document parser temporarily unavailable") from error
         except ValueError as error:
             raise PermanentProcessingError("The source document cannot be parsed") from error
         artifact_key = _artifact_key(job, source.checksum)

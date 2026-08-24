@@ -1,6 +1,7 @@
 import logging
 import os
 
+from agreement_intelligence_platform.document_safety import MAX_DOCUMENT_COMPRESSED_BYTES
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -15,7 +16,7 @@ from agreement_intelligence_api.correlation import (
 
 logger = logging.getLogger("agreement_intelligence.api")
 
-DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+DEFAULT_MAX_UPLOAD_BYTES = MAX_DOCUMENT_COMPRESSED_BYTES
 
 
 class DocumentUploadBodyLimitMiddleware:
@@ -23,7 +24,7 @@ class DocumentUploadBodyLimitMiddleware:
         self.app = app
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "http" and scope["method"] == "POST" and scope["path"] == "/documents":
+        if _is_document_upload(scope):
             headers = dict(scope.get("headers", []))
             content_length = headers.get(b"content-length")
             if content_length is None:
@@ -81,6 +82,16 @@ class DocumentUploadBodyLimitMiddleware:
         await self.app(scope, receive, send)
 
 
+def _is_document_upload(scope: Scope) -> bool:
+    if scope["type"] != "http" or scope["method"] != "POST":
+        return False
+    path = scope["path"]
+    if path == "/documents":
+        return True
+    segments = path.strip("/").split("/")
+    return len(segments) == 3 and segments[0] == "agreements" and segments[2] == "versions"
+
+
 def _configured_max_upload_bytes() -> int:
     configured = os.environ.get("MAX_DOCUMENT_UPLOAD_BYTES")
     if configured is None:
@@ -91,7 +102,7 @@ def _configured_max_upload_bytes() -> int:
         raise RuntimeError("MAX_DOCUMENT_UPLOAD_BYTES must be an integer.") from error
     if value <= 0:
         raise RuntimeError("MAX_DOCUMENT_UPLOAD_BYTES must be positive.")
-    return value
+    return min(value, MAX_DOCUMENT_COMPRESSED_BYTES)
 
 
 class CorrelationIdMiddleware(BaseHTTPMiddleware):

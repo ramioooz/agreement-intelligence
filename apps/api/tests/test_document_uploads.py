@@ -92,6 +92,21 @@ def upload_form(
     return {"organization_id": organization_id, "workspace_id": workspace_id}
 
 
+def _docx(*, extra_entries: dict[str, bytes] | None = None) -> bytes:
+    document = BytesIO()
+    entries = {
+        "[Content_Types].xml": b"<Types />",
+        "_rels/.rels": b"<Relationships />",
+        "word/document.xml": b"<w:document />",
+    }
+    if extra_entries is not None:
+        entries.update(extra_entries)
+    with ZipFile(document, "w", ZIP_DEFLATED) as archive:
+        for name, value in entries.items():
+            archive.writestr(name, value)
+    return document.getvalue()
+
+
 def test_uploading_a_valid_pdf_stores_an_immutable_scoped_original() -> None:
     storage = InMemoryDocumentStorage()
     app.state.document_storage = storage
@@ -172,10 +187,6 @@ def test_upload_rejects_a_declared_mime_type_that_does_not_match_the_extension()
 
 
 def test_upload_accepts_a_docx_with_required_zip_entries() -> None:
-    document = BytesIO()
-    with ZipFile(document, "w", ZIP_DEFLATED) as archive:
-        archive.writestr("[Content_Types].xml", "<Types />")
-        archive.writestr("word/document.xml", "<w:document />")
     app.state.document_storage = InMemoryDocumentStorage()
 
     response = TestClient(app).post(
@@ -184,7 +195,7 @@ def test_upload_accepts_a_docx_with_required_zip_entries() -> None:
         files={
             "file": (
                 "agreement.docx",
-                document.getvalue(),
+                _docx(),
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
         },
@@ -195,6 +206,58 @@ def test_upload_accepts_a_docx_with_required_zip_entries() -> None:
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
     assert response.json()["object_key"].endswith("/original.docx")
+
+
+def test_upload_rejects_a_compressed_docx_with_an_excessive_expansion_ratio() -> None:
+    response = TestClient(app).post(
+        "/documents",
+        data=upload_form(),
+        files={
+            "file": (
+                "agreement.docx",
+                _docx(extra_entries={"word/media/bomb.bin": b"x" * 1_100_000}),
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "The DOCX archive exceeds document safety limits."
+
+
+def test_upload_rejects_docx_archives_with_unsafe_paths_or_missing_required_parts() -> None:
+    unsafe_path = _docx(extra_entries={"../outside.xml": b"x"})
+    missing_root_relationship = BytesIO()
+    with ZipFile(missing_root_relationship, "w", ZIP_DEFLATED) as archive:
+        archive.writestr("[Content_Types].xml", "<Types />")
+        archive.writestr("word/document.xml", "<w:document />")
+
+    for content in (unsafe_path, missing_root_relationship.getvalue()):
+        with raises(DocumentValidationError, match="DOCX archive"):
+            validate_document(
+                filename="agreement.docx",
+                content=content,
+                declared_content_type=(
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                ),
+                max_bytes=2_000_000,
+            )
+
+
+def test_upload_rejects_docx_archives_with_too_many_entries() -> None:
+    content = _docx(
+        extra_entries={f"custom/{index}.xml": b"x" for index in range(126)},
+    )
+
+    with raises(DocumentValidationError, match="exceeds document safety limits"):
+        validate_document(
+            filename="agreement.docx",
+            content=content,
+            declared_content_type=(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            ),
+            max_bytes=2_000_000,
+        )
 
 
 def test_upload_enforces_the_configured_file_size_limit(monkeypatch: MonkeyPatch) -> None:
@@ -317,6 +380,50 @@ def test_upload_rejects_under_declared_body_before_route_logic(
 
     assert status == 413
     assert storage.objects == {}
+
+
+def test_version_upload_rejects_an_oversized_declared_body_before_multipart_parsing(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAX_DOCUMENT_UPLOAD_BYTES", "16")
+    status: int | None = None
+    received = False
+
+    async def receive() -> MutableMapping[str, Any]:
+        nonlocal received
+        received = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: MutableMapping[str, Any]) -> None:
+        nonlocal status
+        if message["type"] == "http.response.start":
+            status = cast(int, message["status"])
+
+    scope: MutableMapping[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "method": "POST",
+        "scheme": "http",
+        "path": "/agreements/11111111-1111-1111-1111-111111111111/versions",
+        "raw_path": b"/agreements/11111111-1111-1111-1111-111111111111/versions",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"multipart/form-data; boundary=boundary"),
+            (b"content-length", b"17"),
+        ],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+
+    import anyio
+
+    async def exercise_upload() -> None:
+        await app(scope, receive, send)
+
+    anyio.run(exercise_upload)
+
+    assert status == 413
+    assert received is False
 
 
 def test_upload_rejects_missing_declared_mime_type() -> None:
