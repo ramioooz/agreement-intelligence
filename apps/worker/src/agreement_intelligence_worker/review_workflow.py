@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -12,9 +13,11 @@ from uuid import UUID
 
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
-from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, select, update
+from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, select, text, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import Select
+
+logger = logging.getLogger("agreement_intelligence.worker")
 
 
 class GraphState(TypedDict):
@@ -28,6 +31,8 @@ workflow_events = Table(
     "review_workflow_outbox",
     workflow_metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("workflow_id", Uuid(as_uuid=True), nullable=False),
     Column("event_type", String(64), nullable=False),
     Column("processed_at", DateTime(timezone=True), nullable=True),
@@ -36,6 +41,8 @@ workflows = Table(
     "review_workflows",
     workflow_metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("checkpoint_id", Uuid(as_uuid=True), nullable=False),
 )
 
@@ -44,6 +51,8 @@ workflows = Table(
 class WorkflowMessage:
     event_id: UUID
     receipt_handle: str
+    organization_id: UUID
+    workspace_id: UUID
 
 
 class WorkflowMessageReceiver(Protocol):
@@ -84,7 +93,10 @@ class SQSWorkflowMessageReceiver:
         if body.get("kind") != "review-workflow":
             return None
         return WorkflowMessage(
-            event_id=UUID(str(body["event_id"])), receipt_handle=str(message["ReceiptHandle"])
+            event_id=UUID(str(body["event_id"])),
+            receipt_handle=str(message["ReceiptHandle"]),
+            organization_id=UUID(str(body["organization_id"])),
+            workspace_id=UUID(str(body["workspace_id"])),
         )
 
     async def ack(self, message: WorkflowMessage) -> None:
@@ -150,10 +162,16 @@ class SQLAlchemyWorkflowEventProcessor:
         self._engine = engine
         self._checkpoints = checkpoints
 
-    def process(self, event_id: UUID) -> bool:
+    def process(self, event_id: UUID, *, organization_id: UUID, workspace_id: UUID) -> bool:
         with self._engine.begin() as connection:
+            _set_tenant_context(connection, organization_id)
             row = connection.execute(_workflow_event_for_update(event_id)).mappings().one_or_none()
-            if row is None or row["processed_at"] is not None:
+            if (
+                row is None
+                or row["processed_at"] is not None
+                or row["organization_id"] != organization_id
+                or row["workspace_id"] != workspace_id
+            ):
                 return False
             self._checkpoints.persist(
                 event_id=event_id,
@@ -188,5 +206,21 @@ async def run_workflow_loop(
         message = await receiver.receive()
         if message is None:
             continue
-        processor.process(message.event_id)
+        try:
+            processor.process(
+                message.event_id,
+                organization_id=message.organization_id,
+                workspace_id=message.workspace_id,
+            )
+        except Exception:
+            logger.exception("review workflow message handling failed")
+            continue
         await receiver.ack(message)
+
+
+def _set_tenant_context(connection: Any, organization_id: UUID) -> None:
+    if connection.dialect.name == "postgresql":
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )

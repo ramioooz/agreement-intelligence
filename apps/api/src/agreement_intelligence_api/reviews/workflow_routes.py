@@ -3,7 +3,7 @@ from json import dumps, loads
 from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -32,6 +32,7 @@ from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowCoordinator,
     ReviewWorkflowQueueDispatcher,
     WorkflowSnapshot,
+    _scope_transaction,
     workflow_queue_publisher_from_environment,
 )
 from agreement_intelligence_api.reviews.workflow_schemas import (
@@ -45,6 +46,8 @@ from agreement_intelligence_api.reviews.workflow_schemas import (
 router = APIRouter(prefix="/reviews", tags=["review-workflows"])
 SessionDependency = Annotated[Session, Depends(get_session)]
 PrincipalDependency = Annotated[Principal, Depends(current_principal)]
+OrganizationScope = Annotated[UUID, Query()]
+WorkspaceScope = Annotated[UUID, Query()]
 
 
 @router.get("/{review_id}/timeline")
@@ -52,9 +55,18 @@ def review_timeline(
     review_id: UUID,
     principal: PrincipalDependency,
     session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> list[dict[str, object]]:
     """Return one authorized, chronological view of comments, decisions, and audit events."""
-    review = _review_for_permission(session, review_id, principal, PermissionKey.AGREEMENTS_READ)
+    review = _review_for_permission(
+        session,
+        review_id,
+        principal,
+        PermissionKey.AGREEMENTS_READ,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
     comments = session.scalars(
         select(ReviewCommentRecord)
         .where(ReviewCommentRecord.review_id == review.id)
@@ -118,8 +130,17 @@ def start_workflow(
     request: Request,
     principal: PrincipalDependency,
     session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> ReviewWorkflowResponse:
-    review = _review_for_permission(session, review_id, principal, PermissionKey.REVIEWS_ASSIGN)
+    review = _review_for_permission(
+        session,
+        review_id,
+        principal,
+        PermissionKey.REVIEWS_ASSIGN,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
     snapshot = ReviewWorkflowCoordinator(session).start(
         review_id=review.id,
         policy_version_id=body.policy_version_id,
@@ -127,7 +148,7 @@ def start_workflow(
     )
     ReviewWorkflowQueueDispatcher(
         session, workflow_queue_publisher_from_environment()
-    ).dispatch_pending()
+    ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
     return _response(snapshot)
 
 
@@ -136,8 +157,17 @@ def get_workflow(
     review_id: UUID,
     principal: PrincipalDependency,
     session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> ReviewWorkflowResponse:
-    review = _review_for_permission(session, review_id, principal, PermissionKey.AGREEMENTS_READ)
+    review = _review_for_permission(
+        session,
+        review_id,
+        principal,
+        PermissionKey.AGREEMENTS_READ,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
     workflow = session.scalar(
         select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
     )
@@ -161,8 +191,17 @@ def get_final_package(
     review_id: UUID,
     principal: PrincipalDependency,
     session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> FinalReviewPackageResponse:
-    review = _review_for_permission(session, review_id, principal, PermissionKey.AGREEMENTS_READ)
+    review = _review_for_permission(
+        session,
+        review_id,
+        principal,
+        PermissionKey.AGREEMENTS_READ,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
     workflow = session.scalar(
         select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
     )
@@ -186,9 +225,20 @@ def get_final_package(
 
 @router.get("/{review_id}/final-package/manifest")
 def download_final_package_manifest(
-    review_id: UUID, principal: PrincipalDependency, session: SessionDependency
+    review_id: UUID,
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> dict[str, object]:
-    review = _review_for_permission(session, review_id, principal, PermissionKey.AGREEMENTS_READ)
+    review = _review_for_permission(
+        session,
+        review_id,
+        principal,
+        PermissionKey.AGREEMENTS_READ,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
     record = _stored_package(session, review)
     document = storage_from_environment().read(record.manifest_key)
     if document is None:
@@ -198,9 +248,20 @@ def download_final_package_manifest(
 
 @router.get("/{review_id}/final-package/pdf")
 def download_final_package_pdf(
-    review_id: UUID, principal: PrincipalDependency, session: SessionDependency
+    review_id: UUID,
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> Response:
-    review = _review_for_permission(session, review_id, principal, PermissionKey.AGREEMENTS_READ)
+    review = _review_for_permission(
+        session,
+        review_id,
+        principal,
+        PermissionKey.AGREEMENTS_READ,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
     record = _stored_package(session, review)
     document = storage_from_environment().read(record.pdf_key)
     if document is None:
@@ -394,6 +455,7 @@ def _create_final_package(
         metadata={"review_id": str(review.id), "workflow_id": str(workflow.id)},
     )
     session.commit()
+    _scope_transaction(session, review.organization_id)
     session.refresh(package)
     return package
 
@@ -437,9 +499,16 @@ def decide_workflow(
     request: Request,
     principal: PrincipalDependency,
     session: SessionDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
 ) -> ReviewWorkflowResponse:
     review = _review_for_any_permission(
-        session, review_id, principal, (PermissionKey.REVIEWS_DECIDE, PermissionKey.REVIEWS_APPROVE)
+        session,
+        review_id,
+        principal,
+        (PermissionKey.REVIEWS_DECIDE, PermissionKey.REVIEWS_APPROVE),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
     )
     workflow = session.scalar(
         select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
@@ -456,22 +525,35 @@ def decide_workflow(
     )
     ReviewWorkflowQueueDispatcher(
         session, workflow_queue_publisher_from_environment()
-    ).dispatch_pending()
+    ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
     return _response(snapshot)
 
 
 def _review_for_permission(
-    session: Session, review_id: UUID, principal: Principal, permission: PermissionKey
+    session: Session,
+    review_id: UUID,
+    principal: Principal,
+    permission: PermissionKey,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
 ) -> ReviewCaseRecord:
-    review = session.get(ReviewCaseRecord, review_id)
-    if review is None:
-        hide_resource()
-    if not IdentityService(session).can_access_workspace(
+    identity = IdentityService(session)
+    if not identity.can_access_workspace(
         principal,
-        organization_id=review.organization_id,
-        workspace_id=review.workspace_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
         permission=permission,
     ):
+        hide_resource()
+    review = session.scalar(
+        select(ReviewCaseRecord).where(
+            ReviewCaseRecord.id == review_id,
+            ReviewCaseRecord.organization_id == organization_id,
+            ReviewCaseRecord.workspace_id == workspace_id,
+        )
+    )
+    if review is None:
         hide_resource()
     return review
 
@@ -481,20 +563,29 @@ def _review_for_any_permission(
     review_id: UUID,
     principal: Principal,
     permissions: tuple[PermissionKey, ...],
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
 ) -> ReviewCaseRecord:
-    review = session.get(ReviewCaseRecord, review_id)
-    if review is None:
-        hide_resource()
     identity = IdentityService(session)
     if not any(
         identity.can_access_workspace(
             principal,
-            organization_id=review.organization_id,
-            workspace_id=review.workspace_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
             permission=permission,
         )
         for permission in permissions
     ):
+        hide_resource()
+    review = session.scalar(
+        select(ReviewCaseRecord).where(
+            ReviewCaseRecord.id == review_id,
+            ReviewCaseRecord.organization_id == organization_id,
+            ReviewCaseRecord.workspace_id == workspace_id,
+        )
+    )
+    if review is None:
         hide_resource()
     return review
 

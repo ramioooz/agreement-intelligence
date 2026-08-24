@@ -152,7 +152,7 @@ class ProcessingJobService:
             profile=request.profile,
         )
         self._identity.session.commit()
-        self._dispatch_pending()
+        self._dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
         return response, True
 
     def get(
@@ -204,7 +204,7 @@ class ProcessingJobService:
         self._set_agreement_state(agreement_id, state="queued", updated_at=now)
         self._repository.enqueue_outbox(response, idempotency_key=idempotency_key, profile=profile)
         self._identity.session.commit()
-        self._dispatch_pending()
+        self._dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
         return response
 
     def requeue(
@@ -232,7 +232,7 @@ class ProcessingJobService:
             profile=job.profile,
         )
         self._identity.session.commit()
-        self._dispatch_pending()
+        self._dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
         return response
 
     def _job_in_scope(
@@ -307,11 +307,11 @@ class ProcessingJobService:
         ):
             raise AgreementNotFoundError
 
-    def _dispatch_pending(self) -> None:
+    def _dispatch_pending(self, *, organization_id: UUID, workspace_id: UUID) -> None:
         ProcessingOutboxDispatcher(
             session=self._identity.session,
             publisher=self._queue,
-        ).dispatch_pending()
+        ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
 
 
 def _can_retry_failure(category: str | None) -> bool:

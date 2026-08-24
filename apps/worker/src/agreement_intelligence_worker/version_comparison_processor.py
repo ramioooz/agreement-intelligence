@@ -22,6 +22,7 @@ from sqlalchemy import (
     update,
 )
 from sqlalchemy.engine import Connection
+from sqlalchemy.sql import text
 
 from agreement_intelligence_worker.document_processor import ObjectStorage
 from agreement_intelligence_worker.processing import (
@@ -43,6 +44,8 @@ _versions = Table(
     "agreement_versions",
     _metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True)),
+    Column("workspace_id", Uuid(as_uuid=True)),
     Column("checksum", String(255)),
     Column("storage_key", String(1024)),
 )
@@ -50,6 +53,8 @@ _jobs = Table(
     "processing_jobs",
     _metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True)),
+    Column("workspace_id", Uuid(as_uuid=True)),
     Column("version_id", Uuid(as_uuid=True)),
     Column("state", String(32)),
 )
@@ -57,6 +62,8 @@ _artifacts = Table(
     "processing_artifacts",
     _metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True)),
+    Column("workspace_id", Uuid(as_uuid=True)),
     Column("job_id", Uuid(as_uuid=True)),
     Column("artifact_key", String(500)),
     Column("created_at", DateTime(timezone=True)),
@@ -65,6 +72,8 @@ _runs = Table(
     "version_comparison_runs",
     _metadata,
     Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True)),
+    Column("workspace_id", Uuid(as_uuid=True)),
     Column("baseline_version_id", Uuid(as_uuid=True)),
     Column("target_version_id", Uuid(as_uuid=True)),
     Column("processing_job_id", Uuid(as_uuid=True)),
@@ -111,11 +120,12 @@ class VersionComparisonProcessor:
         try:
             return self._process(job)
         except PermanentProcessingError as error:
-            self._mark_failed(job.id, str(error))
+            self._mark_failed(job, str(error))
             raise
 
     def _process(self, job: ProcessingJob) -> CompletedArtifact:
         with self._engine.begin() as connection:
+            _set_tenant_context(connection, job)
             run = (
                 connection.execute(select(_runs).where(_runs.c.processing_job_id == job.id))
                 .mappings()
@@ -224,16 +234,17 @@ class VersionComparisonProcessor:
             job_id=job.id, key=f"comparisons/{run['id']}/version-comparison.v1.json"
         )
 
-    def _mark_failed(self, job_id: object, reason: str) -> None:
+    def _mark_failed(self, job: ProcessingJob, reason: str) -> None:
         safe_reason = (
             "Version analysis artifacts are unavailable"
             if "artifact" in reason.lower()
             else "Version comparison could not be completed"
         )
         with self._engine.begin() as connection:
+            _set_tenant_context(connection, job)
             connection.execute(
                 update(_runs)
-                .where(_runs.c.processing_job_id == job_id)
+                .where(_runs.c.processing_job_id == job.id)
                 .values(
                     state="failed",
                     failure_category="permanent",
@@ -282,3 +293,14 @@ def _artifact_key_for_version(connection: Connection, version_id: object) -> str
     if artifact is None:
         raise PermanentProcessingError("Version analysis artifact is unavailable")
     return str(artifact["artifact_key"])
+
+
+def _set_tenant_context(connection: Connection, job: ProcessingJob) -> None:
+    if connection.dialect.name != "postgresql":
+        return
+    if job.organization_id is None or job.workspace_id is None:
+        raise PermanentProcessingError("Version comparison is missing tenant scope")
+    connection.execute(
+        text("SELECT set_config('app.organization_id', :organization_id, true)"),
+        {"organization_id": str(job.organization_id)},
+    )

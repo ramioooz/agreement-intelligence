@@ -3,9 +3,10 @@ import logging
 import os
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from uuid import UUID
 
 import boto3
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.processing.models import ProcessingOutboxRecord
@@ -42,6 +43,8 @@ class SQSProcessingQueuePublisher:
     def publish(self, job: ProcessingJobResponse, *, idempotency_key: str, profile: str) -> None:
         payload = {
             "job_id": str(job.id),
+            "organization_id": str(job.organization_id),
+            "workspace_id": str(job.workspace_id),
             "agreement_id": str(job.agreement_id),
             "idempotency_key": idempotency_key,
             "profile": profile,
@@ -65,7 +68,10 @@ class ProcessingOutboxDispatcher:
         self._session = session
         self._publisher = publisher
 
-    def dispatch_pending(self, *, limit: int = 50) -> int:
+    def dispatch_pending(
+        self, *, organization_id: UUID, workspace_id: UUID, limit: int = 50
+    ) -> int:
+        _scope_transaction(self._session, organization_id)
         delivered = 0
         pending = self._session.scalars(
             select(ProcessingOutboxRecord)
@@ -86,12 +92,15 @@ class ProcessingOutboxDispatcher:
             message.delivered_at = message.updated_at = datetime.now(UTC)
             self._session.commit()
             delivered += 1
+            _scope_transaction(self._session, organization_id)
         return delivered
 
 
 def _job_response_from_outbox(message: ProcessingOutboxRecord) -> ProcessingJobResponse:
     return ProcessingJobResponse(
         id=message.job_id,
+        organization_id=message.organization_id,
+        workspace_id=message.workspace_id,
         agreement_id=message.agreement_id,
         state="queued",
         attempt_count=message.attempt_count,
@@ -110,6 +119,14 @@ def _job_response_from_outbox(message: ProcessingOutboxRecord) -> ProcessingJobR
 
 def _is_fifo_queue(queue_url: str) -> bool:
     return queue_url.rsplit("/", 1)[-1].endswith(".fifo")
+
+
+def _scope_transaction(session: Session, organization_id: UUID) -> None:
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
 
 
 def queue_publisher_from_environment() -> ProcessingQueuePublisher:

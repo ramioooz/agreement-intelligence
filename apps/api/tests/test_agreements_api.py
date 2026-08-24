@@ -238,6 +238,8 @@ def test_platform_admin_can_permanently_delete_an_agreement(
     session.add(
         ProcessingArtifactRecord(
             job_id=job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
             agreement_id=agreement_id,
             artifact_key=artifact_key,
         )

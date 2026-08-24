@@ -729,6 +729,8 @@ def _complete_analysis(
     session.add(
         ProcessingArtifactRecord(
             job_id=job.id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
             agreement_id=job.agreement_id,
             artifact_key=artifact_key,
             created_at=now,
