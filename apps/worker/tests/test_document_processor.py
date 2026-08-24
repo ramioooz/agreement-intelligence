@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 from dataclasses import dataclass
 from io import BytesIO
+from multiprocessing import get_context
 from typing import Any, cast
 from uuid import uuid4
 
@@ -11,12 +13,14 @@ from agreement_intelligence_platform.telemetry import configure_telemetry
 from agreement_intelligence_worker.analysis_provider import ProviderAnalysis
 from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
+    S3ObjectStorage,
     _manifest,
     _SourceDocument,
 )
 from agreement_intelligence_worker.document_understanding import (
     DocumentBlock,
     DocumentPage,
+    DocumentParseError,
     ParsedDocument,
 )
 from agreement_intelligence_worker.model_gateway import GatewayProvenance
@@ -166,6 +170,52 @@ class CompetingClauseProvider:
 class TimeoutProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
         raise TimeoutError("provider request timed out")
+
+
+def test_s3_storage_does_not_read_an_oversized_source_document() -> None:
+    class BodyThatMustNotBeRead:
+        def read(self) -> bytes:
+            raise AssertionError("oversized document body must not be read")
+
+    class OversizedSourceClient:
+        def get_object(self, **_: object) -> dict[str, object]:
+            return {"ContentLength": 10 * 1024 * 1024 + 1, "Body": BodyThatMustNotBeRead()}
+
+    storage = S3ObjectStorage(client=OversizedSourceClient(), bucket="documents")
+
+    with raises(DocumentParseError):
+        storage.read("tenants/example/documents/oversized.pdf")
+
+
+def test_processor_treats_parser_startup_failure_as_transient(monkeypatch: MonkeyPatch) -> None:
+    class StartFailureProcess:
+        exitcode = 0
+
+        def start(self) -> None:
+            raise OSError("process capacity temporarily unavailable")
+
+        def is_alive(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            return None
+
+    class StartFailureContext:
+        def Pipe(self, *, duplex: bool) -> tuple[object, object]:
+            return get_context("spawn").Pipe(duplex=duplex)
+
+        def Process(self, **_: object) -> StartFailureProcess:
+            return StartFailureProcess()
+
+    storage, job = _processor_input()
+    monkeypatch.setattr(
+        multiprocessing,
+        "get_context",
+        lambda _: StartFailureContext(),
+    )
+
+    with raises(TransientProcessingError, match="Document parser temporarily unavailable"):
+        DocumentUnderstandingProcessor(storage).process(job)
 
 
 def test_processor_writes_a_versioned_cited_document_analysis_manifest() -> None:

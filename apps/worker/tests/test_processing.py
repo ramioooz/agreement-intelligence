@@ -13,6 +13,7 @@ from agreement_intelligence_worker.playbook_evaluation import (
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     JobProcessor,
+    PermanentProcessingError,
     ProcessingJob,
     ProcessingMessage,
     RetryPolicy,
@@ -138,6 +139,14 @@ class FlakyProcessor:
         raise TransientProcessingError("Temporary provider failure")
 
 
+class ParserSafetyProcessor:
+    def process(self, job: ProcessingJob) -> CompletedArtifact:
+        raise PermanentProcessingError(
+            "Document parsing was rejected by safety limits.",
+            category="document_parse_rejected",
+        )
+
+
 def _job() -> ProcessingJob:
     return ProcessingJob(
         id=uuid4(),
@@ -161,6 +170,21 @@ def test_duplicate_delivery_does_not_duplicate_completed_artifacts() -> None:
     assert [artifact.key for artifact in repository.artifacts] == [
         f"checkpoints/{repository.job.id}/placeholder.json"
     ]
+    assert queue.retries == []
+
+
+def test_permanent_document_parse_rejection_is_not_retried_on_redelivery() -> None:
+    repository = InMemoryRepository(job=_job(), artifacts=[])
+    queue = InMemoryQueue(retries=[])
+    worker = JobProcessor(repository, queue, ParserSafetyProcessor())
+
+    worker.handle(repository.job.id)
+    worker.handle(repository.job.id)
+
+    assert repository.job.state == "failed"
+    assert repository.job.failure_category == "document_parse_rejected"
+    assert repository.job.failure_message == "Document parsing was rejected by safety limits."
+    assert repository.job.attempt_count == 1
     assert queue.retries == []
 
 

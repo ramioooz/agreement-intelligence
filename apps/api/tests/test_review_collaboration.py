@@ -277,7 +277,11 @@ def test_policy_override_persists_only_the_structured_reason_code(
 ) -> None:
     seeded = _seed_scope(session)
     monkeypatch.setattr(ReviewWorkflowCoordinator, "start", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(ReviewWorkflowQueueDispatcher, "dispatch_pending", lambda _self: 0)
+    monkeypatch.setattr(
+        ReviewWorkflowQueueDispatcher,
+        "dispatch_pending",
+        lambda _self, **_kwargs: 0,
+    )
 
     response = client_for_session(seeded.assigner_id).post(
         "/reviews",
@@ -305,7 +309,11 @@ def test_policy_override_uses_other_code_for_legacy_reason_without_auditing_it(
 ) -> None:
     seeded = _seed_scope(session)
     monkeypatch.setattr(ReviewWorkflowCoordinator, "start", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(ReviewWorkflowQueueDispatcher, "dispatch_pending", lambda _self: 0)
+    monkeypatch.setattr(
+        ReviewWorkflowQueueDispatcher,
+        "dispatch_pending",
+        lambda _self, **_kwargs: 0,
+    )
 
     response = client_for_session(seeded.assigner_id).post(
         "/reviews",

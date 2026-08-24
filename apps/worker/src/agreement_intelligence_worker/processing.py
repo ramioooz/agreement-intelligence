@@ -99,6 +99,10 @@ class TransientProcessingError(Exception):
 class PermanentProcessingError(Exception):
     """The job cannot succeed without an authorized new submission."""
 
+    def __init__(self, message: str, *, category: str = "permanent") -> None:
+        super().__init__(message)
+        self.category = category
+
 
 @dataclass(frozen=True)
 class ProcessingJob:
@@ -272,7 +276,7 @@ class JobProcessor:
         except TransientProcessingError as error:
             self._handle_transient_failure(job, str(error))
         except PermanentProcessingError as error:
-            self._fail(job, category="permanent", message=_safe_summary(str(error)))
+            self._fail(job, category=error.category, message=_safe_summary(str(error)))
         except Exception:
             self._handle_transient_failure(job, "Unexpected processing dependency failure")
         else:
