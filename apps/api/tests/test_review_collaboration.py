@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.models import Base
@@ -14,10 +15,14 @@ from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
 from agreement_intelligence_api.reviews.models import ReviewAssignmentRecord, ReviewCommentRecord
+from agreement_intelligence_api.reviews.workflow import (
+    ReviewWorkflowCoordinator,
+    ReviewWorkflowQueueDispatcher,
+)
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, event, inspect
+from sqlalchemy import create_engine, event, inspect, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -263,6 +268,83 @@ def test_review_start_reapplies_tenant_scope_after_creation_commit(
 
     assert response.status_code == 201
     assert scoped_organizations == [seeded.organization_id]
+
+
+def test_policy_override_persists_only_the_structured_reason_code(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    monkeypatch.setattr(ReviewWorkflowCoordinator, "start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ReviewWorkflowQueueDispatcher, "dispatch_pending", lambda _self: 0)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "review-policy-override",
+            "policy_version_id": str(uuid4()),
+            "policy_override_reason_code": "risk_exception",
+        },
+    )
+
+    assert response.status_code == 201
+    audit_event = session.scalar(
+        select(AuditEventRecord).where(AuditEventRecord.action == "review_policy_override")
+    )
+    assert audit_event is not None
+    assert audit_event.metadata_json == {"reason_code": "risk_exception"}
+
+
+def test_policy_override_uses_other_code_for_legacy_reason_without_auditing_it(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    monkeypatch.setattr(ReviewWorkflowCoordinator, "start", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(ReviewWorkflowQueueDispatcher, "dispatch_pending", lambda _self: 0)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "review-legacy-policy-override",
+            "policy_version_id": str(uuid4()),
+            "policy_override_reason": "Contact legal@example.test about sk-proj-demo-secret.",
+        },
+    )
+
+    assert response.status_code == 201
+    audit_event = session.scalar(
+        select(AuditEventRecord).where(AuditEventRecord.action == "review_policy_override")
+    )
+    assert audit_event is not None
+    assert audit_event.metadata_json == {"reason_code": "other"}
+
+
+def test_policy_override_rejects_unsupported_note_input(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    seeded = _seed_scope(session)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "review-policy-note",
+            "policy_override_note": "Contact legal@example.test about sk-proj-demo-secret.",
+        },
+    )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "policy_override_note_not_supported"}
+    assert session.scalar(select(AuditEventRecord.id)) is None
 
 
 def test_notification_migration_adds_worker_processing_marker(tmp_path: Path) -> None:
