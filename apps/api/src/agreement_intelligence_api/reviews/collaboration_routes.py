@@ -112,7 +112,7 @@ def start_review(
                 )
             ReviewWorkflowQueueDispatcher(
                 session, workflow_queue_publisher_from_environment()
-            ).dispatch_pending()
+            ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
     if not created:
         response.status_code = 200
     return review

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -17,10 +17,13 @@ from agreement_intelligence_api.documents.storage import StoredDocument
 from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.reviews import workflow as workflow_module
+from agreement_intelligence_api.reviews import workflow_routes as workflow_routes_module
 from agreement_intelligence_api.reviews.models import (
     ReviewAssignmentRecord,
     ReviewCaseRecord,
     ReviewNotificationEventRecord,
+    ReviewWorkflowRecord,
 )
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowConflictError,
@@ -28,6 +31,7 @@ from agreement_intelligence_api.reviews.workflow import (
     _workflow_for_decision_update,
 )
 from agreement_intelligence_api.reviews.workflow_routes import (
+    _create_final_package,
     _store_verified_immutable,
     _workflow_for_package_update,
 )
@@ -55,6 +59,24 @@ class _ImmutableStorage:
 
     def delete(self, key: str) -> None:
         raise AssertionError("immutable final-package objects must not be deleted")
+
+
+class _AlwaysImmutableStorage:
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        return True
+
+    def read(self, key: str) -> StoredDocument | None:
+        return None
+
+
+def _recording_refresh(
+    calls: list[tuple[str, object]], original_refresh: Callable[..., None]
+) -> Callable[..., None]:
+    def refresh(instance: object, *args: object, **kwargs: object) -> None:
+        calls.append(("refresh", instance))
+        original_refresh(instance, *args, **kwargs)
+
+    return refresh
 
 
 def test_final_package_creation_locks_the_workflow_before_checking_for_an_existing_row() -> None:
@@ -126,6 +148,94 @@ def test_starting_a_review_activates_the_first_stage_and_persists_a_resume_check
     assert workflow.stages[0].state == "active"
     assert workflow.stages[1].state == "pending"
     assert [event.event_type for event in workflow.pending_events] == ["review.workflow.resume"]
+
+
+def test_start_restores_tenant_scope_before_refreshing_after_commit(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    calls: list[tuple[str, object]] = []
+    original_refresh = session.refresh
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_scope_transaction",
+        lambda _, organization_id: calls.append(("scope", organization_id)),
+    )
+    monkeypatch.setattr(session, "refresh", _recording_refresh(calls, original_refresh))
+
+    ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="review-start-rls-refresh",
+    )
+
+    assert [kind for kind, _ in calls[-2:]] == ["scope", "refresh"]
+    assert calls[-2][1] == review.organization_id
+
+
+def test_decision_restores_tenant_scope_before_refreshing_after_commit(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="review-decision-rls-start",
+    )
+    calls: list[tuple[str, object]] = []
+    original_refresh = session.refresh
+
+    monkeypatch.setattr(
+        workflow_module,
+        "_scope_transaction",
+        lambda _, organization_id: calls.append(("scope", organization_id)),
+    )
+    monkeypatch.setattr(session, "refresh", _recording_refresh(calls, original_refresh))
+
+    ReviewWorkflowCoordinator(session).decide(
+        workflow_id=workflow.id,
+        actor_id=review.created_by,
+        action="reject",
+        idempotency_key="decision-rls-refresh",
+        expected_revision=workflow.revision,
+        correlation_id="review-decision-rls-refresh",
+    )
+
+    assert [kind for kind, _ in calls[-2:]] == ["scope", "refresh"]
+    assert calls[-2][1] == review.organization_id
+
+
+def test_final_package_restores_tenant_scope_before_refreshing_after_commit(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-rls-start",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.commit()
+    calls: list[tuple[str, object]] = []
+    original_refresh = session.refresh
+
+    monkeypatch.setattr(
+        workflow_routes_module,
+        "_scope_transaction",
+        lambda _, organization_id: calls.append(("scope", organization_id)),
+    )
+    monkeypatch.setattr(
+        workflow_routes_module, "storage_from_environment", lambda: _AlwaysImmutableStorage()
+    )
+    monkeypatch.setattr(session, "refresh", _recording_refresh(calls, original_refresh))
+
+    _create_final_package(session, review, workflow_record)
+
+    assert [kind for kind, _ in calls[-2:]] == ["scope", "refresh"]
+    assert calls[-2][1] == review.organization_id
 
 
 def test_stage_activation_assigns_each_eligible_actor_once(session: Session) -> None:

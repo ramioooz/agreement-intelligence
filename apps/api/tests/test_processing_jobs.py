@@ -469,6 +469,8 @@ def test_sqs_processing_publisher_sends_standard_queue_message_without_fifo_meta
     client = RecordingSQSClient()
     job = ProcessingJobResponse(
         id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
         agreement_id=uuid4(),
         state="queued",
         attempt_count=0,
@@ -497,6 +499,8 @@ def test_sqs_processing_publisher_sends_standard_queue_message_without_fifo_meta
     assert "MessageDeduplicationId" not in message
     assert json.loads(str(message["MessageBody"])) == {
         "job_id": str(job.id),
+        "organization_id": str(job.organization_id),
+        "workspace_id": str(job.workspace_id),
         "agreement_id": str(job.agreement_id),
         "idempotency_key": "agreement-processing-v1",
         "profile": "baseline",
@@ -516,6 +520,8 @@ def test_sqs_processing_publisher_sends_fifo_metadata_for_fifo_queue() -> None:
     client = RecordingSQSClient()
     job = ProcessingJobResponse(
         id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
         agreement_id=uuid4(),
         state="queued",
         attempt_count=0,
@@ -545,6 +551,8 @@ def test_sqs_processing_publisher_sends_fifo_metadata_for_fifo_queue() -> None:
     )
     assert json.loads(str(message["MessageBody"])) == {
         "job_id": str(job.id),
+        "organization_id": str(job.organization_id),
+        "workspace_id": str(job.workspace_id),
         "agreement_id": str(job.agreement_id),
         "idempotency_key": "agreement-processing-v1",
         "profile": "baseline",
@@ -584,7 +592,7 @@ def test_submit_persists_pending_outbox_when_publish_fails_then_replay_sends_it(
     dispatched = ProcessingOutboxDispatcher(
         session=session,
         publisher=client_for_session.published_jobs,
-    ).dispatch_pending()
+    ).dispatch_pending(organization_id=organization.id, workspace_id=workspace.id)
 
     assert dispatched == 1
     assert [job.id for job in client_for_session.published_jobs.jobs] == [

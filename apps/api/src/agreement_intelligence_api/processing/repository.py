@@ -47,6 +47,8 @@ class SQLAlchemyProcessingJobRepository:
         record = ProcessingOutboxRecord(
             agreement_id=job.agreement_id,
             job_id=job.id,
+            organization_id=job.organization_id,
+            workspace_id=job.workspace_id,
             idempotency_key=idempotency_key,
             profile=profile,
             attempt_count=job.attempt_count,
@@ -63,6 +65,8 @@ class SQLAlchemyProcessingJobRepository:
     def _to_response(record: ProcessingJobRecord) -> ProcessingJobResponse:
         return ProcessingJobResponse(
             id=record.id,
+            organization_id=record.organization_id,
+            workspace_id=record.workspace_id,
             agreement_id=record.agreement_id,
             version_id=record.version_id,
             state=record.state,  # type: ignore[arg-type]

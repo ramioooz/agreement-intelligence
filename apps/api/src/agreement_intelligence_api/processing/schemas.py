@@ -15,6 +15,8 @@ class SubmitProcessingJobRequest(BaseModel):
 
 class ProcessingJobResponse(BaseModel):
     id: UUID
+    organization_id: UUID
+    workspace_id: UUID
     agreement_id: UUID
     version_id: UUID | None = None
     state: ProcessingJobState

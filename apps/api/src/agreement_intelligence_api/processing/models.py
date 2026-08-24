@@ -49,6 +49,8 @@ class ProcessingArtifactRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     job_id: Mapped[UUID] = mapped_column(ForeignKey("processing_jobs.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
     artifact_key: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -60,6 +62,8 @@ class ProcessingOutboxRecord(Base):
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     job_id: Mapped[UUID] = mapped_column(ForeignKey("processing_jobs.id"), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(ForeignKey("workspaces.id"), index=True)
     agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
     idempotency_key: Mapped[str] = mapped_column(String(255))
     profile: Mapped[str] = mapped_column(String(100))
