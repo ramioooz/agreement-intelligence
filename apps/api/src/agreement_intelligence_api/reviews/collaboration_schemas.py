@@ -1,7 +1,16 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
+
+PolicyOverrideReasonCode = Literal[
+    "business_exception",
+    "contractual_requirement",
+    "jurisdictional_requirement",
+    "risk_exception",
+    "other",
+]
 
 
 class StartReviewRequest(BaseModel):
@@ -9,7 +18,19 @@ class StartReviewRequest(BaseModel):
     agreement_version_id: UUID | None = None
     idempotency_key: str = Field(min_length=1, max_length=255)
     policy_version_id: UUID | None = None
-    policy_override_reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    policy_override_reason_code: PolicyOverrideReasonCode | None = None
+    policy_override_reason: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1000,
+        description="Legacy free-form reason; mapped to the other code and never retained.",
+    )
+    policy_override_note: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=1000,
+        description="Rejected and not retained because no authorized review-note boundary exists.",
+    )
 
 
 class ReviewCaseResponse(BaseModel):
