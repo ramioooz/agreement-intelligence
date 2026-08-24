@@ -1,8 +1,11 @@
 # Pre-publication security and architecture review
 
-**Review completed:** 24 August 2026  
-**Reviewed revision:** `376d5cc`  
-**Scope:** local application, source repository, container stack, and emulated AWS boundaries  
+**Review completed:** 24 August 2026
+
+**Reviewed revision:** `376d5cc`
+
+**Scope:** local application, source repository, container stack, and emulated AWS boundaries
+
 **Verdict:** **Not ready to make public until the release blockers below are resolved and re-reviewed.**
 
 This is a report-only review. It does not change application behavior. Every
