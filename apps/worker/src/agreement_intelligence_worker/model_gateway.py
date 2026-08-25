@@ -8,6 +8,7 @@ from time import perf_counter
 from typing import Any, Literal, Protocol, cast
 
 from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
+from agreement_intelligence_platform.telemetry import operation_span
 from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
 from opentelemetry import trace
 
@@ -259,7 +260,12 @@ class OpenAIModelGateway:
         if request.dimensions is not None:
             request_options["dimensions"] = request.dimensions
         try:
-            response = client.embeddings.create(**request_options)
+            with operation_span(
+                "agreement-intelligence.worker",
+                "model.embed",
+                safe_span_attributes({"operation": "model.embed", "outcome": "success"}),
+            ):
+                response = client.embeddings.create(**request_options)
         except Exception as error:
             raise _gateway_error(error) from error
         vectors = [list(cast(Sequence[float], item.embedding)) for item in response.data]
@@ -365,11 +371,16 @@ class OpenAIModelGateway:
     ) -> tuple[str, object]:
         try:
             if configuration.mode == "openai":
-                response = client.responses.create(
-                    model=configuration.model,
-                    input=_messages(instruction, payload),
-                    text={"format": _hosted_response_format(schema)},
-                )
+                with operation_span(
+                    "agreement-intelligence.worker",
+                    "model.generate",
+                    safe_span_attributes({"operation": "model.generate", "outcome": "success"}),
+                ):
+                    response = client.responses.create(
+                        model=configuration.model,
+                        input=_messages(instruction, payload),
+                        text={"format": _hosted_response_format(schema)},
+                    )
                 return cast(str, response.output_text), getattr(response, "usage", None)
             response = client.chat.completions.create(
                 model=configuration.model,

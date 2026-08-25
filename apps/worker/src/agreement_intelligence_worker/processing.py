@@ -145,6 +145,7 @@ class ProcessingMessage:
     organization_id: UUID | None = None
     workspace_id: UUID | None = None
     trace_headers: Mapping[str, str] = field(default_factory=dict)
+    queue_age_ms: int | None = None
 
 
 class JobRepository(Protocol):
@@ -458,6 +459,7 @@ class SQSProcessingMessageReceiver:
             workspace_id=UUID(str(body["workspace_id"])),
             receipt_handle=str(message["ReceiptHandle"]),
             trace_headers=trace_headers,
+            queue_age_ms=_queue_age_ms(message),
         )
 
     async def ack(self, message: ProcessingMessage) -> None:
@@ -850,6 +852,19 @@ async def run_processing_loop(
                 operation="worker.processing",
                 outcome="success",
             )
+            if message.queue_age_ms is not None:
+                record_metric(
+                    "agreement_intelligence.queue.age_ms",
+                    message.queue_age_ms,
+                    operation="queue.receive",
+                    outcome="success",
+                )
+            record_metric(
+                "agreement_intelligence.operation.count",
+                1,
+                operation="queue.receive",
+                outcome="success",
+            )
         except Exception:
             logger.exception(
                 "processing message handling failed",
@@ -868,3 +883,13 @@ def _safe_summary(message: str) -> str:
     if _SENSITIVE_MESSAGE_PATTERN.search(normalized):
         return "Processing dependency failure"
     return (normalized or "Processing failed")[:500]
+
+
+def _queue_age_ms(message: Mapping[str, object]) -> int | None:
+    attributes = message.get("Attributes")
+    if not isinstance(attributes, Mapping):
+        return None
+    sent_at = attributes.get("SentTimestamp")
+    if not isinstance(sent_at, str) or not sent_at.isdecimal():
+        return None
+    return max(0, round(datetime.now(UTC).timestamp() * 1_000) - int(sent_at))

@@ -103,16 +103,18 @@ def operation_span(
             )
             raise
         else:
-            span.set_attribute("outcome", "success")
+            attributes_after_operation = span.attributes or {}
+            outcome = attributes_after_operation.get("outcome", "success")
+            metric_outcome = outcome if isinstance(outcome, str) else "success"
             record_metric(
                 "agreement_intelligence.operation.count",
                 1,
                 operation=bounded_operation,
-                outcome="success",
+                outcome=metric_outcome,
             )
             record_metric(
                 "agreement_intelligence.operation.duration_ms",
                 round((perf_counter() - started_at) * 1_000),
                 operation=bounded_operation,
-                outcome="success",
+                outcome=metric_outcome,
             )

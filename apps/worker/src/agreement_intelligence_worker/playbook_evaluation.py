@@ -9,6 +9,8 @@ from enum import StrEnum
 from typing import Any, Literal, cast
 from uuid import uuid4
 
+from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
+from agreement_intelligence_platform.telemetry import operation_span
 from sqlalchemy import (
     JSON,
     Column,
@@ -542,12 +544,24 @@ class SQLAlchemyPlaybookEvaluationSink:
                 )
                 for row in rule_rows
             ]
-            findings = evaluate_playbook(
-                rules,
-                manifest,
-                risk_model_explainer=self._risk_model_explainer,
-                fallback_model_comparator=self._fallback_model_comparator,
-                playbook_version_id=str(version["id"]),
+            with operation_span(
+                "agreement-intelligence.worker",
+                "evaluation.run",
+                safe_span_attributes({"operation": "evaluation.run", "outcome": "success"}),
+            ) as span:
+                findings = evaluate_playbook(
+                    rules,
+                    manifest,
+                    risk_model_explainer=self._risk_model_explainer,
+                    fallback_model_comparator=self._fallback_model_comparator,
+                    playbook_version_id=str(version["id"]),
+                )
+                span.set_attribute("evaluation_outcome", "completed")
+            record_metric(
+                "agreement_intelligence.evaluation.count",
+                1,
+                operation="evaluation.run",
+                outcome="success",
             )
             extraction_version = next(
                 (

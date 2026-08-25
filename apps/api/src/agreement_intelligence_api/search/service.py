@@ -202,19 +202,29 @@ class HybridSearchService:
             "retrieval.search",
             safe_span_attributes({"operation": "retrieval.search", "outcome": "success"}),
         ) as span:
-            lexical = self._repository.lexical_candidates(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                filters=filters,
-                limit=MAX_CANDIDATES_PER_CHANNEL,
-            )
-            try:
-                semantic = self._semantic_provider.candidates(
+            with operation_span(
+                "agreement-intelligence.api",
+                "database.query",
+                safe_span_attributes({"operation": "database.query", "outcome": "success"}),
+            ):
+                lexical = self._repository.lexical_candidates(
                     organization_id=organization_id,
                     workspace_id=workspace_id,
                     filters=filters,
                     limit=MAX_CANDIDATES_PER_CHANNEL,
                 )
+            try:
+                with operation_span(
+                    "agreement-intelligence.api",
+                    "database.query",
+                    safe_span_attributes({"operation": "database.query", "outcome": "success"}),
+                ):
+                    semantic = self._semantic_provider.candidates(
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        filters=filters,
+                        limit=MAX_CANDIDATES_PER_CHANNEL,
+                    )
             except Exception:
                 semantic = []
             items = [
