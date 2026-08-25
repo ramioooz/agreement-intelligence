@@ -19,3 +19,14 @@ Run `make terraform-check` to validate the LocalStack-compatible Terraform modul
 Use the migration runbook in `infra/terraform/README.md` for real AWS. LocalStack
 validation does not prove production IAM, networking, ECS, RDS, ALB, WAF, or
 identity-federation behavior.
+
+## Local recovery and incident response
+
+- [Backup and restore](backup-restore.md) documents the tested PostgreSQL and
+  LocalStack S3 recovery path, scope, exclusions, and measured local RPO/RTO.
+- [Incident runbooks](runbooks/index.md) cover stuck processing, provider outage,
+  queue backlog, bad model releases, compromised credentials, and tenant-access
+  incidents.
+
+These procedures deliberately separate locally verified recovery from deferred AWS
+disaster-recovery validation.

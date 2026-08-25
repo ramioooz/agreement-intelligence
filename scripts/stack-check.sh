@@ -5,7 +5,7 @@ project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$project_root"
 
 compose() {
-  docker compose --project-name agreement-intelligence \
+  docker compose --project-name "${STACK_PROJECT_NAME:-agreement-intelligence}" \
     --env-file "${STACK_ENV_FILE:-.env}" "$@"
 }
 
