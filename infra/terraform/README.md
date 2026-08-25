@@ -1,32 +1,54 @@
 # Local AWS-compatible infrastructure
 
-This module provisions only the resources needed by the local processing flow:
-an S3 document bucket, the processing SQS queue and dead-letter queue, and a
-Secrets Manager-compatible secret. By default the AWS provider is pointed at
-LocalStack. This is a parity check for resource wiring, not proof of production
-AWS networking, IAM, ECS, RDS, ALB, WAF, or federation behavior.
+This module provisions the AWS-compatible resources used by local document and
+workflow processing: a protected S3 bucket, processing/notification/export SQS
+queues and dead-letter queues, and a Secrets Manager-compatible secret.
+Resource names include an environment suffix. The provider points to LocalStack
+only when `use_localstack=true`.
 
 ## LocalStack verification
 
 ```bash
-terraform -chdir=infra/terraform init
-terraform -chdir=infra/terraform fmt -check
-terraform -chdir=infra/terraform validate
-tflocal -chdir=infra/terraform plan
-tflocal -chdir=infra/terraform apply -auto-approve
+uv tool install terraform-local==0.24.1
+uv tool install checkov==3.2.495
+make terraform-check
+make terraform-provision-local
 ```
 
-The LocalStack endpoint is configurable with `TF_VAR_endpoint` and defaults to
-`http://localhost:4566`. No credentials or state files are committed.
+`make terraform-check` fails if Terraform, `tflocal`, Checkov, or a required
+policy check is unavailable; no verification step is silently skipped.
+`make terraform-provision-local` requires the normal LocalStack service to be
+healthy, creates isolated emulated resources, inspects their protection and
+redrive settings through the AWS CLI, and destroys them on completion. Copy
+`local.auto.tfvars.example` only for local experimentation; do not commit state
+or credentials.
+
+The LocalStack endpoint defaults to `http://localhost:4566`. Test credentials
+are intentionally non-secret and cannot authorize a real AWS account. LocalStack
+validates resource wiring, Terraform behavior, and AWS-compatible API calls. It
+does **not** prove real IAM enforcement, VPC and network behavior, ECS/RDS/ALB
+operation, WAF behavior, Cognito or external identity federation, regional
+failure behavior, service quotas, or production performance.
+
+The checked-in Terraform provider block is the source of truth for LocalStack
+service endpoints. Verification disables terraform-local's generated
+all-service override so it cannot introduce endpoints unsupported by the pinned
+AWS provider.
 
 ## Migration to AWS
 
-1. Configure a reviewed AWS account, region, credentials, and remote state.
-2. Set `TF_VAR_use_localstack=false` and provide the approved bucket/queue names.
-3. Run `terraform plan` and inspect the complete diff.
-4. The repository owner executes `terraform apply` after approval.
-5. Run a short-lived staging smoke test, then destroy non-production resources
-   when appropriate.
+1. Create the approved AWS account and environment and configure encrypted,
+   locked remote Terraform state with a separate state key per environment.
+2. Set `TF_VAR_use_localstack=false`, choose the approved region and environment
+   name, and remove every LocalStack endpoint override and test credential.
+3. Run `terraform plan`, retain the plan artifact, and review policy/security
+   output and the complete resource diff.
+4. Only the repository owner executes the reviewed `terraform apply`.
+5. Run a short-lived staging smoke test against real AWS service endpoints.
+6. Destroy temporary non-production resources after verification when desired;
+   production deletion follows the separate owner-controlled runbook.
 
-Use a separate backend and state workspace for every real environment. Never
-point a production plan at the local endpoint.
+Real VPC, ECS, RDS, ALB, WAF, IAM, networking, and identity-federation resources
+and validation remain deferred to [#203](https://github.com/ramioooz/agreement-intelligence/issues/203)
+under [#200](https://github.com/ramioooz/agreement-intelligence/issues/200).
+Never treat a successful LocalStack run as a production deployment approval.
