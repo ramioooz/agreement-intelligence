@@ -14,4 +14,3 @@ diagnostics, preserve audit evidence, and avoid printing secrets or document con
 
 For data recovery, use [Local backup and restore](../backup-restore.md). Real AWS
 incident response and disaster recovery remain unvalidated.
-

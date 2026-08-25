@@ -35,4 +35,3 @@ intact. Record affected IDs, time window, decisions, and verification evidence.
 
 Escalate immediately for confirmed disclosure or write access. Determine notification
 obligations with the data owner; local testing cannot establish production legal duties.
-

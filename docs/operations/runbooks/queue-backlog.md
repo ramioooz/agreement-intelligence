@@ -39,4 +39,3 @@ failure categories, start/end time, and action taken.
 
 Escalate if depth continues to rise or poison messages repeatedly return. Local
 single-worker capacity does not establish production scaling behavior.
-

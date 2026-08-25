@@ -41,4 +41,3 @@ IDs, safe failure reason, queue depth before/after, recovery action, and timesta
 Escalate if retries continue, queue depth grows, or a completed artifact is duplicated.
 Historical jobs that failed while the provider was unavailable may require manual
 requeue; automatic historical reconciliation is not guaranteed.
-

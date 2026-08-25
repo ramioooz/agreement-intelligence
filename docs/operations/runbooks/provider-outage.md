@@ -38,4 +38,3 @@ version, safe failure category, outage window, and recovered job IDs.
 
 Escalate sustained quota, authentication, or schema failures. The current local product
 does not automatically backfill every historical document after provider recovery.
-

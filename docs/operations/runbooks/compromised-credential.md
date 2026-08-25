@@ -32,4 +32,3 @@ systems checked, safe event IDs, and owner—not the credential itself.
 
 Escalate immediately if a real tenant, cloud account, signing key, or production provider
 credential is involved. Local rotation does not revoke copies outside the workstation.
-

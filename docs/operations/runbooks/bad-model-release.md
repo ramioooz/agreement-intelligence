@@ -39,4 +39,3 @@ Record immutable version IDs, evaluation report checksum, safe metrics, and oper
 
 Escalate unsupported claims, cross-tenant evidence, or guardrail bypass immediately.
 Local evaluation does not prove every production-domain input is safe.
-
