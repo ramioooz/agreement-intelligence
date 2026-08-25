@@ -5,8 +5,19 @@ These opt-in k6 scenarios measure the local container stack with synthetic data.
 1. Start the stack and obtain a bearer token for a seeded user.
 2. Export `PERFORMANCE_ACCESS_TOKEN`, `PERFORMANCE_ORGANIZATION_ID`, and `PERFORMANCE_WORKSPACE_ID`.
 3. Optionally export `PERFORMANCE_AGREEMENT_ID` and `PERFORMANCE_INCLUDE_UPLOAD=true`.
-4. Run `PERFORMANCE_TEST_CONFIRM=synthetic make performance-local`.
+4. To measure workflow-decision acknowledgement, prepare a synthetic review whose
+   active stage is assigned to the token's user and export
+   `PERFORMANCE_REVIEW_ID`. The runner reads its current revision once and reuses
+   one idempotency key, so repeated iterations do not create duplicate decisions.
+   `PERFORMANCE_WORKFLOW_DECISION` defaults to `approve`.
+   Set `PERFORMANCE_SKIP_QUESTIONS=true` to isolate this acknowledgement objective
+   from provider-dependent Q&A latency. A review ID is required in that mode.
+5. Run `PERFORMANCE_TEST_CONFIRM=synthetic make performance-local`.
 
 Every scenario validates authentication, tenant scope, response status, and the minimum response shape before evaluating latency. Summaries are written under `artifacts/performance/`; bearer tokens and document content are not written there.
 
-Repository reads and uploads are synchronous acceptance measures. Document processing and Q&A provider work are asynchronous or provider-dependent; queue-start and recovery timing are measured by the isolated resilience harnesses instead of being mixed into HTTP response-time claims.
+Repository reads, uploads, and workflow decisions are synchronous acceptance
+measures. Document processing and Q&A provider work are asynchronous or
+provider-dependent. Queue-to-processing-start is measured by the isolated worker
+restart scenario, which creates a real processing job and requires processing to
+start within five seconds after the message is published.

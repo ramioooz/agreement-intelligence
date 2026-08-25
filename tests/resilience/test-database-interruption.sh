@@ -34,16 +34,31 @@ sed \
 compose="docker compose --project-name $project --env-file $env_file -f $repo_root/compose.yaml"
 $compose up --detach --wait --wait-timeout 120 postgres
 $compose build api >/dev/null
-$compose run --rm --no-deps api python -c "from sqlalchemy import create_engine,text; import os; u=os.environ['DATABASE_URL'].replace('postgresql://','postgresql+psycopg://'); c=create_engine(u).connect(); c.execute(text('select 1')); c.close()"
+$compose run --rm --no-deps api alembic -c apps/api/alembic.ini upgrade head >/dev/null
+api_container=$($compose run --detach --no-deps \
+  --publish "$((base + 7)):8000" \
+  -e READINESS_CHECK_DATABASE_CONNECTIVITY=true \
+  api uvicorn agreement_intelligence_api.main:app --host 0.0.0.0 --port 8000)
+api_url="http://127.0.0.1:$((base + 7))/health/ready"
+started=$(date +%s)
+while ! curl --fail --silent "$api_url" >/dev/null 2>&1; do
+  [ $(( $(date +%s) - started )) -lt 30 ] || {
+    echo "API did not become ready before the interruption." >&2
+    docker logs "$api_container" >&2 || true
+    exit 1
+  }
+  sleep 1
+done
 $compose stop postgres
-if $compose run --rm --no-deps api python -c "from sqlalchemy import create_engine,text; import os; u=os.environ['DATABASE_URL'].replace('postgresql://','postgresql+psycopg://'); c=create_engine(u,pool_pre_ping=True).connect(); c.execute(text('select 1'))" 2>/dev/null; then
-  echo "Database operation unexpectedly succeeded during interruption." >&2
+readiness_code=$(curl --silent --output /dev/null --write-out '%{http_code}' "$api_url")
+if [ "$readiness_code" != "503" ]; then
+  echo "API readiness returned $readiness_code while PostgreSQL was unavailable; expected 503." >&2
   exit 1
 fi
 started=$(date +%s)
 $compose start postgres >/dev/null
-while ! $compose run --rm --no-deps api python -c "from sqlalchemy import create_engine,text; import os; u=os.environ['DATABASE_URL'].replace('postgresql://','postgresql+psycopg://'); c=create_engine(u,pool_pre_ping=True).connect(); c.execute(text('select 1')); c.close()" 2>/dev/null; do
+while ! curl --fail --silent "$api_url" >/dev/null 2>&1; do
   [ $(( $(date +%s) - started )) -lt 45 ] || { echo "Database did not recover." >&2; exit 1; }
   sleep 1
 done
-echo "Database-dependent operations recovered in $(( $(date +%s) - started )) seconds."
+echo "API readiness detected the database interruption and recovered in $(( $(date +%s) - started )) seconds."
