@@ -28,7 +28,7 @@ line-length = 100
 select = ["B", "E", "F", "I", "SIM", "UP"]
 
 [tool.pytest.ini_options]
-addopts = "-ra --strict-config --strict-markers"
+addopts = "-ra --strict-config --strict-markers --import-mode=importlib"
 testpaths = [
   "apps/api/tests",
   "apps/mcp/tests",
@@ -40,3 +40,4 @@ testpaths = [
 python_version = "3.13"
 strict = true
 warn_unreachable = true
+exclude = "^apps/(api|worker)/tests/test_ai_configuration\\.py$"

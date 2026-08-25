@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -21,6 +22,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, Engine
 
+from agreement_intelligence_worker.ai_configuration import (
+    AIOperation,
+    model_for_route,
+    resolve_configuration,
+)
 from agreement_intelligence_worker.document_indexing import (
     retrieval_chunks,
     retrieval_index_builds,
@@ -180,11 +186,16 @@ class SQLAlchemyEmbeddingIndexSink:
         while attempts <= self._configuration.max_retries:
             attempts += 1
             try:
+                configuration = resolve_configuration(
+                    AIOperation.EMBEDDING,
+                    os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+                )
                 response = self._gateway.embed(
                     EmbeddingRequest(
                         inputs=tuple(chunk.content for chunk in batch),
-                        model=self._configuration.model,
+                        model=model_for_route(configuration, self._configuration.model),
                         dimensions=self._configuration.dimensions,
+                        resolved_configuration=configuration,
                     )
                 )
                 break

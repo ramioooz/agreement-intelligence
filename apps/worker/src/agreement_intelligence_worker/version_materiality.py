@@ -229,5 +229,7 @@ def _safe_provenance(value: Mapping[str, object]) -> dict[str, object]:
         "retry_outcome",
         "fallback_outcome",
         "safe_failure_reason",
+        "schema_checksum",
+        "model_route",
     }
     return {key: value[key] for key in allowed & set(value)}
