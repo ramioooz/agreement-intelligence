@@ -9,6 +9,7 @@ COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STA
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
 	format format-check lint typecheck test build check provider-smoke retrieval-eval version-comparison-eval
+	performance-local resilience-local
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -30,6 +31,8 @@ help:
 	@echo "  make provider-smoke Run an opt-in configured-provider smoke check"
 	@echo "  make retrieval-eval Evaluate retrieval and grounded-answer results"
 	@echo "  make version-comparison-eval Evaluate agreement-version comparison results"
+	@echo "  make performance-local Run opt-in synthetic local performance checks"
+	@echo "  make resilience-local Run opt-in isolated local recovery checks"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -149,3 +152,21 @@ version-comparison-eval:
 		echo "VERSION_COMPARISON_EVAL_RESULTS must name an evaluation results JSON file."; exit 1; \
 	}
 	uv run --package agreement-intelligence-worker python -m agreement_intelligence_worker.version_comparison_evaluation --results "$(VERSION_COMPARISON_EVAL_RESULTS)"
+
+performance-local:
+	@[ "$(PERFORMANCE_TEST_CONFIRM)" = "synthetic" ] || { \
+		echo "Refusing to run. Re-run with PERFORMANCE_TEST_CONFIRM=synthetic."; exit 1; \
+	}
+	@$(MAKE) check-container-toolchain
+	@tests/performance/run-local.sh
+
+resilience-local:
+	@[ "$(RESILIENCE_TEST_CONFIRM)" = "isolated" ] || { \
+		echo "Refusing to run. Re-run with RESILIENCE_TEST_CONFIRM=isolated."; exit 1; \
+	}
+	@$(MAKE) check-container-toolchain
+	@uv run python tests/resilience/test-duplicate-delivery.py
+	@uv run python tests/resilience/test-provider-timeout.py
+	@tests/resilience/test-worker-restart.sh
+	@tests/resilience/test-queue-backlog.sh
+	@tests/resilience/test-database-interruption.sh
