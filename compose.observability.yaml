@@ -7,7 +7,7 @@ services:
       LANGFUSE_OTLP_AUTH: ${LANGFUSE_OTLP_AUTH:?required}
 
   langfuse-web:
-    image: docker.io/langfuse/langfuse:3.185.0
+    image: docker.io/langfuse/langfuse:4.16.0
     profiles: ["observability"]
     environment: &langfuse_environment
       DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASSWORD:?required}@langfuse-postgres:5432/langfuse
