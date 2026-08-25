@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
@@ -18,6 +19,7 @@ from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
     EmbeddingRequest,
     EmbeddingResponse,
+    GatewayProvenance,
 )
 
 from agreement_intelligence_api.identity.authz import Principal
@@ -142,10 +144,12 @@ class SQLAlchemySemanticCandidateProvider:
         *,
         gateway: EmbeddingQueryGateway | None,
         configuration: EmbeddingConfiguration,
+        usage_recorder: Callable[[GatewayProvenance], None] | None = None,
     ) -> None:
         self._repository = repository
         self._gateway = gateway
         self._configuration = configuration
+        self._usage_recorder = usage_recorder
 
     def candidates(
         self,
@@ -233,6 +237,8 @@ class SQLAlchemySemanticCandidateProvider:
                 resolved_configuration=resolved_configuration,
             )
         )
+        if self._usage_recorder is not None:
+            self._usage_recorder(response.provenance)
         if len(response.vectors) != 1 or len(response.vectors[0]) != self._configuration.dimensions:
             return []
         return self._repository.semantic_candidates(
