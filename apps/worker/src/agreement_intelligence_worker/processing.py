@@ -2,11 +2,20 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
+from agreement_intelligence_platform.observability import (
+    extract_trace_context,
+    inject_trace_context,
+    record_metric,
+    safe_span_attributes,
+)
+from agreement_intelligence_platform.telemetry import operation_span
+from opentelemetry.context import attach, detach
 from sqlalchemy import (
     Column,
     DateTime,
@@ -135,6 +144,7 @@ class ProcessingMessage:
     receipt_handle: str
     organization_id: UUID | None = None
     workspace_id: UUID | None = None
+    trace_headers: Mapping[str, str] = field(default_factory=dict)
 
 
 class JobRepository(Protocol):
@@ -385,6 +395,12 @@ class SQSProcessingQueue:
             ),
             "DelaySeconds": delay_seconds,
         }
+        trace_headers: dict[str, str] = {}
+        inject_trace_context(trace_headers)
+        if traceparent := trace_headers.get("traceparent"):
+            request["MessageAttributes"] = {
+                "traceparent": {"DataType": "String", "StringValue": traceparent}
+            }
         if _is_fifo_queue(self._queue_url):
             deduplication_suffix = datetime.now(UTC).isoformat()
             request["MessageGroupId"] = str(job_id)
@@ -412,17 +428,28 @@ class SQSProcessingMessageReceiver:
             QueueUrl=self._queue_url,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=self._wait_time_seconds,
+            MessageAttributeNames=["traceparent", "tracestate"],
         )
         messages = result.get("Messages", [])
         if not messages:
             return None
         message = messages[0]
         body = json.loads(str(message["Body"]))
+        message_attributes = cast(
+            Mapping[str, Mapping[str, object]], message.get("MessageAttributes", {})
+        )
+        trace_headers = {
+            key: value
+            for key, attribute in message_attributes.items()
+            if key in {"traceparent", "tracestate"}
+            and isinstance(value := attribute.get("StringValue"), str)
+        }
         return ProcessingMessage(
             job_id=UUID(str(body["job_id"])),
             organization_id=UUID(str(body["organization_id"])),
             workspace_id=UUID(str(body["workspace_id"])),
             receipt_handle=str(message["ReceiptHandle"]),
+            trace_headers=trace_headers,
         )
 
     async def ack(self, message: ProcessingMessage) -> None:
@@ -795,10 +822,25 @@ async def run_processing_loop(
             await asyncio.sleep(idle_sleep_seconds)
             continue
         try:
-            processor.handle(
-                message.job_id,
-                organization_id=message.organization_id,
-                workspace_id=message.workspace_id,
+            context_token = attach(extract_trace_context(message.trace_headers))
+            try:
+                with operation_span(
+                    "agreement-intelligence.worker",
+                    "worker.processing",
+                    safe_span_attributes({"operation": "worker.processing", "outcome": "success"}),
+                ):
+                    processor.handle(
+                        message.job_id,
+                        organization_id=message.organization_id,
+                        workspace_id=message.workspace_id,
+                    )
+            finally:
+                detach(context_token)
+            record_metric(
+                "agreement_intelligence.operation.count",
+                1,
+                operation="worker.processing",
+                outcome="success",
             )
         except Exception:
             logger.exception(

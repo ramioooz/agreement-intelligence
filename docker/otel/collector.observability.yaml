@@ -3,26 +3,26 @@ receivers:
     protocols:
       grpc:
       http:
-
 processors:
   memory_limiter:
     check_interval: 1s
     limit_mib: 128
   batch:
-
 exporters:
-  # The default stack remains local and lightweight. The observability Compose
-  # profile replaces this file with the Langfuse OTLP exporter configuration.
   debug:
     verbosity: basic
-
+  otlphttp/langfuse:
+    endpoint: ${env:LANGFUSE_OTLP_ENDPOINT}
+    headers:
+      Authorization: Basic ${env:LANGFUSE_OTLP_AUTH}
+      x-langfuse-ingestion-version: "4"
 service:
   extensions: [health_check]
   pipelines:
     traces:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [debug]
+      exporters: [debug, otlphttp/langfuse]
     metrics:
       receivers: [otlp]
       processors: [memory_limiter, batch]
@@ -31,7 +31,6 @@ service:
       receivers: [otlp]
       processors: [memory_limiter, batch]
       exporters: [debug]
-
 extensions:
   health_check:
     endpoint: 0.0.0.0:13133

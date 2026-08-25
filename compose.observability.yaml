@@ -1,0 +1,97 @@
+services:
+  otel-collector:
+    volumes:
+      - ./docker/otel/collector.observability.yaml:/etc/otelcol-contrib/config.yaml:ro
+    environment:
+      LANGFUSE_OTLP_ENDPOINT: http://langfuse-web:3000/api/public/otel
+      LANGFUSE_OTLP_AUTH: ${LANGFUSE_OTLP_AUTH:?required}
+
+  langfuse-web:
+    image: docker.io/langfuse/langfuse:3.185.0
+    profiles: ["observability"]
+    environment: &langfuse_environment
+      DATABASE_URL: postgresql://langfuse:${LANGFUSE_POSTGRES_PASSWORD:?required}@langfuse-postgres:5432/langfuse
+      NEXTAUTH_URL: http://localhost:${LANGFUSE_PORT:-3001}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?required}
+      SALT: ${LANGFUSE_SALT:?required}
+      ENCRYPTION_KEY: ${LANGFUSE_ENCRYPTION_KEY:?required}
+      CLICKHOUSE_MIGRATION_URL: clickhouse://langfuse-clickhouse:9000
+      CLICKHOUSE_URL: http://langfuse-clickhouse:8123
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?required}
+      REDIS_HOST: langfuse-redis
+      REDIS_AUTH: ${LANGFUSE_REDIS_PASSWORD:?required}
+      LANGFUSE_S3_BATCH_EXPORT_SECRET_ACCESS_KEY: ${LANGFUSE_MINIO_PASSWORD:?required}
+      LANGFUSE_S3_BATCH_EXPORT_FORCE_PATH_STYLE: "true"
+    ports: ["127.0.0.1:${LANGFUSE_PORT:-3001}:3000"]
+    depends_on: &langfuse_dependencies
+      langfuse-postgres: { condition: service_healthy }
+      langfuse-redis: { condition: service_healthy }
+      langfuse-clickhouse: { condition: service_healthy }
+      langfuse-minio: { condition: service_healthy }
+
+  langfuse-worker:
+    image: docker.io/langfuse/langfuse-worker:3.185.0
+    profiles: ["observability"]
+    environment: *langfuse_environment
+    depends_on: *langfuse_dependencies
+
+  langfuse-postgres:
+    image: postgres:17.5-bookworm
+    profiles: ["observability"]
+    environment:
+      POSTGRES_DB: langfuse
+      POSTGRES_USER: langfuse
+      POSTGRES_PASSWORD: ${LANGFUSE_POSTGRES_PASSWORD:?required}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse -d langfuse"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  langfuse-redis:
+    image: redis:7.4.2-alpine
+    profiles: ["observability"]
+    command:
+      ["redis-server", "--requirepass", "${LANGFUSE_REDIS_PASSWORD:?required}"]
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "redis-cli --no-auth-warning -a $$LANGFUSE_REDIS_PASSWORD ping",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      LANGFUSE_REDIS_PASSWORD: ${LANGFUSE_REDIS_PASSWORD:?required}
+
+  langfuse-clickhouse:
+    image: clickhouse/clickhouse-server:25.12.3.16-alpine
+    profiles: ["observability"]
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: langfuse
+      CLICKHOUSE_PASSWORD: ${LANGFUSE_CLICKHOUSE_PASSWORD:?required}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://localhost:8123/ping",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  langfuse-minio:
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    profiles: ["observability"]
+    command: server /data
+    environment:
+      MINIO_ROOT_USER: langfuse
+      MINIO_ROOT_PASSWORD: ${LANGFUSE_MINIO_PASSWORD:?required}
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

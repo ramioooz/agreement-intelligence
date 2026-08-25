@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal, Protocol, cast
 
+from agreement_intelligence_platform.observability import record_metric
 from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
 
 type GatewayMode = Literal["openai", "openai-compatible"]
@@ -164,7 +165,7 @@ class OpenAIModelGateway:
                 payload=payload,
                 schema=schema,
             )
-        return GatewayJsonResponse(
+        result = GatewayJsonResponse(
             payload=_json_object(response[0]),
             provenance=_provenance(
                 self.configuration,
@@ -174,6 +175,8 @@ class OpenAIModelGateway:
                 safe_failure_reason=None,
             ),
         )
+        _record_gateway_metrics("model.generate", result.provenance)
+        return result
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         started_at = perf_counter()
@@ -186,7 +189,7 @@ class OpenAIModelGateway:
             )
         except GatewayUnavailableError as error:
             return self._fallback_embed(error, started_at=started_at, request=request)
-        return EmbeddingResponse(
+        result = EmbeddingResponse(
             vectors=vectors,
             provenance=_provenance(
                 self.configuration,
@@ -196,6 +199,8 @@ class OpenAIModelGateway:
                 safe_failure_reason=None,
             ),
         )
+        _record_gateway_metrics("model.embed", result.provenance)
+        return result
 
     def _fallback_embed(
         self,
@@ -223,7 +228,7 @@ class OpenAIModelGateway:
             )
         except Exception as fallback_error:
             raise GatewayUnavailableError("primary_and_fallback_unavailable") from fallback_error
-        return EmbeddingResponse(
+        result = EmbeddingResponse(
             vectors=vectors,
             provenance=_provenance(
                 fallback_configuration,
@@ -233,6 +238,8 @@ class OpenAIModelGateway:
                 safe_failure_reason=primary_error.safe_reason,
             ),
         )
+        _record_gateway_metrics("model.embed", result.provenance)
+        return result
 
     def _embed(
         self,
@@ -333,7 +340,7 @@ class OpenAIModelGateway:
             )
         except Exception as fallback_error:
             raise GatewayUnavailableError("primary_and_fallback_unavailable") from fallback_error
-        return GatewayJsonResponse(
+        result = GatewayJsonResponse(
             payload=_json_object(response[0]),
             provenance=_provenance(
                 fallback_configuration,
@@ -343,6 +350,8 @@ class OpenAIModelGateway:
                 safe_failure_reason=primary_error.safe_reason,
             ),
         )
+        _record_gateway_metrics("model.generate", result.provenance)
+        return result
 
     def _generate_json(
         self,
@@ -562,6 +571,29 @@ def _provenance(
         fallback_outcome=fallback_outcome,
         safe_failure_reason=safe_failure_reason,
     )
+
+
+def _record_gateway_metrics(operation: str, provenance: GatewayProvenance) -> None:
+    record_metric(
+        "agreement_intelligence.operation.duration_ms",
+        provenance.latency_ms,
+        operation=operation,
+        outcome="success",
+    )
+    if provenance.total_tokens is not None:
+        record_metric(
+            "agreement_intelligence.model.tokens",
+            provenance.total_tokens,
+            operation=operation,
+            outcome="success",
+        )
+    if provenance.cost_usd is not None:
+        record_metric(
+            "agreement_intelligence.model.cost_usd",
+            provenance.cost_usd,
+            operation=operation,
+            outcome="success",
+        )
 
 
 def _usage_integer(usage: object, *names: str) -> int | None:

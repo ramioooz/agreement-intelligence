@@ -8,8 +8,9 @@ from uuid import UUID
 from agreement_intelligence_api.db import engine
 from agreement_intelligence_api.documents.storage import DocumentStorage, storage_from_environment
 from agreement_intelligence_api.identity.authz import Principal, authenticate_access_token
+from agreement_intelligence_platform.observability import safe_span_attributes
 from agreement_intelligence_platform.privacy import safe_event_metadata
-from agreement_intelligence_platform.telemetry import configure_telemetry
+from agreement_intelligence_platform.telemetry import configure_telemetry, operation_span
 from mcp.server import MCPServer
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver.context import Context
@@ -165,11 +166,18 @@ def _call(
     principal = _principal_from_headers(headers)
     session = session_factory()
     try:
-        return operation(
-            McpReadService(session, storage_factory()),
-            principal,
-            ToolCallContext.from_headers(tool_name, _safe_context_headers(headers)),
-        )
+        with operation_span(
+            "agreement-intelligence.mcp",
+            "mcp.tool",
+            safe_span_attributes(
+                {"operation": "mcp.tool", "outcome": "success", "tool_name": tool_name}
+            ),
+        ):
+            return operation(
+                McpReadService(session, storage_factory()),
+                principal,
+                ToolCallContext.from_headers(tool_name, _safe_context_headers(headers)),
+            )
     finally:
         session.close()
 
