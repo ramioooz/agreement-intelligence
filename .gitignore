@@ -20,6 +20,7 @@ dist/
 apps/web/playwright-report/
 apps/web/test-results/
 artifacts/performance/
+artifacts/backups/
 
 # Local configuration
 .env

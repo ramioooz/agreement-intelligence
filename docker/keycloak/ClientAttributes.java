@@ -65,8 +65,10 @@ public final class ClientAttributes {
     }
 
     expectValue(attributes, "realm_client", "false");
+    String webPublicOrigin =
+        System.getenv().getOrDefault("WEB_PUBLIC_ORIGIN", "http://localhost:3000");
     expectValue(
-        attributes, "post.logout.redirect.uris", "http://localhost:3000/*");
+        attributes, "post.logout.redirect.uris", webPublicOrigin + "/*");
     expectValue(attributes, "pkce.code.challenge.method", "S256");
 
     String creationTime = attributes.path("client.secret.creation.time").asText("");

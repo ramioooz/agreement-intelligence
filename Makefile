@@ -4,12 +4,13 @@ NODE_VERSION ?= $(shell cat .node-version)
 PYTHON_VERSION ?= $(shell cat .python-version)
 PNPM_VERSION ?= $(shell node -p "require('./package.json').packageManager.split('@')[1]")
 STACK_ENV_FILE ?= .env
-COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STACK_ENV_FILE)
+STACK_PROJECT_NAME ?= agreement-intelligence
+COMPOSE := docker compose --project-name $(STACK_PROJECT_NAME) --env-file $(STACK_ENV_FILE)
 
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
-	format format-check lint typecheck test build check provider-smoke retrieval-eval version-comparison-eval \
-	performance-local resilience-local
+	backup-local restore-local format format-check lint typecheck test build check \
+	provider-smoke retrieval-eval version-comparison-eval performance-local resilience-local
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -21,6 +22,8 @@ help:
 	@echo "  make stack-logs     Follow logs for the complete stack"
 	@echo "  make stack-check    Verify services and bootstrapped resources"
 	@echo "  make stack-reset    Recreate the stack and volumes with CONFIRM=reset"
+	@echo "  make backup-local   Back up PostgreSQL and object storage to BACKUP_DIR"
+	@echo "  make restore-local  Restore RESTORE_DIR with CONFIRM=restore"
 	@echo "  make format         Format TypeScript and Python"
 	@echo "  make format-check   Check TypeScript and Python formatting"
 	@echo "  make lint           Lint TypeScript and Python"
@@ -70,11 +73,11 @@ setup: check-toolchain
 	uv sync --all-packages --frozen
 
 stack-build: check-container-toolchain
-	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
 	$(COMPOSE) build
 
 stack-up: check-container-toolchain
-	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
 	$(COMPOSE) up --detach --build --wait --wait-timeout 180
 
 stack-down: check-container-toolchain
@@ -87,18 +90,26 @@ stack-logs: check-container-toolchain
 	$(COMPOSE) logs --follow
 
 stack-check: check-container-toolchain
-	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
-	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/stack-check.sh
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/stack-check.sh
 
 stack-reset: check-container-toolchain
 	@[ "$(CONFIRM)" = "reset" ] || { \
 		echo "Refusing to delete project volumes. Re-run with CONFIRM=reset."; \
 		exit 1; \
 	}
-	@STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" scripts/validate-stack-env.sh
 	@$(COMPOSE) config --quiet
 	$(COMPOSE) down --volumes --remove-orphans
-	$(MAKE) stack-up STACK_ENV_FILE="$(STACK_ENV_FILE)"
+	$(MAKE) stack-up STACK_ENV_FILE="$(STACK_ENV_FILE)" STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)"
+
+backup-local: check-container-toolchain
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" \
+		BACKUP_DIR="$(BACKUP_DIR)" scripts/backup-local.sh
+
+restore-local: check-container-toolchain
+	@STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" STACK_ENV_FILE="$(STACK_ENV_FILE)" \
+		RESTORE_DIR="$(RESTORE_DIR)" CONFIRM="$(CONFIRM)" scripts/restore-local.sh
 
 format:
 	pnpm format

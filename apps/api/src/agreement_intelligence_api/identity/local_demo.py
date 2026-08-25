@@ -157,6 +157,11 @@ def _revoke_stale_demo_memberships(identity: IdentityService, *, users: list[Use
             )
             for workspace_membership in workspace_memberships:
                 identity.session.delete(workspace_membership)
+            # The models intentionally do not cascade destructive membership
+            # operations. Flush the scoped workspace revocations before the
+            # organization membership so restored demo identities can be
+            # reconciled without violating the foreign-key boundary.
+            identity.session.flush()
             identity.session.delete(membership)
 
 

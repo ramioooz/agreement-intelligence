@@ -17,15 +17,16 @@ effective_value() {
   fi
 }
 
+expected_project_name=${STACK_PROJECT_NAME:-agreement-intelligence}
 if test -n "${COMPOSE_PROJECT_NAME:-}" \
-  && test "$COMPOSE_PROJECT_NAME" != agreement-intelligence; then
-  echo "COMPOSE_PROJECT_NAME must be agreement-intelligence when set."
+  && test "$COMPOSE_PROJECT_NAME" != "$expected_project_name"; then
+  echo "COMPOSE_PROJECT_NAME must be $expected_project_name when set."
   exit 1
 fi
 file_project_name=$(sed -n 's/^COMPOSE_PROJECT_NAME=//p' "$env_file" | tail -n 1)
 if test -n "$file_project_name" \
-  && test "$file_project_name" != agreement-intelligence; then
-  echo "COMPOSE_PROJECT_NAME in $env_file must be agreement-intelligence."
+  && test "$file_project_name" != "$expected_project_name"; then
+  echo "COMPOSE_PROJECT_NAME in $env_file must be $expected_project_name."
   exit 1
 fi
 
@@ -80,6 +81,7 @@ KEYCLOAK_PORT
 LOCALSTACK_PORT
 WEB_PORT
 API_PORT
+MCP_PORT
 '
 
 for variable in $required_variables; do
@@ -145,7 +147,7 @@ for variable in APP_DB_NAME KEYCLOAK_DB_NAME APP_DB_USER KEYCLOAK_DB_USER; do
   }
 done
 
-port_variables='POSTGRES_PORT KEYCLOAK_PORT LOCALSTACK_PORT WEB_PORT API_PORT'
+port_variables='POSTGRES_PORT KEYCLOAK_PORT LOCALSTACK_PORT REDIS_PORT OTEL_GRPC_PORT OTEL_HTTP_PORT WEB_PORT API_PORT MCP_PORT'
 ports=
 for variable in $port_variables; do
   value=$(effective_value "$variable")
