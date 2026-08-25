@@ -445,6 +445,14 @@ def model_gateway_from_environment(
     version = configuration_version_override or os.environ.get(
         "MODEL_GATEWAY_CONFIG_VERSION", "model-gateway.v1"
     )
+    input_cost = _optional_non_negative_environment_float(
+        "MODEL_GATEWAY_INPUT_COST_PER_MILLION_TOKENS",
+        input_cost_per_million_tokens_override,
+    )
+    output_cost = _optional_non_negative_environment_float(
+        "MODEL_GATEWAY_OUTPUT_COST_PER_MILLION_TOKENS",
+        output_cost_per_million_tokens_override,
+    )
     if mode == "openai":
         api_key = os.environ.get("MODEL_GATEWAY_API_KEY", os.environ.get("OPENAI_API_KEY"))
         if not api_key:
@@ -456,8 +464,8 @@ def model_gateway_from_environment(
             base_url=None,
             api_key=api_key,
             configuration_version=version,
-            input_cost_per_million_tokens=input_cost_per_million_tokens_override,
-            output_cost_per_million_tokens=output_cost_per_million_tokens_override,
+            input_cost_per_million_tokens=input_cost,
+            output_cost_per_million_tokens=output_cost,
         )
         return OpenAIModelGateway(configuration, client=client_factory(api_key=api_key))
 
@@ -486,8 +494,8 @@ def model_gateway_from_environment(
             else None
         ),
         fallback_api_key=fallback_key,
-        input_cost_per_million_tokens=input_cost_per_million_tokens_override,
-        output_cost_per_million_tokens=output_cost_per_million_tokens_override,
+        input_cost_per_million_tokens=input_cost,
+        output_cost_per_million_tokens=output_cost,
     )
     return OpenAIModelGateway(
         configuration,
@@ -746,6 +754,26 @@ def _non_negative_environment_float(name: str, default: float) -> float:
     raw = os.environ.get(name)
     if raw is None:
         return default
+    try:
+        value = float(raw)
+    except ValueError as error:
+        raise GatewayConfigurationError(f"{name} must be a number") from error
+    if value < 0:
+        raise GatewayConfigurationError(f"{name} must be zero or positive")
+    return value
+
+
+def _optional_non_negative_environment_float(
+    name: str,
+    override: float | None,
+) -> float | None:
+    if override is not None:
+        if override < 0:
+            raise GatewayConfigurationError(f"{name} must be zero or positive")
+        return override
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return None
     try:
         value = float(raw)
     except ValueError as error:

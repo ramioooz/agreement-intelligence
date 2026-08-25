@@ -8,7 +8,6 @@ from uuid import UUID
 import boto3
 from agreement_intelligence_platform.observability import (
     inject_trace_context,
-    record_metric,
     safe_span_attributes,
 )
 from agreement_intelligence_platform.telemetry import operation_span
@@ -79,12 +78,6 @@ class SQSProcessingQueuePublisher:
             safe_span_attributes({"operation": "queue.publish", "outcome": "success"}),
         ):
             self._client.send_message(**request)
-        record_metric(
-            "agreement_intelligence.operation.count",
-            1,
-            operation="queue.publish",
-            outcome="success",
-        )
 
 
 class ProcessingOutboxDispatcher:

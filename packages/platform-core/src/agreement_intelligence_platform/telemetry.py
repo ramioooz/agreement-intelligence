@@ -80,8 +80,22 @@ def operation_span(
     attributes: Mapping[str, object] | None = None,
     *,
     outcome_getter: Callable[[], str] | None = None,
+    instrument: bool = True,
 ) -> Iterator[Span]:
-    """Create and export a named child span for every operation boundary."""
+    """Create an instrumented child span or preserve legacy provenance semantics."""
+
+    if not instrument:
+        current = trace.get_current_span()
+        if current.is_recording():
+            yield current
+            return
+        tracer = trace.get_tracer(tracer_name)
+        with tracer.start_as_current_span(
+            span_name,
+            attributes=cast(Any, safe_event_metadata(attributes or {})),
+        ) as span:
+            yield span
+        return
 
     tracer = trace.get_tracer(tracer_name)
     safe_attributes = cast(Any, safe_event_metadata(attributes or {}))
