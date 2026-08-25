@@ -23,9 +23,24 @@ grep -Eq '^[[:space:]]+run: make setup$' "$workflow"
 grep -Eq '^[[:space:]]+run: make check$' "$workflow"
 grep -Eq '^[[:space:]]+run: pnpm audit --prod --audit-level high$' "$workflow"
 grep -Eq '^[[:space:]]+run: uv run pip-audit$' "$workflow"
-grep -Eq '^[[:space:]]+uses: gitleaks/gitleaks-action@v3$' "$workflow"
+grep -Eq '^[[:space:]]+uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3$' "$workflow"
 grep -Eq '^[[:space:]]+GITLEAKS_ENABLE_COMMENTS: "false"$' "$workflow"
 grep -Eq '^[[:space:]]+run: git diff --check "origin/\$\{\{ github\.base_ref \}\}\.\.\.HEAD"$' "$workflow"
+
+if ! awk '
+  $1 == "uses:" && index($2, "/") && index($2, "@") {
+    split($2, reference, "@")
+    sha = reference[length(reference)]
+    if (length(sha) != 40 || sha !~ /^[0123456789abcdef]+$/) {
+      print "Mutable GitHub Action reference: " $2
+      invalid = 1
+    }
+  }
+  END { exit invalid }
+' "$workflow"; then
+  echo "Every GitHub Action must be pinned to a full commit SHA."
+  exit 1
+fi
 
 source_checks_line=$(grep -n 'name: Run source checks' "$workflow" | cut -d: -f1)
 secret_scan_line=$(grep -n 'name: Scan for leaked secrets' "$workflow" | cut -d: -f1)

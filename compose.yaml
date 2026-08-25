@@ -2,7 +2,7 @@ name: agreement-intelligence
 
 services:
   postgres:
-    image: pgvector/pgvector:0.8.5-pg17-bookworm
+    image: pgvector/pgvector:0.8.5-pg17-bookworm@sha256:d2ef61f42ef767baa5a1475393303cc235bcd92febd9d7014eddb48b41f3bad0
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
@@ -27,7 +27,7 @@ services:
     restart: unless-stopped
 
   localstack:
-    image: localstack/localstack:4.14.0
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     environment:
       SERVICES: s3,sqs
       AWS_DEFAULT_REGION: ${AWS_REGION:?required}
@@ -48,7 +48,7 @@ services:
     restart: unless-stopped
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
     command: ["redis-server", "--save", "", "--appendonly", "no"]
     ports:
       - "127.0.0.1:${REDIS_PORT:-6379}:6379"
@@ -60,7 +60,7 @@ services:
     restart: unless-stopped
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.123.0
+    image: otel/opentelemetry-collector-contrib:0.123.0@sha256:e39311df1f3d941923c00da79ac7ba6269124a870ee87e3c3ad24d60f8aee4d2
     command: ["--config=/etc/otelcol-contrib/config.yaml"]
     volumes:
       - ./docker/otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
@@ -70,7 +70,7 @@ services:
     restart: unless-stopped
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.7.0
+    image: quay.io/keycloak/keycloak:26.7.0@sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13
     command: ["start-dev", "--import-realm"]
     environment:
       KC_DB: postgres
@@ -237,7 +237,7 @@ services:
     restart: unless-stopped
 
   llama-cpp:
-    image: ghcr.io/ggml-org/llama.cpp:server-b9445
+    image: ghcr.io/ggml-org/llama.cpp:server-b9445@sha256:8dd148c53936b6e8b0e75309841e66eab13adc50b004a5e86ab1fec477c17d8e
     profiles: ["local-model"]
     command:
       - -m
@@ -332,7 +332,7 @@ services:
     restart: unless-stopped
 
   localstack-bootstrap:
-    image: localstack/localstack:4.14.0
+    image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     entrypoint: ["/bootstrap.sh"]
     command: ["apply"]
     environment:
@@ -355,7 +355,7 @@ services:
     restart: "no"
 
   keycloak-bootstrap:
-    image: quay.io/keycloak/keycloak:26.7.0
+    image: quay.io/keycloak/keycloak:26.7.0@sha256:0f198be292568439d700cdbfb893e69a6009bb43a94a06a945b1d3d506c76b13
     entrypoint: ["/bootstrap.sh"]
     command: ["apply"]
     environment:

@@ -1,6 +1,6 @@
-FROM ghcr.io/astral-sh/uv:0.11.32 AS uv
+FROM ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c AS uv
 
-FROM python:3.13.14-slim-bookworm AS build
+FROM python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS build
 COPY --from=uv /uv /uvx /bin/
 ENV UV_COMPILE_BYTECODE=1
 ENV UV_LINK_MODE=copy
@@ -17,7 +17,7 @@ COPY packages/platform-core/src packages/platform-core/src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable --package agreement-intelligence-mcp
 
-FROM python:3.13.14-slim-bookworm AS runtime
+FROM python:3.13.14-slim-bookworm@sha256:67a1e1f215ccda113cfc024e8639049257e88f273898f595b61476d128d387e8 AS runtime
 ENV PATH=/workspace/.venv/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 RUN groupadd --gid 10001 app \
