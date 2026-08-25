@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
+from inspect import signature
 from typing import Any, Protocol, cast
+from uuid import UUID
 
 from agreement_intelligence_platform.document_safety import MAX_DOCUMENT_COMPRESSED_BYTES
 from agreement_intelligence_platform.telemetry import operation_span
@@ -127,7 +129,15 @@ class DocumentUnderstandingProcessor:
         except ValueError as error:
             raise PermanentProcessingError("The source document cannot be parsed") from error
         artifact_key = _artifact_key(job, source.checksum)
-        manifest = _manifest(parsed, source, self._analysis_provider)
+        assert job.organization_id is not None
+        assert job.workspace_id is not None
+        manifest = _manifest(
+            parsed,
+            source,
+            self._analysis_provider,
+            organization_id=job.organization_id,
+            workspace_id=job.workspace_id,
+        )
         self._storage.put_immutable(
             artifact_key,
             json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode(),
@@ -168,6 +178,9 @@ def _manifest(
     parsed: ParsedDocument,
     source: _SourceDocument,
     analysis_provider: AnalysisProvider | None,
+    *,
+    organization_id: UUID | None = None,
+    workspace_id: UUID | None = None,
 ) -> dict[str, object]:
     blocks = [(block.anchor_id, block.text) for page in parsed.pages for block in page.blocks]
     provider_blocks = [
@@ -193,7 +206,15 @@ def _manifest(
         return _provider_fallback(manifest, guardrail_decision)
 
     try:
-        provider_analysis = analysis_provider.analyze(provider_blocks)
+        provider_parameters = signature(analysis_provider.analyze).parameters
+        if "organization_id" in provider_parameters and "workspace_id" in provider_parameters:
+            provider_analysis = cast(Any, analysis_provider).analyze(
+                provider_blocks,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+        else:
+            provider_analysis = analysis_provider.analyze(provider_blocks)
     except (ProviderTransientError, TimeoutError, ConnectionError) as error:
         raise TransientProcessingError("Provider enrichment temporarily unavailable") from error
     except Exception:

@@ -27,6 +27,7 @@ from sqlalchemy.sql import text
 
 from agreement_intelligence_worker.ai_configuration import AIOperation, resolve_configuration
 from agreement_intelligence_worker.document_processor import ObjectStorage
+from agreement_intelligence_worker.model_gateway import ModelGateway
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     PermanentProcessingError,
@@ -38,7 +39,7 @@ from agreement_intelligence_worker.version_alignment import (
 )
 from agreement_intelligence_worker.version_materiality import (
     MaterialityCandidate,
-    assess_materiality,
+    assess_materiality_with_model,
 )
 
 _metadata = MetaData()
@@ -112,11 +113,18 @@ _changes = Table(
 
 
 class VersionComparisonProcessor:
-    def __init__(self, database_url: str, storage: ObjectStorage) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        storage: ObjectStorage,
+        *,
+        gateway: ModelGateway | None = None,
+    ) -> None:
         self._engine = create_engine(
             database_url.replace("postgresql://", "postgresql+psycopg://", 1)
         )
         self._storage = storage
+        self._gateway = gateway
 
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         try:
@@ -182,7 +190,7 @@ class VersionComparisonProcessor:
                     for anchor in target_by_id[key].citation_anchor_ids
                 )
                 change_type = "modified" if alignment.kind == "matched" else alignment.kind
-                assessment = assess_materiality(
+                assessment = assess_materiality_with_model(
                     MaterialityCandidate(
                         change_type=change_type,
                         baseline_text=old,
@@ -192,6 +200,7 @@ class VersionComparisonProcessor:
                         alignment_confidence=alignment.confidence,
                         review_required=alignment.review_required,
                     ),
+                    gateway=self._gateway,
                     configuration=materiality_configuration,
                 )
                 changes.append(

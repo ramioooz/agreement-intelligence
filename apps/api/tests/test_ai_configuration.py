@@ -1,10 +1,12 @@
 import json
 import os
 from collections.abc import Generator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.ai_config.models import AIConfigurationVersionRecord
 from agreement_intelligence_api.ai_config.schemas import CreateAIConfigurationRequest
 from agreement_intelligence_api.ai_config.service import AIConfigurationService
@@ -12,11 +14,17 @@ from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.models import Base, Organization, Workspace
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.processing.models import (
+    ProcessingJobRecord,
+    ProcessingOutboxRecord,
+)
+from agreement_intelligence_api.processing.schemas import ProcessingJobResponse
+from agreement_intelligence_api.retrieval.models import RetrievalIndexBuildRecord
 from alembic import command
 from alembic.config import Config
 from fastapi import HTTPException
 from pytest import fixture, raises
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.orm import Session, sessionmaker
@@ -180,6 +188,136 @@ def test_environment_promotion_resolves_the_selected_published_version(session: 
     assert resolved.model_route == "openai:gpt-5.4-mini"
 
 
+def test_publish_rejects_unsupported_routes_and_provider_parameters(session: Session) -> None:
+    principal, organization, workspace = _scope(session, RoleKey.PLATFORM_ADMIN)
+    service = _service(session)
+    invalid_requests = (
+        _request(version="2.0.0", model_route="unsupported:model"),
+        _request(
+            operation="embedding",
+            version="3.0.0",
+            model_route="openai:text-embedding-3-small",
+            parameters={"temperature": 0},
+        ),
+    )
+
+    for request in invalid_requests:
+        configuration = service.create(
+            principal,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            request=request,
+        )
+        with raises(HTTPException) as error:
+            service.publish(
+                principal,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                configuration_id=configuration.id,
+            )
+        assert error.value.status_code == 422
+        assert error.value.detail == {"code": "unsupported_ai_configuration"}
+
+
+def test_publish_rejects_a_malformed_json_schema(session: Session) -> None:
+    principal, organization, workspace = _scope(session, RoleKey.PLATFORM_ADMIN)
+    service = _service(session)
+    configuration = service.create(
+        principal,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        request=_request(schema={"type": "not-a-json-schema-type"}),
+    )
+
+    with raises(HTTPException) as error:
+        service.publish(
+            principal,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            configuration_id=configuration.id,
+        )
+
+    assert error.value.status_code == 422
+    assert error.value.detail == {"code": "invalid_ai_configuration_schema"}
+
+
+def test_embedding_promotion_durably_enqueues_each_active_agreement_once(
+    session: Session,
+) -> None:
+    principal, organization, workspace = _scope(session, RoleKey.PLATFORM_ADMIN)
+    in_scope = [
+        _active_indexed_agreement(
+            session,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            suffix=suffix,
+        )
+        for suffix in ("one", "two")
+    ]
+    archived = _active_indexed_agreement(
+        session,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        suffix="archived",
+        archived=True,
+    )
+    _, other_organization, other_workspace = _scope(session, RoleKey.PLATFORM_ADMIN)
+    other_scope = _active_indexed_agreement(
+        session,
+        organization_id=other_organization.id,
+        workspace_id=other_workspace.id,
+        suffix="other-scope",
+    )
+    session.commit()
+    publisher = _QueuePublisher()
+    service = AIConfigurationService(session, IdentityService(session), queue=publisher)
+    configuration = service.create(
+        principal,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        request=_request(
+            operation="embedding",
+            version="2.0.0",
+            prompt_template="Embed only the supplied canonical chunk.",
+            schema={"type": "object"},
+            model_route="openai:text-embedding-3-small",
+            parameters={"encoding_format": "float"},
+        ),
+    )
+    service.publish(
+        principal,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        configuration_id=configuration.id,
+    )
+
+    for _ in range(2):
+        service.promote(
+            principal,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            configuration_id=configuration.id,
+            environment="local",
+        )
+
+    jobs = session.scalars(
+        select(ProcessingJobRecord).where(
+            ProcessingJobRecord.profile == f"embedding-reindex:{configuration.id}"
+        )
+    ).all()
+    outbox = session.scalars(
+        select(ProcessingOutboxRecord).where(
+            ProcessingOutboxRecord.profile == f"embedding-reindex:{configuration.id}"
+        )
+    ).all()
+    assert {job.agreement_id for job in jobs} == {agreement.id for agreement in in_scope}
+    assert archived.id not in {job.agreement_id for job in jobs}
+    assert other_scope.id not in {job.agreement_id for job in jobs}
+    assert len(outbox) == 2
+    assert len(publisher.jobs) == 2
+    assert all(message.profile == f"embedding-reindex:{configuration.id}" for message in outbox)
+
+
 def test_non_administrator_cannot_publish_configuration(session: Session) -> None:
     administrator, organization, workspace = _scope(session, RoleKey.PLATFORM_ADMIN)
     configuration = _service(session).create(
@@ -252,15 +390,63 @@ def test_configuration_identifier_cannot_be_read_published_or_promoted_across_sc
     )
 
 
+class _QueuePublisher:
+    def __init__(self) -> None:
+        self.jobs: list[ProcessingJobResponse] = []
+
+    def publish(self, job: ProcessingJobResponse, *, idempotency_key: str, profile: str) -> None:
+        del idempotency_key, profile
+        self.jobs.append(job)
+
+
+def _active_indexed_agreement(
+    session: Session,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    suffix: str,
+    archived: bool = False,
+) -> AgreementRecord:
+    agreement = AgreementRecord(
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        title=f"Agreement {suffix}",
+        agreement_type="client_agreement",
+        status="active",
+        parties=[],
+        files=[],
+        processing_state="completed",
+        audit_metadata={},
+        audit_events=[],
+        archived_at=datetime.now(UTC) if archived else None,
+    )
+    session.add(agreement)
+    session.flush()
+    session.add(
+        RetrievalIndexBuildRecord(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agreement_id=agreement.id,
+            source_checksum=f"sha256:{suffix}",
+            chunker_version="structure-aware.v1",
+            state="active",
+            activated_at=datetime.now(UTC),
+        )
+    )
+    return agreement
+
+
 def test_postgresql_migration_rejects_published_configuration_mutation() -> None:
     postgres_url = os.environ.get("AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL")
     if not postgres_url:
         return
 
     schema_name = f"ai_configuration_{uuid4().hex}"
-    scoped_url = make_url(postgres_url).set(
-        query={"options": f"-csearch_path={schema_name},public"}
-    ).render_as_string(hide_password=False)
+    scoped_url = (
+        make_url(postgres_url)
+        .set(query={"options": f"-csearch_path={schema_name},public"})
+        .render_as_string(hide_password=False)
+    )
     config = Config(str(Path(__file__).parents[1] / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
     base_engine = create_engine(postgres_url.replace("postgresql://", "postgresql+psycopg://", 1))

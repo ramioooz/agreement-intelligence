@@ -9,8 +9,10 @@ from agreement_intelligence_platform.observability import record_metric, safe_sp
 from agreement_intelligence_platform.telemetry import operation_span
 from agreement_intelligence_worker.ai_configuration import (
     AIOperation,
+    ResolvedAIConfiguration,
     model_for_route,
     resolve_configuration,
+    resolve_configuration_by_version,
 )
 from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
@@ -65,6 +67,12 @@ class FusedChunk:
         return self.chunk.chunk_id
 
 
+@dataclass(frozen=True)
+class EmbeddingSpace:
+    configuration_version: str
+    model: str
+
+
 class SearchRepository(Protocol):
     def lexical_candidates(
         self,
@@ -108,8 +116,21 @@ class SemanticSearchRepository(Protocol):
         query_embedding: list[float],
         index_version: str,
         dimensions: int,
+        configuration_version: str,
+        model: str,
         limit: int,
     ) -> list[RankedChunk]: ...
+
+    def available_embedding_spaces(
+        self,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        filters: SearchFilters,
+        index_version: str,
+        dimensions: int,
+        limit: int,
+    ) -> list[EmbeddingSpace]: ...
 
 
 class SQLAlchemySemanticCandidateProvider:
@@ -142,6 +163,64 @@ class SQLAlchemySemanticCandidateProvider:
             organization_id=organization_id,
             workspace_id=workspace_id,
         )
+        active = self._candidates_for_configuration(
+            resolved_configuration,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            filters=filters,
+            limit=limit,
+        )
+        results = list(active)
+        seen = {(item.agreement_id, item.build_id, item.chunk_id) for item in results}
+        spaces = self._repository.available_embedding_spaces(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            filters=filters,
+            index_version=self._configuration.index_version,
+            dimensions=self._configuration.dimensions,
+            limit=5,
+        )
+        for space in spaces:
+            if len(results) >= limit:
+                break
+            if space.configuration_version == resolved_configuration.version:
+                continue
+            prior = resolve_configuration_by_version(
+                AIOperation.EMBEDDING,
+                space.configuration_version,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+            if prior is None:
+                continue
+            try:
+                fallback = self._candidates_for_configuration(
+                    prior,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    limit=limit - len(results),
+                )
+            except Exception:
+                continue
+            for item in fallback:
+                key = (item.agreement_id, item.build_id, item.chunk_id)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append(item)
+        return results[:limit]
+
+    def _candidates_for_configuration(
+        self,
+        resolved_configuration: ResolvedAIConfiguration,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        filters: SearchFilters,
+        limit: int,
+    ) -> list[RankedChunk]:
+        assert self._gateway is not None
         response = self._gateway.embed(
             EmbeddingRequest(
                 inputs=(filters.query,),
@@ -163,6 +242,8 @@ class SQLAlchemySemanticCandidateProvider:
             query_embedding=response.vectors[0],
             index_version=self._configuration.index_version,
             dimensions=self._configuration.dimensions,
+            configuration_version=resolved_configuration.version,
+            model=response.provenance.model,
             limit=limit,
         )
 

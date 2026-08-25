@@ -15,12 +15,17 @@ from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
     S3ObjectStorage,
 )
-from agreement_intelligence_worker.embedding_indexing import SQLAlchemyEmbeddingIndexSink
+from agreement_intelligence_worker.embedding_indexing import (
+    EmbeddingReindexCompletionHandler,
+    SQLAlchemyEmbeddingIndexSink,
+    embedding_reindex_configuration_id,
+)
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
 from agreement_intelligence_worker.model_gateway import (
     embedding_configuration_from_environment,
     embedding_gateway_from_environment,
+    model_gateway_from_environment,
 )
 from agreement_intelligence_worker.playbook_evaluation import SQLAlchemyPlaybookEvaluationSink
 from agreement_intelligence_worker.processing import (
@@ -54,6 +59,12 @@ class ProfileProcessor:
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         if job.profile == "version-comparison":
             return self._comparison.process(job)
+        configuration_id = embedding_reindex_configuration_id(job.profile)
+        if configuration_id is not None:
+            return CompletedArtifact(
+                job_id=job.id,
+                key=f"embedding-reindex/{configuration_id}.json",
+            )
         return self._document.process(job)
 
 
@@ -139,27 +150,32 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
     )
     storage = S3ObjectStorage(client=document_client, bucket=bucket)
     embedding_configuration = embedding_configuration_from_environment()
+    model_gateway = model_gateway_from_environment()
+    embedding_sink = SQLAlchemyEmbeddingIndexSink(
+        engine,
+        gateway=embedding_gateway_from_environment(),
+        configuration=embedding_configuration,
+    )
     processor = JobProcessor(
         repository,
         queue,
         ProfileProcessor(
             DocumentUnderstandingProcessor(storage, analysis_provider=provider_from_environment()),
-            VersionComparisonProcessor(database_url, storage),
+            VersionComparisonProcessor(database_url, storage, gateway=model_gateway),
         ),
-        completion_handler=CompletionHandlerFanout(
-            handlers=(
-                SQLAlchemyPlaybookEvaluationSink(
-                    engine,
-                    storage,
-                    fallback_model_comparator=fallback_comparator_from_environment(),
-                ),
-                SQLAlchemyDocumentIndexSink(engine, storage),
-                SQLAlchemyEmbeddingIndexSink(
-                    engine,
-                    gateway=embedding_gateway_from_environment(),
-                    configuration=embedding_configuration,
-                ),
-            )
+        completion_handler=EmbeddingReindexCompletionHandler(
+            normal=CompletionHandlerFanout(
+                handlers=(
+                    SQLAlchemyPlaybookEvaluationSink(
+                        engine,
+                        storage,
+                        fallback_model_comparator=fallback_comparator_from_environment(),
+                    ),
+                    SQLAlchemyDocumentIndexSink(engine, storage),
+                    embedding_sink,
+                )
+            ),
+            embeddings=embedding_sink,
         ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)

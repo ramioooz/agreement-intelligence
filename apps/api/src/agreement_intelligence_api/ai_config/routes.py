@@ -14,6 +14,10 @@ from agreement_intelligence_api.ai_config.service import AIConfigurationService
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.processing.queue import (
+    ProcessingQueuePublisher,
+    queue_publisher_from_environment,
+)
 
 router = APIRouter(prefix="/ai-configurations", tags=["ai-configurations"])
 SessionDependency = Annotated[Session, Depends(get_session)]
@@ -22,8 +26,18 @@ OrganizationScope = Annotated[UUID, Query()]
 WorkspaceScope = Annotated[UUID, Query()]
 
 
-def get_service(session: SessionDependency) -> AIConfigurationService:
-    return AIConfigurationService(session, IdentityService(session))
+def get_queue_publisher() -> ProcessingQueuePublisher:
+    return queue_publisher_from_environment()
+
+
+QueuePublisherDependency = Annotated[ProcessingQueuePublisher, Depends(get_queue_publisher)]
+
+
+def get_service(
+    session: SessionDependency,
+    queue: QueuePublisherDependency,
+) -> AIConfigurationService:
+    return AIConfigurationService(session, IdentityService(session), queue=queue)
 
 
 ServiceDependency = Annotated[AIConfigurationService, Depends(get_service)]

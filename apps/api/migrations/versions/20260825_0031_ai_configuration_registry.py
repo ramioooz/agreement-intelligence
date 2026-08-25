@@ -150,7 +150,9 @@ def upgrade() -> None:
                 CREATE POLICY tenant_isolation_{table_name} ON {table_name}
                     FOR ALL
                     USING (organization_id = current_setting('app.organization_id', true)::uuid)
-                    WITH CHECK (organization_id = current_setting('app.organization_id', true)::uuid)
+                    WITH CHECK (
+                        organization_id = current_setting('app.organization_id', true)::uuid
+                    )
                 """
             )
         op.execute(

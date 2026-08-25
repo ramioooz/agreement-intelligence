@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
+from uuid import UUID
 
 from agreement_intelligence_worker.ai_configuration import AIOperation, resolve_configuration
 from agreement_intelligence_worker.fallback_suggestions import (
@@ -95,7 +96,13 @@ class HostedAnalysisProvider:
             client=client,
         )
 
-    def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:
+    def analyze(
+        self,
+        blocks: list[tuple[str, str]],
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
+    ) -> ProviderAnalysis:
         guardrail_decision = validate_untrusted_evidence(
             blocks, {anchor_id for anchor_id, _ in blocks}
         )
@@ -105,6 +112,8 @@ class HostedAnalysisProvider:
             configuration = resolve_configuration(
                 AIOperation.DOCUMENT_ANALYSIS,
                 os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+                organization_id=organization_id,
+                workspace_id=workspace_id,
             )
             response = self._gateway.generate_json(
                 instruction=configuration.prompt_template or _ANALYSIS_INSTRUCTION,
