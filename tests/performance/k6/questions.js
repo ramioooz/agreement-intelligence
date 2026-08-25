@@ -12,10 +12,14 @@ import {
 } from "./common.js";
 
 const skipQuestions = (__ENV.PERFORMANCE_SKIP_QUESTIONS || "false") === "true";
+const reviewId = __ENV.PERFORMANCE_REVIEW_ID || "";
+const iterations = reviewId
+  ? 1
+  : Number(__ENV.PERFORMANCE_QUESTION_ITERATIONS || 3);
 
 export const options = {
   vus: 1,
-  iterations: Number(__ENV.PERFORMANCE_QUESTION_ITERATIONS || 3),
+  iterations,
   thresholds: {
     ...(!skipQuestions
       ? {
@@ -25,7 +29,7 @@ export const options = {
     ...(__ENV.PERFORMANCE_REVIEW_ID
       ? {
           "http_req_duration{operation:workflow_decision_acknowledgement}": [
-            "p(95)<1000",
+            "max<1000",
           ],
         }
       : {}),
@@ -46,7 +50,6 @@ export function setup() {
       fail("thread creation failed");
     context = { threadId: response.json("id") };
   }
-  const reviewId = __ENV.PERFORMANCE_REVIEW_ID || "";
   if (skipQuestions && !reviewId)
     fail("PERFORMANCE_REVIEW_ID is required when questions are skipped");
   if (!reviewId) return context;
@@ -65,7 +68,7 @@ export function setup() {
     reviewRevision: workflow.json("revision"),
     decisionIdempotencyKey:
       __ENV.PERFORMANCE_WORKFLOW_IDEMPOTENCY_KEY ||
-      `performance-decision-${reviewId}`,
+      `performance-decision-${reviewId}-${Date.now()}`,
   };
 }
 

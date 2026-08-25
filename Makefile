@@ -8,7 +8,7 @@ COMPOSE := docker compose --project-name agreement-intelligence --env-file $(STA
 
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
-	format format-check lint typecheck test build check provider-smoke retrieval-eval version-comparison-eval
+	format format-check lint typecheck test build check provider-smoke retrieval-eval version-comparison-eval \
 	performance-local resilience-local
 
 help:

@@ -7,8 +7,9 @@ These opt-in k6 scenarios measure the local container stack with synthetic data.
 3. Optionally export `PERFORMANCE_AGREEMENT_ID` and `PERFORMANCE_INCLUDE_UPLOAD=true`.
 4. To measure workflow-decision acknowledgement, prepare a synthetic review whose
    active stage is assigned to the token's user and export
-   `PERFORMANCE_REVIEW_ID`. The runner reads its current revision once and reuses
-   one idempotency key, so repeated iterations do not create duplicate decisions.
+   `PERFORMANCE_REVIEW_ID`. The runner submits exactly one fresh decision for that
+   review. Create a new disposable review before each additional sample; replayed
+   idempotent reads are intentionally excluded from workflow latency evidence.
    `PERFORMANCE_WORKFLOW_DECISION` defaults to `approve`.
    Set `PERFORMANCE_SKIP_QUESTIONS=true` to isolate this acknowledgement objective
    from provider-dependent Q&A latency. A review ID is required in that mode.

@@ -192,4 +192,7 @@ remaining=$($compose exec -T localstack awslocal sqs get-queue-attributes --queu
 max_queue_to_start=$($compose exec -T postgres psql -U postgres -d "$app_db" -At -c \
   "SELECT ROUND(MAX(EXTRACT(EPOCH FROM (processing_started_at - queued_at)))::numeric, 3)
      FROM processing_jobs WHERE idempotency_key LIKE 'resilience-backlog-%';")
-echo "Backlog recovery: jobs=$count completed=$completed artifacts=$artifact_count remaining=0 duration=${duration}s max_queue_to_start=${max_queue_to_start}s."
+throughput=$(awk -v jobs="$count" -v seconds="$duration" \
+  'BEGIN { if (seconds == 0) print jobs; else printf "%.3f", jobs / seconds }')
+echo "Backlog recovery: jobs=$count completed=$completed artifacts=$artifact_count remaining=0 duration=${duration}s max_queue_to_start=${max_queue_to_start}s observed_throughput=${throughput}_jobs_per_second."
+echo "Capacity observation: validated_envelope=${count}_jobs_under_120s bottleneck=single_worker_sequential_processing saturation_ceiling=not_established."
