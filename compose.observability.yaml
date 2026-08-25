@@ -31,7 +31,7 @@ services:
       langfuse-minio: { condition: service_healthy }
 
   langfuse-worker:
-    image: docker.io/langfuse/langfuse-worker:3.185.0
+    image: docker.io/langfuse/langfuse-worker:4.16.0
     profiles: ["observability"]
     environment: *langfuse_environment
     depends_on: *langfuse_dependencies
