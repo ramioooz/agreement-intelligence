@@ -2,6 +2,7 @@ import os
 from logging.config import fileConfig
 
 import agreement_intelligence_api.agreements.models  # noqa: F401
+import agreement_intelligence_api.ai_config.models  # noqa: F401
 import agreement_intelligence_api.audit.models  # noqa: F401
 import agreement_intelligence_api.mcp_audit  # noqa: F401
 import agreement_intelligence_api.playbooks.models  # noqa: F401

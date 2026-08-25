@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 from _pytest.monkeypatch import MonkeyPatch
+from agreement_intelligence_worker.ai_configuration import AIOperation, ConfigurationSnapshot
 from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
     EmbeddingRequest,
@@ -34,7 +35,40 @@ class _HostedClient:
         self.response = response
 
     def create(self, **kwargs: Any) -> _Response:
+        self.request = kwargs
         return self.response
+
+
+def test_resolved_configuration_applies_only_supported_openai_parameters() -> None:
+    client = _HostedClient(_Response(json.dumps({"value": "configured"})))
+    gateway = OpenAIModelGateway(
+        ModelGatewayConfiguration(
+            mode="openai",
+            model="default-model",
+            endpoint_kind="hosted",
+            base_url=None,
+            api_key="test-key",
+        ),
+        client=client,
+    )
+    configuration = ConfigurationSnapshot(
+        operation=AIOperation.DOCUMENT_ANALYSIS,
+        version="1.0.0",
+        prompt_template="Return JSON.",
+        schema={"type": "object"},
+        model_route="openai:configured-model",
+        parameters={"temperature": 0.2, "max_output_tokens": 123},
+        schema_checksum="schema-v1",
+    )
+
+    response = gateway.generate_json(
+        instruction="Return JSON.", payload={"input": "x"}, resolved_configuration=configuration
+    )
+
+    assert client.request["model"] == "configured-model"
+    assert client.request["temperature"] == 0.2
+    assert client.request["max_output_tokens"] == 123
+    assert response.provenance.configuration_version == "1.0.0"
 
 
 def test_environment_selects_openai_by_default(monkeypatch: MonkeyPatch) -> None:

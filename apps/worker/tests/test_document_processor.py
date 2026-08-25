@@ -702,11 +702,12 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
     assert captured["analysis_provider"] is configured_provider
     assert captured["fallback_model_comparator"] is configured_comparator
     completion_handler = cast(Any, captured["completion_handler"])
-    assert completion_handler.handlers == (
+    assert completion_handler.normal.handlers == (
         configured_sink,
         configured_index_sink,
         configured_embedding_sink,
     )
+    assert completion_handler.embeddings is configured_embedding_sink
 
 
 def _processor_input() -> tuple[InMemoryObjectStorage, ProcessingJob]:

@@ -182,6 +182,8 @@ class GroundedQuestionService:
             answer = answer_question(
                 question=question,
                 authorized_evidence=_evidence_from_search(results, citation_sources),
+                organization_id=persisted.organization_id,
+                workspace_id=persisted.workspace_id,
                 answerer=lambda request: self._answerer(
                     replace(
                         request,

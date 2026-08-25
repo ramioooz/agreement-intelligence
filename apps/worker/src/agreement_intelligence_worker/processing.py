@@ -791,6 +791,8 @@ def _update_agreement_processing_state(
     state: JobState,
     updated_at: datetime,
 ) -> None:
+    if str(job["profile"]).startswith("embedding-reindex:"):
+        return
     if connection.dialect.name == "postgresql":
         connection.execute(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),

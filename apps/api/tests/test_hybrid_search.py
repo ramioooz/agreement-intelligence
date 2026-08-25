@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
+from _pytest.monkeypatch import MonkeyPatch
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 from agreement_intelligence_api.agreements.schemas import CreateAgreementRequest, Party
 from agreement_intelligence_api.agreements.service import AgreementService
@@ -22,6 +23,7 @@ from agreement_intelligence_api.search.service import (
     SQLAlchemySemanticCandidateProvider,
     fuse_reciprocal_rank,
 )
+from agreement_intelligence_worker.ai_configuration import AIOperation, ConfigurationSnapshot
 from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
     EmbeddingRequest,
@@ -172,9 +174,38 @@ def test_search_filters_results_and_never_returns_cross_tenant_evidence() -> Non
         engine.dispose()
 
 
-def test_semantic_candidates_use_only_ready_active_embeddings_in_the_requested_index_space() -> (
-    None
-):
+def test_semantic_candidates_keep_prior_space_available_during_a_rolling_reindex(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    active_configuration = ConfigurationSnapshot(
+        operation=AIOperation.EMBEDDING,
+        version="embedding-registry-v2",
+        prompt_template="Embed supplied text.",
+        schema={"type": "object"},
+        model_route="openai:embedding-model-v2",
+        parameters={},
+        schema_checksum="embedding-schema-v2",
+    )
+    prior_configuration = ConfigurationSnapshot(
+        operation=AIOperation.EMBEDDING,
+        version="embedding-registry-v1",
+        prompt_template="Embed supplied text.",
+        schema={"type": "object"},
+        model_route="openai:embedding-model-v1",
+        parameters={},
+        schema_checksum="embedding-schema-v1",
+    )
+    monkeypatch.setattr(
+        "agreement_intelligence_api.search.service.resolve_configuration",
+        lambda *_args, **_kwargs: active_configuration,
+    )
+    monkeypatch.setattr(
+        "agreement_intelligence_api.search.service.resolve_configuration_by_version",
+        lambda _operation, version, **_kwargs: (
+            prior_configuration if version == prior_configuration.version else None
+        ),
+        raising=False,
+    )
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)
     session: Session = sessionmaker(bind=engine)()
@@ -259,8 +290,8 @@ def test_semantic_candidates_use_only_ready_active_embeddings_in_the_requested_i
                 embedding=[1.0, 0.0],
                 state="ready",
                 provider="hosted",
-                model="embedding-model",
-                configuration_version="embedding-gateway.v1",
+                model="embedding-model-v2",
+                configuration_version="embedding-registry-v2",
                 input_tokens=1,
                 latency_ms=1,
                 cost_usd=0.0,
@@ -274,13 +305,13 @@ def test_semantic_candidates_use_only_ready_active_embeddings_in_the_requested_i
                 agreement_id=agreement.id,
                 build_id=active_build.id,
                 chunk_id="unavailable-wrong-version",
-                index_version="embedding-v0",
+                index_version="embedding-v1",
                 dimensions=2,
                 embedding=[0.0, 1.0],
                 state="ready",
                 provider="hosted",
-                model="embedding-model",
-                configuration_version="embedding-gateway.v1",
+                model="embedding-model-v1",
+                configuration_version="embedding-registry-v1",
                 input_tokens=1,
                 latency_ms=1,
                 cost_usd=0.0,
@@ -293,7 +324,12 @@ def test_semantic_candidates_use_only_ready_active_embeddings_in_the_requested_i
     session.commit()
     provider = SQLAlchemySemanticCandidateProvider(
         SQLAlchemySearchRepository(session),
-        gateway=_EmbeddingGateway([1.0, 0.0]),
+        gateway=_EmbeddingGateway(
+            {
+                "embedding-model-v2": [1.0, 0.0],
+                "embedding-model-v1": [0.0, 1.0],
+            }
+        ),
         configuration=_embedding_configuration(),
     )
 
@@ -304,7 +340,10 @@ def test_semantic_candidates_use_only_ready_active_embeddings_in_the_requested_i
         limit=50,
     )
 
-    assert [result.chunk_id for result in results] == ["ready-match"]
+    assert [result.chunk_id for result in results] == [
+        "ready-match",
+        "unavailable-wrong-version",
+    ]
     assert results[0].embedding_index_version == "embedding-v1"
     session.close()
     engine.dispose()
@@ -323,20 +362,20 @@ def _embedding_configuration() -> EmbeddingConfiguration:
 
 
 class _EmbeddingGateway:
-    def __init__(self, vector: list[float]) -> None:
-        self._vector = vector
+    def __init__(self, vectors_by_model: dict[str, list[float]]) -> None:
+        self._vectors_by_model = vectors_by_model
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         assert request.inputs == ("termination",)
-        assert request.model == "embedding-model"
         assert request.dimensions == 2
+        assert request.model is not None
         return EmbeddingResponse(
-            vectors=[self._vector],
+            vectors=[self._vectors_by_model[request.model]],
             provenance=GatewayProvenance(
                 provider="hosted",
                 endpoint_kind="hosted",
-                model="embedding-model",
-                configuration_version="embedding-gateway.v1",
+                model=request.model,
+                configuration_version="embedding-registry-v2",
                 latency_ms=1,
                 input_tokens=1,
                 output_tokens=None,

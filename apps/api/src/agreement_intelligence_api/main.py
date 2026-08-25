@@ -16,6 +16,7 @@ from agreement_intelligence_api.agreements.versions import (
     StaleCurrentVersionError,
     VersionIdempotencyConflictError,
 )
+from agreement_intelligence_api.ai_config.routes import router as ai_configurations_router
 from agreement_intelligence_api.approval_policies.routes import router as approval_policies_router
 from agreement_intelligence_api.audit.routes import router as audit_router
 from agreement_intelligence_api.comparisons.routes import (
@@ -81,6 +82,7 @@ app.add_exception_handler(ReviewWorkflowConflictError, workflow_conflict_handler
 app.add_exception_handler(HTTPException, http_exception_handler)
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 app.include_router(health_router)
+app.include_router(ai_configurations_router)
 app.include_router(identity_router)
 app.include_router(audit_router)
 app.include_router(agreements_router)

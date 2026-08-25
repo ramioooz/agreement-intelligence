@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
+from uuid import UUID
 
 from agreement_intelligence_worker.guardrails import (
     GuardrailDecision,
@@ -85,6 +86,8 @@ class GroundedQuestionRequest:
     # Only prior validated claim text is allowed here. Source snippets are
     # always retrieved again for the current turn and never carried in history.
     conversation_context: tuple[str, ...] = ()
+    organization_id: UUID | None = None
+    workspace_id: UUID | None = None
 
 
 @dataclass(frozen=True)
@@ -103,6 +106,8 @@ def answer_question(
     question: str,
     authorized_evidence: tuple[EvidenceSnippet, ...],
     answerer: Answerer,
+    organization_id: UUID | None = None,
+    workspace_id: UUID | None = None,
 ) -> GroundedAnswer:
     """Return only claims deterministically supported by authorized evidence.
 
@@ -131,6 +136,8 @@ def answer_question(
         question=question.strip(),
         instructions=_MODEL_INSTRUCTIONS,
         evidence=authorized_evidence,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
     )
     try:
         candidate: object = answerer(request)

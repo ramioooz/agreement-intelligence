@@ -141,6 +141,8 @@ def _gateway_answerer(gateway: ModelGateway | None) -> Answerer:
                 question=request.question,
                 evidence=tuple(requested_evidence.items()),
                 conversation_context=request.conversation_context,
+                organization_id=request.organization_id,
+                workspace_id=request.workspace_id,
             )
         )
         citations = tuple(

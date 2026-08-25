@@ -3,9 +3,14 @@ from __future__ import annotations
 import json
 from importlib import import_module
 from typing import Any, cast
+from uuid import uuid4
 
 import pytest
 from _pytest.monkeypatch import MonkeyPatch
+from agreement_intelligence_worker.ai_configuration import (
+    AIOperation,
+    ConfigurationSnapshot,
+)
 from agreement_intelligence_worker.analysis_provider import (
     HostedAnalysisProvider,
     ProviderPermanentError,
@@ -67,7 +72,33 @@ def test_provider_is_disabled_without_an_api_key(monkeypatch: MonkeyPatch) -> No
     assert provider_from_environment() is None
 
 
-def test_analysis_provider_preserves_gateway_provenance() -> None:
+def test_analysis_provider_preserves_gateway_provenance(monkeypatch: MonkeyPatch) -> None:
+    organization_id = uuid4()
+    workspace_id = uuid4()
+    resolved: list[tuple[AIOperation, object, object]] = []
+
+    def resolve(
+        operation: AIOperation,
+        _environment: str,
+        *,
+        organization_id: object = None,
+        workspace_id: object = None,
+    ) -> ConfigurationSnapshot:
+        resolved.append((operation, organization_id, workspace_id))
+        return ConfigurationSnapshot(
+            operation=AIOperation.DOCUMENT_ANALYSIS,
+            version="analysis-v2",
+            prompt_template="Analyze the supplied evidence.",
+            schema={"type": "object"},
+            model_route="openai-compatible:local-model.gguf",
+            parameters={},
+            schema_checksum="analysis-schema-v2",
+        )
+
+    monkeypatch.setattr(
+        "agreement_intelligence_worker.analysis_provider.resolve_configuration",
+        resolve,
+    )
     provenance = GatewayProvenance(
         provider="openai-compatible",
         endpoint_kind="openai-compatible",
@@ -89,11 +120,16 @@ def test_analysis_provider_preserves_gateway_provenance() -> None:
         )
     )
 
-    analysis = provider.analyze([("citation-a", "Termination is permitted on notice.")])
+    analysis = provider.analyze(
+        [("citation-a", "Termination is permitted on notice.")],
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
 
     assert analysis.gateway_provenance == provenance
     assert analysis.model == "local-model.gguf"
     assert analysis.input_tokens == 10
+    assert resolved == [(AIOperation.DOCUMENT_ANALYSIS, organization_id, workspace_id)]
 
 
 class _GatewayRecordingClient:

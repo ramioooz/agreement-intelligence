@@ -15,7 +15,7 @@ from agreement_intelligence_api.retrieval.models import (
     RetrievalIndexBuildRecord,
 )
 from agreement_intelligence_api.search.schemas import SearchFilters
-from agreement_intelligence_api.search.service import RankedChunk
+from agreement_intelligence_api.search.service import EmbeddingSpace, RankedChunk
 
 
 class SQLAlchemySearchRepository:
@@ -89,6 +89,8 @@ class SQLAlchemySearchRepository:
         query_embedding: list[float],
         index_version: str,
         dimensions: int,
+        configuration_version: str,
+        model: str,
         limit: int,
     ) -> list[RankedChunk]:
         """Read ready vectors from the exact active embedding index space.
@@ -135,6 +137,8 @@ class SQLAlchemySearchRepository:
             .where(RetrievalChunkEmbeddingRecord.workspace_id == workspace_id)
             .where(RetrievalChunkEmbeddingRecord.index_version == index_version)
             .where(RetrievalChunkEmbeddingRecord.dimensions == dimensions)
+            .where(RetrievalChunkEmbeddingRecord.configuration_version == configuration_version)
+            .where(RetrievalChunkEmbeddingRecord.model == model)
             .where(RetrievalChunkEmbeddingRecord.state == "ready")
             .where(RetrievalChunkEmbeddingRecord.embedding.is_not(None))
         )
@@ -168,6 +172,71 @@ class SQLAlchemySearchRepository:
                 embedding_index_version=embedding.index_version,
             )
             for chunk, build, agreement, embedding in rows
+        ]
+
+    def available_embedding_spaces(
+        self,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        filters: SearchFilters,
+        index_version: str,
+        dimensions: int,
+        limit: int,
+    ) -> list[EmbeddingSpace]:
+        latest_update = func.max(RetrievalChunkEmbeddingRecord.updated_at)
+        statement = (
+            select(
+                RetrievalChunkEmbeddingRecord.configuration_version,
+                RetrievalChunkEmbeddingRecord.model,
+                latest_update.label("latest_update"),
+            )
+            .join(
+                RetrievalChunkRecord,
+                and_(
+                    RetrievalChunkEmbeddingRecord.organization_id
+                    == RetrievalChunkRecord.organization_id,
+                    RetrievalChunkEmbeddingRecord.workspace_id == RetrievalChunkRecord.workspace_id,
+                    RetrievalChunkEmbeddingRecord.agreement_id == RetrievalChunkRecord.agreement_id,
+                    RetrievalChunkEmbeddingRecord.build_id == RetrievalChunkRecord.build_id,
+                    RetrievalChunkEmbeddingRecord.chunk_id == RetrievalChunkRecord.chunk_id,
+                ),
+            )
+            .join(
+                RetrievalIndexBuildRecord,
+                and_(
+                    RetrievalChunkRecord.build_id == RetrievalIndexBuildRecord.id,
+                    RetrievalChunkRecord.organization_id
+                    == RetrievalIndexBuildRecord.organization_id,
+                    RetrievalChunkRecord.workspace_id == RetrievalIndexBuildRecord.workspace_id,
+                    RetrievalChunkRecord.agreement_id == RetrievalIndexBuildRecord.agreement_id,
+                ),
+            )
+            .join(AgreementRecord, RetrievalChunkRecord.agreement_id == AgreementRecord.id)
+            .where(RetrievalChunkEmbeddingRecord.organization_id == organization_id)
+            .where(RetrievalChunkEmbeddingRecord.workspace_id == workspace_id)
+            .where(RetrievalChunkEmbeddingRecord.index_version == index_version)
+            .where(RetrievalChunkEmbeddingRecord.dimensions == dimensions)
+            .where(RetrievalChunkEmbeddingRecord.state == "ready")
+            .where(RetrievalChunkEmbeddingRecord.embedding.is_not(None))
+            .where(RetrievalIndexBuildRecord.state == "active")
+            .where(AgreementRecord.archived_at.is_(None))
+        )
+        rows = self._session.execute(
+            _apply_filters(statement, filters)
+            .group_by(
+                RetrievalChunkEmbeddingRecord.configuration_version,
+                RetrievalChunkEmbeddingRecord.model,
+            )
+            .order_by(latest_update.desc())
+            .limit(limit)
+        ).all()
+        return [
+            EmbeddingSpace(
+                configuration_version=str(configuration_version),
+                model=str(model),
+            )
+            for configuration_version, model, _updated_at in rows
         ]
 
 

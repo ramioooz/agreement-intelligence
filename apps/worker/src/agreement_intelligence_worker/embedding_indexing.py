@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from math import ceil
 from time import sleep
 from typing import Protocol
+from uuid import UUID
 
 from sqlalchemy import (
     Column,
@@ -21,6 +23,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.engine import Connection, Engine
 
+from agreement_intelligence_worker.ai_configuration import (
+    AIOperation,
+    ResolvedAIConfiguration,
+    model_for_route,
+    resolve_configuration,
+    resolve_configuration_by_id,
+)
 from agreement_intelligence_worker.document_indexing import (
     retrieval_chunks,
     retrieval_index_builds,
@@ -34,12 +43,51 @@ from agreement_intelligence_worker.model_gateway import (
     GatewayResponseError,
     GatewayUnavailableError,
 )
-from agreement_intelligence_worker.processing import CompletedArtifact, ProcessingJob
+from agreement_intelligence_worker.processing import (
+    CompletedArtifact,
+    CompletionHandler,
+    ProcessingJob,
+    TransientProcessingError,
+)
 from agreement_intelligence_worker.vector_types import Vector
 
 
 class EmbeddingGateway(Protocol):
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse: ...
+
+
+_EMBEDDING_REINDEX_PROFILE_PREFIX = "embedding-reindex:"
+
+
+def embedding_reindex_configuration_id(profile: str | None) -> UUID | None:
+    if profile is None or not profile.startswith(_EMBEDDING_REINDEX_PROFILE_PREFIX):
+        return None
+    try:
+        return UUID(profile.removeprefix(_EMBEDDING_REINDEX_PROFILE_PREFIX))
+    except ValueError:
+        return None
+
+
+@dataclass(frozen=True)
+class EmbeddingReindexCompletionHandler:
+    normal: CompletionHandler
+    embeddings: CompletionHandler
+
+    def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+        if embedding_reindex_configuration_id(job.profile) is not None:
+            self.embeddings.completed(job, artifact)
+            return
+        self.normal.completed(job, artifact)
+
+
+def _endpoint_mode(gateway: EmbeddingGateway) -> str:
+    """Use the gateway's declared provider; lightweight test gateways default to OpenAI."""
+
+    configuration = getattr(gateway, "configuration", None)
+    mode = getattr(configuration, "mode", "openai")
+    if mode not in {"openai", "openai-compatible"}:
+        raise ValueError("unsupported embedding gateway endpoint mode")
+    return str(mode)
 
 
 embedding_metadata = worker_index_metadata
@@ -119,11 +167,50 @@ class SQLAlchemyEmbeddingIndexSink:
                     "SELECT set_config('app.organization_id', %s, true)",
                     (str(job.organization_id),),
                 )
-            chunks = self._active_unembedded_chunks(connection, job)
+            configuration_id = embedding_reindex_configuration_id(job.profile)
+            active_configuration = (
+                resolve_configuration_by_id(
+                    AIOperation.EMBEDDING,
+                    configuration_id,
+                    organization_id=job.organization_id,
+                    workspace_id=job.workspace_id,
+                )
+                if configuration_id is not None
+                else resolve_configuration(
+                    AIOperation.EMBEDDING,
+                    os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+                    organization_id=job.organization_id,
+                    workspace_id=job.workspace_id,
+                )
+            )
+            if active_configuration is None:
+                raise ValueError("Embedding reindex configuration is unavailable in tenant scope")
+            active_model = (
+                model_for_route(
+                    active_configuration,
+                    self._configuration.model,
+                    endpoint_mode=_endpoint_mode(self._gateway),
+                )
+                if self._gateway is not None
+                else self._configuration.model
+            )
+            chunks = self._active_unembedded_chunks(
+                connection,
+                job,
+                configuration_version=active_configuration.version,
+                model=active_model,
+            )
             for batch in _batches(chunks, self._configuration.batch_size):
-                self._embed_batch(connection, job, batch)
+                self._embed_batch(connection, job, batch, active_configuration)
 
-    def _active_unembedded_chunks(self, connection: Connection, job: ProcessingJob) -> list[_Chunk]:
+    def _active_unembedded_chunks(
+        self,
+        connection: Connection,
+        job: ProcessingJob,
+        *,
+        configuration_version: str,
+        model: str,
+    ) -> list[_Chunk]:
         embedded = retrieval_chunk_embeddings.alias("embedded")
         query = (
             select(
@@ -142,6 +229,8 @@ class SQLAlchemyEmbeddingIndexSink:
                 & (embedded.c.chunk_id == retrieval_chunks.c.chunk_id)
                 & (embedded.c.index_version == self._configuration.index_version)
                 & (embedded.c.dimensions == self._configuration.dimensions)
+                & (embedded.c.configuration_version == configuration_version)
+                & (embedded.c.model == model)
                 & (embedded.c.state == "ready"),
             )
             .where(
@@ -159,10 +248,16 @@ class SQLAlchemyEmbeddingIndexSink:
         ]
 
     def _embed_batch(
-        self, connection: Connection, job: ProcessingJob, batch: Sequence[_Chunk]
+        self,
+        connection: Connection,
+        job: ProcessingJob,
+        batch: Sequence[_Chunk],
+        active_configuration: ResolvedAIConfiguration,
     ) -> None:
         now = datetime.now(UTC)
         if self._gateway is None:
+            if embedding_reindex_configuration_id(job.profile) is not None:
+                raise TransientProcessingError("Embedding provider is unavailable")
             self._replace_batch(
                 connection,
                 job,
@@ -172,6 +267,7 @@ class SQLAlchemyEmbeddingIndexSink:
                 provenance=None,
                 state="unavailable",
                 failure_reason="embedding_provider_unconfigured",
+                active_configuration=active_configuration,
             )
             return
         response: EmbeddingResponse | None = None
@@ -183,8 +279,13 @@ class SQLAlchemyEmbeddingIndexSink:
                 response = self._gateway.embed(
                     EmbeddingRequest(
                         inputs=tuple(chunk.content for chunk in batch),
-                        model=self._configuration.model,
+                        model=model_for_route(
+                            active_configuration,
+                            self._configuration.model,
+                            endpoint_mode=_endpoint_mode(self._gateway),
+                        ),
                         dimensions=self._configuration.dimensions,
+                        resolved_configuration=active_configuration,
                     )
                 )
                 break
@@ -196,6 +297,8 @@ class SQLAlchemyEmbeddingIndexSink:
                 failure_reason = "embedding_response_invalid"
                 break
         if response is None:
+            if embedding_reindex_configuration_id(job.profile) is not None:
+                raise TransientProcessingError("Embedding provider is unavailable")
             self._replace_batch(
                 connection,
                 job,
@@ -205,11 +308,14 @@ class SQLAlchemyEmbeddingIndexSink:
                 provenance=None,
                 state="unavailable",
                 failure_reason=failure_reason or "embedding_provider_unavailable",
+                active_configuration=active_configuration,
             )
             return
         if len(response.vectors) != len(batch) or any(
             len(vector) != self._configuration.dimensions for vector in response.vectors
         ):
+            if embedding_reindex_configuration_id(job.profile) is not None:
+                raise TransientProcessingError("Embedding response is invalid")
             self._replace_batch(
                 connection,
                 job,
@@ -219,6 +325,7 @@ class SQLAlchemyEmbeddingIndexSink:
                 provenance=response.provenance,
                 state="failed",
                 failure_reason="embedding_dimension_mismatch",
+                active_configuration=active_configuration,
             )
             return
         self._replace_batch(
@@ -230,6 +337,7 @@ class SQLAlchemyEmbeddingIndexSink:
             provenance=response.provenance,
             state="ready",
             failure_reason=None,
+            active_configuration=active_configuration,
         )
 
     def _replace_batch(
@@ -243,6 +351,7 @@ class SQLAlchemyEmbeddingIndexSink:
         provenance: GatewayProvenance | None,
         state: str,
         failure_reason: str | None,
+        active_configuration: ResolvedAIConfiguration,
     ) -> None:
         for position, chunk in enumerate(batch):
             connection.execute(
@@ -267,6 +376,7 @@ class SQLAlchemyEmbeddingIndexSink:
                 failure_reason=failure_reason,
                 now=now,
                 batch_size=len(batch),
+                active_configuration=active_configuration,
             )
             connection.execute(retrieval_chunk_embeddings.insert().values(**values))
 
@@ -282,6 +392,7 @@ def _embedding_values(
     failure_reason: str | None,
     now: datetime,
     batch_size: int,
+    active_configuration: ResolvedAIConfiguration,
 ) -> dict[str, object]:
     token_share = (
         ceil(provenance.input_tokens / batch_size)
@@ -305,11 +416,7 @@ def _embedding_values(
         "state": state,
         "provider": provenance.provider if provenance is not None else "unconfigured",
         "model": provenance.model if provenance is not None else configuration.model,
-        "configuration_version": (
-            provenance.configuration_version
-            if provenance is not None
-            else configuration.configuration_version
-        ),
+        "configuration_version": active_configuration.version,
         "input_tokens": token_share,
         "latency_ms": provenance.latency_ms if provenance is not None else None,
         "cost_usd": cost,

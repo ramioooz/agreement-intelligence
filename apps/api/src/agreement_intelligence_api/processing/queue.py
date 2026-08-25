@@ -92,6 +92,8 @@ class ProcessingOutboxDispatcher:
         delivered = 0
         pending = self._session.scalars(
             select(ProcessingOutboxRecord)
+            .where(ProcessingOutboxRecord.organization_id == organization_id)
+            .where(ProcessingOutboxRecord.workspace_id == workspace_id)
             .where(ProcessingOutboxRecord.delivered_at.is_(None))
             .order_by(ProcessingOutboxRecord.created_at, ProcessingOutboxRecord.id)
             .limit(limit)
