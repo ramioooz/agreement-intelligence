@@ -266,6 +266,12 @@ def _concepts(baseline_text: str, target_text: str) -> tuple[str, ...]:
 
 
 def _severity(candidate: MaterialityCandidate, concepts: tuple[str, ...]) -> Severity:
+    if (
+        candidate.change_type == "moved"
+        and candidate.baseline_text == candidate.target_text
+        and not candidate.review_required
+    ):
+        return "low"
     if candidate.change_type in {"added", "removed"} and {
         "liability",
         "indemnity",

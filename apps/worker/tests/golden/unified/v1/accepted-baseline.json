@@ -1,0 +1,45 @@
+{
+  "version": "unified-v1",
+  "case_fingerprints": {
+    "classification-family": "e878e4e87c82778e1114db3f0dfbb57c811b22c5a0589be95963c836161d9ff6",
+    "comparison-materiality": "0168b78a915c090adf844f73e683572c466a6aa97dda61019519a6a53487f3c0",
+    "extraction-clauses": "077891b7f244f3f99178e881140cabe3706c8ec26c6197043578031c937dbb2e",
+    "grounding-citations": "654ec12c2de0607188fe1bf84c8132da211b6228fb65d182a1b42a519ecd0bd6",
+    "guardrails-injection": "f5dd705d77ea58455c20efbf1ff8696d6590b9e50c1ecbe57e273d74efc6ae93",
+    "retrieval-portfolio": "654ec12c2de0607188fe1bf84c8132da211b6228fb65d182a1b42a519ecd0bd6"
+  },
+  "metrics": {
+    "classification.accuracy": {
+      "accepted": 1.0,
+      "minimum": 0.9
+    },
+    "comparison.critical_material_change_recall": {
+      "accepted": 1.0,
+      "minimum": 1.0
+    },
+    "extraction.clause_f1": {
+      "accepted": 0.8,
+      "minimum": 0.8
+    },
+    "grounding.citation_precision": {
+      "accepted": 1.0,
+      "minimum": 1.0
+    },
+    "grounding.unsupported_accepted_claims": {
+      "accepted": 0,
+      "maximum": 0
+    },
+    "guardrails.unsafe_acceptances": {
+      "accepted": 0,
+      "maximum": 0
+    },
+    "retrieval.recall_at_5": {
+      "accepted": 1.0,
+      "maximum_regression": 0.05
+    },
+    "retrieval.unauthorized_retrieval_count": {
+      "accepted": 0,
+      "maximum": 0
+    }
+  }
+}

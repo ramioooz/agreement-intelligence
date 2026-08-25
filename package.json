@@ -12,10 +12,15 @@
     "format:check": "prettier --check ."
   },
   "devDependencies": {
-    "prettier": "3.9.6"
+    "prettier": "3.9.6",
+    "promptfoo": "0.122.0"
   },
   "pnpm": {
     "overrides": {
+      "@huggingface/transformers>sharp": "0.35.3",
+      "brace-expansion@<1.1.18": "1.1.18",
+      "js-yaml@>=4.0.0 <4.3.1": "4.3.1",
+      "onnxruntime-node>adm-zip": "0.6.0",
       "nanoid@<3.3.18": "3.3.18"
     },
     "onlyBuiltDependencies": [

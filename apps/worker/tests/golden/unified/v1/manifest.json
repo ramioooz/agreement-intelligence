@@ -1,0 +1,38 @@
+{
+  "version": "unified-v1",
+  "required_capabilities": [
+    "classification",
+    "extraction",
+    "grounding",
+    "retrieval",
+    "comparison",
+    "guardrails"
+  ],
+  "datasets": {
+    "classification": {
+      "path": "../../agreement-families.json",
+      "sha256": "ee6a5217afeb08483d14127fa245bb0387639325873bcdde532542ab98cee58c"
+    },
+    "extraction": {
+      "path": "../../retrieval-quality/v1/fixtures/master-services-agreement.txt",
+      "sha256": "73cfa40f1107285b2833e15a9f94127fa2b73b8bb53e455f36b3c44fe77ba6ba",
+      "expected_categories": ["termination", "confidentiality", "liability"]
+    },
+    "grounding": {
+      "path": "../../retrieval-quality/v1/questions.json",
+      "sha256": "468b9c1004019a50844ce0926d695ac45b5457a0710ea905530d9d5cf2902747"
+    },
+    "retrieval": {
+      "path": "../../retrieval-quality/v1/questions.json",
+      "sha256": "468b9c1004019a50844ce0926d695ac45b5457a0710ea905530d9d5cf2902747"
+    },
+    "comparison": {
+      "path": "../../version-comparison/v1/version-pairs.json",
+      "sha256": "56d64bb44f64826ee454a64d4ccd4a39c3878ba6618391b0b677de6ca0de8bc4"
+    },
+    "guardrails": {
+      "path": "../../security/adversarial-documents.json",
+      "sha256": "e8488eb58bfd519d9f9b958fd0063b50f7f45f1d5c5ea1567d896d089eb6ab8b"
+    }
+  }
+}

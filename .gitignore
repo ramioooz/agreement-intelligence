@@ -17,6 +17,7 @@ __pycache__/
 coverage/
 htmlcov/
 dist/
+artifacts/
 apps/web/playwright-report/
 apps/web/test-results/
 artifacts/performance/
