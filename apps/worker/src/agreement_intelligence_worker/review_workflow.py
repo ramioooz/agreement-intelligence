@@ -8,9 +8,11 @@ import logging
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Protocol, TypedDict
+from typing import Any, Protocol, TypedDict, cast
 from uuid import UUID
 
+from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
+from agreement_intelligence_platform.telemetry import operation_span
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
 from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, select, text, update
@@ -163,29 +165,68 @@ class SQLAlchemyWorkflowEventProcessor:
         self._checkpoints = checkpoints
 
     def process(self, event_id: UUID, *, organization_id: UUID, workspace_id: UUID) -> bool:
-        with self._engine.begin() as connection:
-            _set_tenant_context(connection, organization_id)
-            row = connection.execute(_workflow_event_for_update(event_id)).mappings().one_or_none()
-            if (
-                row is None
-                or row["processed_at"] is not None
-                or row["organization_id"] != organization_id
-                or row["workspace_id"] != workspace_id
-            ):
-                return False
-            self._checkpoints.persist(
-                event_id=event_id,
-                checkpoint_id=row["checkpoint_id"],
-                workflow_id=row["workflow_id"],
-                event_type=row["event_type"],
+        transition_outcome = "success"
+        processed = False
+        try:
+            with operation_span(
+                "agreement-intelligence.worker",
+                "workflow.transition",
+                safe_span_attributes(
+                    {"operation": "workflow.transition", "outcome": transition_outcome}
+                ),
+                outcome_getter=lambda: transition_outcome,
+            ) as span:
+                with self._engine.begin() as connection:
+                    _set_tenant_context(connection, organization_id)
+                    row = (
+                        connection.execute(_workflow_event_for_update(event_id))
+                        .mappings()
+                        .one_or_none()
+                    )
+                    if (
+                        row is None
+                        or row["processed_at"] is not None
+                        or row["organization_id"] != organization_id
+                        or row["workspace_id"] != workspace_id
+                    ):
+                        transition_outcome = "skipped"
+                    else:
+                        self._checkpoints.persist(
+                            event_id=event_id,
+                            checkpoint_id=row["checkpoint_id"],
+                            workflow_id=row["workflow_id"],
+                            event_type=row["event_type"],
+                        )
+                        connection.execute(
+                            update(workflow_events)
+                            .where(workflow_events.c.id == event_id)
+                            .where(workflow_events.c.processed_at.is_(None))
+                            .values(processed_at=func.now())
+                        )
+                        processed = True
+                span.set_attributes(
+                    cast(
+                        Any,
+                        safe_span_attributes(
+                            {"workflow_state": "processed" if processed else "skipped"}
+                        ),
+                    )
+                )
+        except Exception:
+            record_metric(
+                "agreement_intelligence.workflow.transition_count",
+                1,
+                operation="workflow.transition",
+                outcome="failure",
             )
-            connection.execute(
-                update(workflow_events)
-                .where(workflow_events.c.id == event_id)
-                .where(workflow_events.c.processed_at.is_(None))
-                .values(processed_at=func.now())
-            )
-        return True
+            raise
+        record_metric(
+            "agreement_intelligence.workflow.transition_count",
+            1,
+            operation="workflow.transition",
+            outcome=transition_outcome,
+        )
+        return processed
 
 
 def _workflow_event_for_update(event_id: UUID) -> Select[Any]:

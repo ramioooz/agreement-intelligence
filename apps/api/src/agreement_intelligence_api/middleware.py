@@ -2,8 +2,15 @@ import logging
 import os
 
 from agreement_intelligence_platform.document_safety import MAX_DOCUMENT_COMPRESSED_BYTES
+from agreement_intelligence_platform.observability import (
+    extract_trace_context,
+    safe_span_attributes,
+)
+from agreement_intelligence_platform.telemetry import operation_span
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
+from opentelemetry.context import attach, detach
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -114,10 +121,32 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         correlation_id = resolve_correlation_id(request.headers.get(CORRELATION_ID_HEADER))
         request.state.correlation_id = correlation_id
         token = set_correlation_id(correlation_id)
+        trace_token = attach(extract_trace_context(request.headers))
+        outcome = "success"
 
         try:
-            response = await call_next(request)
+            with operation_span(
+                "agreement-intelligence.api",
+                "http.request",
+                safe_span_attributes(
+                    {
+                        "operation": "http.request",
+                        "outcome": "success",
+                        "method": request.method,
+                        "correlation_id": correlation_id,
+                    }
+                ),
+                outcome_getter=lambda: outcome,
+            ) as span:
+                response = await call_next(request)
+                outcome = "success" if response.status_code < 400 else "failure"
+                span.set_attribute("outcome", outcome)
+                span.set_attribute("status_code", response.status_code)
+                span_context = trace.get_current_span().get_span_context()
+                if span_context.is_valid:
+                    response.headers["X-Trace-ID"] = f"{span_context.trace_id:032x}"
         finally:
+            detach(trace_token)
             reset_correlation_id(token)
 
         response.headers[CORRELATION_ID_HEADER] = correlation_id

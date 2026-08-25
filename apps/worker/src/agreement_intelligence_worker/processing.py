@@ -2,11 +2,21 @@ import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
+from agreement_intelligence_platform.observability import (
+    extract_trace_context,
+    inject_trace_context,
+    record_metric,
+    safe_span_attributes,
+)
+from agreement_intelligence_platform.telemetry import operation_span
+from opentelemetry.context import attach, detach
 from sqlalchemy import (
     Column,
     DateTime,
@@ -135,6 +145,8 @@ class ProcessingMessage:
     receipt_handle: str
     organization_id: UUID | None = None
     workspace_id: UUID | None = None
+    trace_headers: Mapping[str, str] = field(default_factory=dict)
+    queue_age_ms: int | None = None
 
 
 class JobRepository(Protocol):
@@ -315,6 +327,12 @@ class JobProcessor:
             self._fail(job, category="transient_exhausted", message=safe_message)
             return
         delay_seconds = self._retry_policy.delay_seconds(job.attempt_count)
+        record_metric(
+            "agreement_intelligence.retry.count",
+            1,
+            operation="worker.processing",
+            outcome="retry",
+        )
         self._requeue(
             job,
             message=safe_message,
@@ -385,6 +403,13 @@ class SQSProcessingQueue:
             ),
             "DelaySeconds": delay_seconds,
         }
+        trace_headers: dict[str, str] = {}
+        inject_trace_context(trace_headers)
+        if trace_headers:
+            request["MessageAttributes"] = {
+                key: {"DataType": "String", "StringValue": value}
+                for key, value in trace_headers.items()
+            }
         if _is_fifo_queue(self._queue_url):
             deduplication_suffix = datetime.now(UTC).isoformat()
             request["MessageGroupId"] = str(job_id)
@@ -412,17 +437,30 @@ class SQSProcessingMessageReceiver:
             QueueUrl=self._queue_url,
             MaxNumberOfMessages=1,
             WaitTimeSeconds=self._wait_time_seconds,
+            MessageAttributeNames=["traceparent", "tracestate"],
+            AttributeNames=["SentTimestamp"],
         )
         messages = result.get("Messages", [])
         if not messages:
             return None
         message = messages[0]
         body = json.loads(str(message["Body"]))
+        message_attributes = cast(
+            Mapping[str, Mapping[str, object]], message.get("MessageAttributes", {})
+        )
+        trace_headers = {
+            key: value
+            for key, attribute in message_attributes.items()
+            if key in {"traceparent", "tracestate"}
+            and isinstance(value := attribute.get("StringValue"), str)
+        }
         return ProcessingMessage(
             job_id=UUID(str(body["job_id"])),
             organization_id=UUID(str(body["organization_id"])),
             workspace_id=UUID(str(body["workspace_id"])),
             receipt_handle=str(message["ReceiptHandle"]),
+            trace_headers=trace_headers,
+            queue_age_ms=_queue_age_ms(message),
         )
 
     async def ack(self, message: ProcessingMessage) -> None:
@@ -790,16 +828,46 @@ async def run_processing_loop(
     idle_sleep_seconds: float = 1.0,
 ) -> None:
     while not stop_event.is_set():
-        message = await receiver.receive()
+        receive_state = {"outcome": "success"}
+        with operation_span(
+            "agreement-intelligence.worker",
+            "queue.receive",
+            safe_span_attributes(
+                {"operation": "queue.receive", "outcome": receive_state["outcome"]}
+            ),
+            outcome_getter=partial(_receive_outcome, receive_state),
+        ) as receive_span:
+            message = await receiver.receive()
+            if message is None:
+                receive_state["outcome"] = "skipped"
+            elif message.queue_age_ms is not None:
+                receive_span.set_attributes(
+                    cast(Any, safe_span_attributes({"queue_age_ms": message.queue_age_ms}))
+                )
+                record_metric(
+                    "agreement_intelligence.queue.age_ms",
+                    message.queue_age_ms,
+                    operation="queue.receive",
+                    outcome="success",
+                )
         if message is None:
             await asyncio.sleep(idle_sleep_seconds)
             continue
         try:
-            processor.handle(
-                message.job_id,
-                organization_id=message.organization_id,
-                workspace_id=message.workspace_id,
-            )
+            context_token = attach(extract_trace_context(message.trace_headers))
+            try:
+                with operation_span(
+                    "agreement-intelligence.worker",
+                    "worker.processing",
+                    safe_span_attributes({"operation": "worker.processing", "outcome": "success"}),
+                ):
+                    processor.handle(
+                        message.job_id,
+                        organization_id=message.organization_id,
+                        workspace_id=message.workspace_id,
+                    )
+            finally:
+                detach(context_token)
         except Exception:
             logger.exception(
                 "processing message handling failed",
@@ -818,3 +886,17 @@ def _safe_summary(message: str) -> str:
     if _SENSITIVE_MESSAGE_PATTERN.search(normalized):
         return "Processing dependency failure"
     return (normalized or "Processing failed")[:500]
+
+
+def _receive_outcome(state: Mapping[str, str]) -> str:
+    return state["outcome"]
+
+
+def _queue_age_ms(message: Mapping[str, object]) -> int | None:
+    attributes = message.get("Attributes")
+    if not isinstance(attributes, Mapping):
+        return None
+    sent_at = attributes.get("SentTimestamp")
+    if not isinstance(sent_at, str) or not sent_at.isdecimal():
+        return None
+    return max(0, round(datetime.now(UTC).timestamp() * 1_000) - int(sent_at))

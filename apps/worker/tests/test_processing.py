@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from agreement_intelligence_platform.observability import inject_trace_context
 from agreement_intelligence_worker.playbook_evaluation import (
     SQLAlchemyPlaybookEvaluationSink,
     worker_evaluation_metadata,
@@ -392,6 +393,47 @@ def test_processing_loop_consumes_and_acknowledges_fake_messages() -> None:
 
     assert repository.job.state == "completed"
     assert receiver.acked == ["receipt-1"]
+
+
+def test_processing_loop_continues_the_message_trace_context() -> None:
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    observed_headers: dict[str, str] = {}
+
+    class TraceAwareProcessor:
+        def process(self, job: ProcessingJob) -> CompletedArtifact:
+            inject_trace_context(observed_headers)
+            return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/result.json")
+
+    class OneMessageReceiver:
+        def __init__(self, job: ProcessingJob) -> None:
+            self._message: ProcessingMessage | None = ProcessingMessage(
+                job_id=job.id,
+                organization_id=job.organization_id,
+                workspace_id=job.workspace_id,
+                receipt_handle="receipt-1",
+                trace_headers={"traceparent": traceparent},
+            )
+
+        async def receive(self) -> ProcessingMessage | None:
+            message, self._message = self._message, None
+            if message is None:
+                stop_event.set()
+                return None
+            return message
+
+        async def ack(self, message: ProcessingMessage) -> None:
+            del message
+
+    repository = InMemoryRepository(job=_job(), artifacts=[])
+    stop_event = asyncio.Event()
+    receiver = OneMessageReceiver(repository.job)
+    worker = JobProcessor(repository, InMemoryQueue(retries=[]), TraceAwareProcessor())
+
+    asyncio.run(
+        run_processing_loop(stop_event, receiver=receiver, processor=worker, idle_sleep_seconds=0)
+    )
+
+    assert observed_headers["traceparent"].split("-")[1] == traceparent.split("-")[1]
 
 
 def test_processing_loop_recovers_unacked_evaluation_without_duplicate_findings(

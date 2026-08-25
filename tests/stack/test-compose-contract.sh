@@ -37,8 +37,9 @@ env_file=$(mktemp)
 config_file=$(mktemp)
 json_file=$(mktemp)
 profile_json_file=$(mktemp)
+observability_json_file=$(mktemp)
 cleanup() {
-  rm -f "$env_file" "$config_file" "$json_file" "$profile_json_file"
+  rm -f "$env_file" "$config_file" "$json_file" "$profile_json_file" "$observability_json_file"
 }
 trap cleanup EXIT INT TERM
 
@@ -50,11 +51,15 @@ docker compose --project-name agreement-intelligence \
   --env-file "$env_file" config --format json >"$json_file"
 docker compose --project-name agreement-intelligence --profile local-model \
   --env-file "$env_file" config --format json >"$profile_json_file"
+docker compose --project-name agreement-intelligence --profile observability \
+  --env-file "$env_file" -f compose.yaml -f compose.observability.yaml \
+  config --format json >"$observability_json_file"
 
-node - "$json_file" "$profile_json_file" <<'NODE'
+node - "$json_file" "$profile_json_file" "$observability_json_file" <<'NODE'
 const fs = require("node:fs");
 const config = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const profileConfig = JSON.parse(fs.readFileSync(process.argv[3], "utf8"));
+const observabilityConfig = JSON.parse(fs.readFileSync(process.argv[4], "utf8"));
 
 for (const serviceName of ["postgres", "localstack", "keycloak"]) {
   if (!config.services?.[serviceName]?.healthcheck?.test?.length) {
@@ -192,6 +197,18 @@ if (!config.services?.redis?.healthcheck?.test?.length) {
 
 if (config.services?.["otel-collector"]?.healthcheck) {
   throw new Error("OpenTelemetry Collector must be checked as running, not through a Docker health check");
+}
+
+for (const serviceName of ["langfuse-web", "langfuse-worker", "langfuse-clickhouse", "langfuse-minio"]) {
+  if (!observabilityConfig.services?.[serviceName]?.profiles?.includes("observability")) {
+    throw new Error(`${serviceName} must stay in the optional observability profile`);
+  }
+}
+if (!observabilityConfig.services?.["langfuse-web"]?.image?.includes(":")) {
+  throw new Error("Langfuse must use a pinned image");
+}
+if (!observabilityConfig.services?.["otel-collector"]?.environment?.LANGFUSE_OTLP_ENDPOINT) {
+  throw new Error("The Collector must export traces to Langfuse when the profile is enabled");
 }
 NODE
 

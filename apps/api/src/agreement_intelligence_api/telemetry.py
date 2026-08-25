@@ -22,10 +22,18 @@ def redact_attributes(attributes: Mapping[str, object]) -> dict[str, object]:
 
 
 @contextmanager
-def operation_span(name: str, attributes: Mapping[str, object] | None = None) -> Iterator[Span]:
+def operation_span(
+    name: str,
+    attributes: Mapping[str, object] | None = None,
+    *,
+    instrument: bool = True,
+) -> Iterator[Span]:
     """Create a short-lived span with only redacted operational metadata."""
 
     with platform_operation_span(
-        "agreement-intelligence.api", name, redact_attributes(attributes or {})
+        "agreement-intelligence.api",
+        name,
+        redact_attributes(attributes or {}),
+        instrument=instrument,
     ) as span:
         yield span

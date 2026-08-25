@@ -175,7 +175,10 @@ class GroundedQuestionService:
             filters=SearchFilters(query=question, agreement_ids=persisted.agreement_ids),
         )
         citation_sources = _citation_sources_from_search(results)
-        with operation_span("qa.answer.guardrails"):
+        with operation_span(
+            "qa.answer.guardrails",
+            instrument=False,
+        ):
             answer = answer_question(
                 question=question,
                 authorized_evidence=_evidence_from_search(results, citation_sources),

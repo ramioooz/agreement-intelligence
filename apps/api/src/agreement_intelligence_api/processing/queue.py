@@ -6,6 +6,11 @@ from typing import Any, Protocol
 from uuid import UUID
 
 import boto3
+from agreement_intelligence_platform.observability import (
+    inject_trace_context,
+    safe_span_attributes,
+)
+from agreement_intelligence_platform.telemetry import operation_span
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -55,12 +60,24 @@ class SQSProcessingQueuePublisher:
             "QueueUrl": self._queue_url,
             "MessageBody": json.dumps(payload, sort_keys=True),
         }
+        trace_headers: dict[str, str] = {}
+        inject_trace_context(trace_headers)
+        if trace_headers:
+            request["MessageAttributes"] = {
+                key: {"DataType": "String", "StringValue": value}
+                for key, value in trace_headers.items()
+            }
         if _is_fifo_queue(self._queue_url):
             request["MessageGroupId"] = str(job.agreement_id)
             request["MessageDeduplicationId"] = (
                 f"{job.id}:{idempotency_key}:{job.attempt_count}:{job.queued_at.isoformat()}"
             )
-        self._client.send_message(**request)
+        with operation_span(
+            "agreement-intelligence.api",
+            "queue.publish",
+            safe_span_attributes({"operation": "queue.publish", "outcome": "success"}),
+        ):
+            self._client.send_message(**request)
 
 
 class ProcessingOutboxDispatcher:

@@ -174,7 +174,11 @@ def _manifest(
         (anchor_id, text[:_MAX_PROVIDER_BLOCK_CHARACTERS])
         for anchor_id, text in blocks[:_MAX_PROVIDER_BLOCKS]
     ]
-    with operation_span("agreement-intelligence.worker", "document.analysis.guardrails") as span:
+    with operation_span(
+        "agreement-intelligence.worker",
+        "document.analysis.guardrails",
+        instrument=False,
+    ) as span:
         guardrail_decision = validate_untrusted_evidence(
             blocks, {anchor_id for anchor_id, _ in blocks}
         )

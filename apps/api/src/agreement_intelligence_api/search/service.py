@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
+from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
+from agreement_intelligence_platform.telemetry import operation_span
 from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
     EmbeddingRequest,
@@ -195,28 +197,55 @@ class HybridSearchService:
             raise SearchNotAuthorizedError
 
         result_limit = min(limit, MAX_RESULT_LIMIT)
-        lexical = self._repository.lexical_candidates(
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            filters=filters,
-            limit=MAX_CANDIDATES_PER_CHANNEL,
-        )
-        try:
-            semantic = self._semantic_provider.candidates(
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                filters=filters,
-                limit=MAX_CANDIDATES_PER_CHANNEL,
-            )
-        except Exception:
-            # A vector provider is an enhancement, not an availability
-            # dependency for authorized portfolio search.
-            semantic = []
-
-        return SearchResponse(
-            items=[
+        with operation_span(
+            "agreement-intelligence.api",
+            "retrieval.search",
+            safe_span_attributes({"operation": "retrieval.search", "outcome": "success"}),
+        ) as span:
+            with operation_span(
+                "agreement-intelligence.api",
+                "database.query",
+                safe_span_attributes({"operation": "database.query", "outcome": "success"}),
+            ):
+                lexical = self._repository.lexical_candidates(
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    limit=MAX_CANDIDATES_PER_CHANNEL,
+                )
+            try:
+                with operation_span(
+                    "agreement-intelligence.api",
+                    "database.query",
+                    safe_span_attributes({"operation": "database.query", "outcome": "success"}),
+                ):
+                    semantic = self._semantic_provider.candidates(
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        filters=filters,
+                        limit=MAX_CANDIDATES_PER_CHANNEL,
+                    )
+            except Exception:
+                semantic = []
+            items = [
                 _to_result(item) for item in fuse_reciprocal_rank(lexical, semantic, result_limit)
-            ],
+            ]
+            span.set_attributes(
+                cast(
+                    Any,
+                    safe_span_attributes(
+                        {"retrieval_result_count": len(items), "outcome": "success"}
+                    ),
+                )
+            )
+        record_metric(
+            "agreement_intelligence.retrieval.result_count",
+            len(items),
+            operation="retrieval.search",
+            outcome="success",
+        )
+        return SearchResponse(
+            items=items,
             limit=result_limit,
         )
 
