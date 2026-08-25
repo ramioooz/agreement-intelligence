@@ -290,6 +290,7 @@ def _stored_package(session: Session, review: ReviewCaseRecord) -> ReviewFinalPa
 def _create_final_package(
     session: Session, review: ReviewCaseRecord, workflow: ReviewWorkflowRecord
 ) -> ReviewFinalPackageRecord:
+    organization_id = review.organization_id
     locked_workflow = session.scalar(_workflow_for_package_update(review.id))
     if locked_workflow is None:
         raise HTTPException(status_code=409, detail="final_package_not_ready")
@@ -455,7 +456,7 @@ def _create_final_package(
         metadata={"review_id": str(review.id), "workflow_id": str(workflow.id)},
     )
     session.commit()
-    _scope_transaction(session, review.organization_id)
+    _scope_transaction(session, organization_id)
     session.refresh(package)
     return package
 

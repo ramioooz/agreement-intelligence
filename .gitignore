@@ -19,6 +19,7 @@ htmlcov/
 dist/
 apps/web/playwright-report/
 apps/web/test-results/
+artifacts/performance/
 
 # Local configuration
 .env

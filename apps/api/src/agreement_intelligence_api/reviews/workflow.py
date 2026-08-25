@@ -232,8 +232,9 @@ class ReviewWorkflowCoordinator:
             metadata={"review_id": str(review.id), "policy_version_id": str(policy_version.id)},
             occurred_at=now,
         )
+        organization_id = workflow.organization_id
         self._session.commit()
-        _scope_transaction(self._session, workflow.organization_id)
+        _scope_transaction(self._session, organization_id)
         self._session.refresh(workflow)
         return self._snapshot(workflow)
 
@@ -327,8 +328,9 @@ class ReviewWorkflowCoordinator:
             metadata={},
             occurred_at=now,
         )
+        organization_id = workflow.organization_id
         self._session.commit()
-        _scope_transaction(self._session, workflow.organization_id)
+        _scope_transaction(self._session, organization_id)
         self._session.refresh(workflow)
         return self._snapshot(workflow)
 

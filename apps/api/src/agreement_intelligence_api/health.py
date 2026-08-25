@@ -3,8 +3,11 @@ from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from agreement_intelligence_api import __version__
+from agreement_intelligence_api.db import engine
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -18,7 +21,7 @@ class HealthResponse(BaseModel):
 class ReadinessResponse(HealthResponse):
     checks: dict[
         Literal["configuration", "database", "object_store"],
-        Literal["ok", "configured", "missing"],
+        Literal["ok", "configured", "missing", "unavailable"],
     ]
 
 
@@ -41,7 +44,7 @@ def readiness() -> ReadinessResponse:
         checks=checks,
     )
 
-    if any(value == "missing" for value in checks.values()):
+    if any(value in {"missing", "unavailable"} for value in checks.values()):
         raise HTTPException(
             status_code=503,
             detail={
@@ -57,9 +60,16 @@ def readiness() -> ReadinessResponse:
 
 def readiness_checks() -> dict[
     Literal["configuration", "database", "object_store"],
-    Literal["ok", "configured", "missing"],
+    Literal["ok", "configured", "missing", "unavailable"],
 ]:
-    database_ready = _configured("DATABASE_URL")
+    database_configured = _configured("DATABASE_URL")
+    database_status: Literal["ok", "configured", "missing", "unavailable"]
+    if not database_configured:
+        database_status = "missing"
+    elif _enabled("READINESS_CHECK_DATABASE_CONNECTIVITY"):
+        database_status = "ok" if _database_available() else "unavailable"
+    else:
+        database_status = "configured"
     object_store_ready = all(
         _configured(key)
         for key in (
@@ -72,11 +82,24 @@ def readiness_checks() -> dict[
     )
 
     return {
-        "configuration": "ok" if database_ready and object_store_ready else "missing",
-        "database": "configured" if database_ready else "missing",
+        "configuration": "ok" if database_configured and object_store_ready else "missing",
+        "database": database_status,
         "object_store": "configured" if object_store_ready else "missing",
     }
 
 
 def _configured(key: str) -> bool:
     return bool(os.environ.get(key))
+
+
+def _enabled(key: str) -> bool:
+    return os.environ.get(key, "").strip().lower() in {"1", "true", "yes"}
+
+
+def _database_available() -> bool:
+    try:
+        with engine().connect() as connection:
+            connection.execute(text("SELECT 1"))
+    except (SQLAlchemyError, OSError):
+        return False
+    return True

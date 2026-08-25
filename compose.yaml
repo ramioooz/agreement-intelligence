@@ -117,6 +117,7 @@ services:
         --host 0.0.0.0 --port 8000
     environment:
       DATABASE_URL: postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@postgres:5432/${APP_DB_NAME}
+      READINESS_CHECK_DATABASE_CONNECTIVITY: "true"
       AWS_REGION: ${AWS_REGION:?required}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?required}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?required}
