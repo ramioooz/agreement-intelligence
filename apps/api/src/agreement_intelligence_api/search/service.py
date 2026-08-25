@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol, cast
 from uuid import UUID
 
 from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
 from agreement_intelligence_platform.telemetry import operation_span
+from agreement_intelligence_worker.ai_configuration import (
+    AIOperation,
+    model_for_route,
+    resolve_configuration,
+)
 from agreement_intelligence_worker.model_gateway import (
     EmbeddingConfiguration,
     EmbeddingRequest,
@@ -130,11 +136,22 @@ class SQLAlchemySemanticCandidateProvider:
     ) -> list[RankedChunk]:
         if self._gateway is None:
             return []
+        resolved_configuration = resolve_configuration(
+            AIOperation.EMBEDDING,
+            os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
         response = self._gateway.embed(
             EmbeddingRequest(
                 inputs=(filters.query,),
-                model=self._configuration.model,
+                model=model_for_route(
+                    resolved_configuration,
+                    self._configuration.model,
+                    endpoint_mode=_endpoint_mode(self._gateway),
+                ),
                 dimensions=self._configuration.dimensions,
+                resolved_configuration=resolved_configuration,
             )
         )
         if len(response.vectors) != 1 or len(response.vectors[0]) != self._configuration.dimensions:
@@ -148,6 +165,14 @@ class SQLAlchemySemanticCandidateProvider:
             dimensions=self._configuration.dimensions,
             limit=limit,
         )
+
+
+def _endpoint_mode(gateway: EmbeddingQueryGateway) -> str:
+    configuration = getattr(gateway, "configuration", None)
+    mode = getattr(configuration, "mode", "openai")
+    if mode not in {"openai", "openai-compatible"}:
+        raise ValueError("unsupported embedding gateway endpoint mode")
+    return str(mode)
 
 
 class UnavailableSemanticCandidateProvider:

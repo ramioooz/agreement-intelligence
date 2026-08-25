@@ -2,7 +2,17 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agreement_intelligence_api.identity.models import Base
@@ -11,11 +21,29 @@ from agreement_intelligence_api.identity.models import Base
 class AIConfigurationVersionRecord(Base):
     __tablename__ = "ai_configuration_versions"
     __table_args__ = (
-        UniqueConstraint("operation", "version", name="uq_ai_configuration_operation_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "id",
+            name="uq_ai_configuration_scope_id",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "operation",
+            "version",
+            name="uq_ai_configuration_scope_operation_version",
+        ),
         Index("ix_ai_configuration_operation_status", "operation", "status"),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     version: Mapped[str] = mapped_column(String(64), nullable=False)
     prompt_template: Mapped[str] = mapped_column(String, nullable=False)
@@ -33,13 +61,32 @@ class AIConfigurationVersionRecord(Base):
 class AIConfigurationPromotionRecord(Base):
     __tablename__ = "ai_configuration_promotions"
     __table_args__ = (
-        Index("ix_ai_configuration_promotions_lookup", "operation", "environment", "promoted_at"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "configuration_id"],
+            [
+                "ai_configuration_versions.organization_id",
+                "ai_configuration_versions.workspace_id",
+                "ai_configuration_versions.id",
+            ],
+        ),
+        Index(
+            "ix_ai_configuration_promotions_lookup",
+            "organization_id",
+            "workspace_id",
+            "operation",
+            "environment",
+            "promoted_at",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    configuration_id: Mapped[UUID] = mapped_column(
-        ForeignKey("ai_configuration_versions.id"), nullable=False, index=True
-    )
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    configuration_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     operation: Mapped[str] = mapped_column(String(64), nullable=False)
     environment: Mapped[str] = mapped_column(String(64), nullable=False)
     promoted_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
@@ -50,12 +97,26 @@ class AIConfigurationPromotionRecord(Base):
 
 class AIConfigurationAuditEventRecord(Base):
     __tablename__ = "ai_configuration_audit_events"
-    __table_args__ = (Index("ix_ai_configuration_audit_configuration", "configuration_id"),)
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "configuration_id"],
+            [
+                "ai_configuration_versions.organization_id",
+                "ai_configuration_versions.workspace_id",
+                "ai_configuration_versions.id",
+            ],
+        ),
+        Index("ix_ai_configuration_audit_configuration", "configuration_id"),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    configuration_id: Mapped[UUID] = mapped_column(
-        ForeignKey("ai_configuration_versions.id"), nullable=False, index=True
-    )
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    configuration_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False, index=True)
     actor_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), nullable=False, index=True)
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)

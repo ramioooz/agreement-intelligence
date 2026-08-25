@@ -1,3 +1,4 @@
+from agreement_intelligence_worker.ai_configuration import AIOperation, ConfigurationSnapshot
 from agreement_intelligence_worker.version_materiality import (
     MaterialityCandidate,
     assess_materiality,
@@ -15,7 +16,16 @@ def test_materiality_preserves_word_diff_and_marks_a_reduced_liability_cap_criti
             target_citation_ids=("v2-liability",),
             alignment_confidence=0.93,
             review_required=False,
-        )
+        ),
+        configuration=ConfigurationSnapshot(
+            operation=AIOperation.VERSION_MATERIALITY,
+            version="2.1.0",
+            prompt_template="Assess only cited changes.",
+            schema={"type": "object"},
+            model_route="openai:gpt-5.4-mini",
+            parameters={"temperature": 0},
+            schema_checksum="materiality-schema-v2",
+        ),
     )
 
     assert result.severity == "critical"
@@ -24,6 +34,11 @@ def test_materiality_preserves_word_diff_and_marks_a_reduced_liability_cap_criti
     assert result.baseline_citation_ids == ("v1-liability",)
     assert result.target_citation_ids == ("v2-liability",)
     assert any(operation.kind == "replace" for operation in result.word_diff)
+    assert result.provider_provenance == {
+        "configuration_version": "2.1.0",
+        "schema_checksum": "materiality-schema-v2",
+        "model_route": "openai:gpt-5.4-mini",
+    }
 
 
 def test_materiality_keeps_low_confidence_alignment_visible_without_model_output() -> None:

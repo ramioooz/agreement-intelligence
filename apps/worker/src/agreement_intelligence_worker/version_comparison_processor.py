@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -24,6 +25,7 @@ from sqlalchemy import (
 from sqlalchemy.engine import Connection
 from sqlalchemy.sql import text
 
+from agreement_intelligence_worker.ai_configuration import AIOperation, resolve_configuration
 from agreement_intelligence_worker.document_processor import ObjectStorage
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
@@ -157,6 +159,12 @@ class VersionComparisonProcessor:
             )
             baseline_version = canonical_version_from_manifest(baseline_manifest)
             target_version = canonical_version_from_manifest(target_manifest)
+            materiality_configuration = resolve_configuration(
+                AIOperation.VERSION_MATERIALITY,
+                os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+                organization_id=job.organization_id,
+                workspace_id=job.workspace_id,
+            )
             baseline_by_id = {element.element_id: element for element in baseline_version.elements}
             target_by_id = {element.element_id: element for element in target_version.elements}
             changes: list[dict[str, object]] = []
@@ -183,7 +191,8 @@ class VersionComparisonProcessor:
                         target_citation_ids=new_citations,
                         alignment_confidence=alignment.confidence,
                         review_required=alignment.review_required,
-                    )
+                    ),
+                    configuration=materiality_configuration,
                 )
                 changes.append(
                     {

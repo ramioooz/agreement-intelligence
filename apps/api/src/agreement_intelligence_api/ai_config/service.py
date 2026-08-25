@@ -41,6 +41,8 @@ class AIConfigurationService:
     ) -> AIConfigurationResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
         record = AIConfigurationVersionRecord(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
             operation=request.operation.value,
             version=request.version,
             prompt_template=request.prompt_template,
@@ -74,7 +76,7 @@ class AIConfigurationService:
         configuration_id: UUID,
     ) -> AIConfigurationResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        record = self._record(configuration_id)
+        record = self._record(configuration_id, organization_id, workspace_id)
         self._ensure_valid(record)
         return _response(record)
 
@@ -87,7 +89,7 @@ class AIConfigurationService:
         configuration_id: UUID,
     ) -> AIConfigurationResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        record = self._record(configuration_id)
+        record = self._record(configuration_id, organization_id, workspace_id)
         self._ensure_draft(record)
         self._ensure_valid(record)
         record.status = "published"
@@ -107,10 +109,12 @@ class AIConfigurationService:
         environment: str,
     ) -> AIConfigurationPromotionResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        record = self._record(configuration_id)
+        record = self._record(configuration_id, organization_id, workspace_id)
         if record.status != "published":
             raise _conflict("ai_configuration_not_published")
         promotion = AIConfigurationPromotionRecord(
+            organization_id=organization_id,
+            workspace_id=workspace_id,
             configuration_id=record.id,
             operation=record.operation,
             environment=environment,
@@ -124,12 +128,20 @@ class AIConfigurationService:
         return response
 
     def resolve(
-        self, *, operation: str, environment: str, configuration_id: UUID | None = None
+        self,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        operation: str,
+        environment: str,
+        configuration_id: UUID | None = None,
     ) -> AIConfigurationResponse | None:
         if configuration_id is not None:
             record = self._session.scalar(
                 select(AIConfigurationVersionRecord)
                 .where(AIConfigurationVersionRecord.id == configuration_id)
+                .where(AIConfigurationVersionRecord.organization_id == organization_id)
+                .where(AIConfigurationVersionRecord.workspace_id == workspace_id)
                 .where(AIConfigurationVersionRecord.operation == operation)
             )
             return _response(record) if record is not None else None
@@ -141,6 +153,8 @@ class AIConfigurationService:
             )
             .where(AIConfigurationPromotionRecord.operation == operation)
             .where(AIConfigurationPromotionRecord.environment == environment)
+            .where(AIConfigurationPromotionRecord.organization_id == organization_id)
+            .where(AIConfigurationPromotionRecord.workspace_id == workspace_id)
             .where(AIConfigurationVersionRecord.status == "published")
             .order_by(
                 AIConfigurationPromotionRecord.promoted_at.desc(),
@@ -158,13 +172,16 @@ class AIConfigurationService:
         configuration_id: UUID,
     ) -> AIConfigurationResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        return _response(self._record(configuration_id))
+        return _response(self._record(configuration_id, organization_id, workspace_id))
 
     def list(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
     ) -> list[AIConfigurationResponse]:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        statement = select(AIConfigurationVersionRecord).order_by(
+        statement = select(AIConfigurationVersionRecord).where(
+            AIConfigurationVersionRecord.organization_id == organization_id,
+            AIConfigurationVersionRecord.workspace_id == workspace_id,
+        ).order_by(
             AIConfigurationVersionRecord.operation,
             AIConfigurationVersionRecord.version,
         )
@@ -180,7 +197,7 @@ class AIConfigurationService:
         prompt_template: str,
     ) -> AIConfigurationResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        record = self._record(configuration_id)
+        record = self._record(configuration_id, organization_id, workspace_id)
         self._ensure_draft(record)
         record.prompt_template = prompt_template
         record.prompt_checksum = _checksum(prompt_template)
@@ -199,8 +216,15 @@ class AIConfigurationService:
         ):
             hide_resource()
 
-    def _record(self, configuration_id: UUID) -> AIConfigurationVersionRecord:
-        record = self._session.get(AIConfigurationVersionRecord, configuration_id)
+    def _record(
+        self, configuration_id: UUID, organization_id: UUID, workspace_id: UUID
+    ) -> AIConfigurationVersionRecord:
+        record = self._session.scalar(
+            select(AIConfigurationVersionRecord)
+            .where(AIConfigurationVersionRecord.id == configuration_id)
+            .where(AIConfigurationVersionRecord.organization_id == organization_id)
+            .where(AIConfigurationVersionRecord.workspace_id == workspace_id)
+        )
         if record is None:
             hide_resource()
         return record
@@ -242,6 +266,8 @@ class AIConfigurationService:
             metadata["environment"] = environment
         self._session.add(
             AIConfigurationAuditEventRecord(
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
                 configuration_id=record.id,
                 actor_id=actor_id,
                 action=action,
@@ -290,9 +316,7 @@ def _checksum(value: str) -> str:
 
 
 def _is_duplicate_configuration(error: IntegrityError) -> bool:
-    return "ai_configuration_versions.operation, ai_configuration_versions.version" in str(
-        error.orig
-    )
+    return "ai_configuration_versions" in str(error.orig) and "operation" in str(error.orig)
 
 
 def _conflict(code: str) -> HTTPException:

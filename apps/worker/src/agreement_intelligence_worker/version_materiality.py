@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Literal
 
+from agreement_intelligence_worker.ai_configuration import ResolvedAIConfiguration
+
 ChangeType = Literal["added", "removed", "modified", "moved", "split", "merged"]
 Severity = Literal["low", "medium", "high", "critical"]
 DiffKind = Literal["equal", "insert", "delete", "replace"]
@@ -82,12 +84,15 @@ class MaterialityResult:
     provider_provenance: dict[str, object] | None
 
 
-def assess_materiality(candidate: MaterialityCandidate) -> MaterialityResult:
+def assess_materiality(
+    candidate: MaterialityCandidate,
+    *,
+    configuration: ResolvedAIConfiguration | None = None,
+) -> MaterialityResult:
     """Return a deterministic assessment with all textual and citation evidence retained.
 
-    Provider enrichment is intentionally added by the queue-backed comparison service after
-    persistence contracts are available.  That adapter may only raise severity and append a
-    cited rationale; this deterministic output remains the legal baseline.
+    The queue-backed comparison service passes the immutable configuration selected for this
+    tenant and environment. The deterministic output remains the legal baseline.
     """
 
     concepts = _concepts(candidate.baseline_text, candidate.target_text)
@@ -107,7 +112,15 @@ def assess_materiality(candidate: MaterialityCandidate) -> MaterialityResult:
         target_citation_ids=candidate.target_citation_ids,
         word_diff=word_diff(candidate.baseline_text, candidate.target_text),
         model_rationale=None,
-        provider_provenance=None,
+        provider_provenance=(
+            {
+                "configuration_version": configuration.version,
+                "schema_checksum": configuration.schema_checksum,
+                "model_route": configuration.model_route,
+            }
+            if configuration is not None
+            else None
+        ),
     )
 
 

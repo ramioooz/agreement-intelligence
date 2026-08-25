@@ -48,6 +48,16 @@ class EmbeddingGateway(Protocol):
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse: ...
 
 
+def _endpoint_mode(gateway: EmbeddingGateway) -> str:
+    """Use the gateway's declared provider; lightweight test gateways default to OpenAI."""
+
+    configuration = getattr(gateway, "configuration", None)
+    mode = getattr(configuration, "mode", "openai")
+    if mode not in {"openai", "openai-compatible"}:
+        raise ValueError("unsupported embedding gateway endpoint mode")
+    return str(mode)
+
+
 embedding_metadata = worker_index_metadata
 retrieval_chunk_embeddings = Table(
     "retrieval_chunk_embeddings",
@@ -189,11 +199,17 @@ class SQLAlchemyEmbeddingIndexSink:
                 configuration = resolve_configuration(
                     AIOperation.EMBEDDING,
                     os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+                    organization_id=job.organization_id,
+                    workspace_id=job.workspace_id,
                 )
                 response = self._gateway.embed(
                     EmbeddingRequest(
                         inputs=tuple(chunk.content for chunk in batch),
-                        model=model_for_route(configuration, self._configuration.model),
+                        model=model_for_route(
+                            configuration,
+                            self._configuration.model,
+                            endpoint_mode=_endpoint_mode(self._gateway),
+                        ),
                         dimensions=self._configuration.dimensions,
                         resolved_configuration=configuration,
                     )

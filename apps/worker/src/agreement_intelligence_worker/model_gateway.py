@@ -169,6 +169,9 @@ class OpenAIModelGateway:
         effective_configuration = _effective_configuration(
             self.configuration, resolved_configuration
         )
+        request_parameters = _request_parameters(
+            resolved_configuration, effective_configuration.mode
+        )
         try:
             response = self._generate_json(
                 self._client,
@@ -176,6 +179,7 @@ class OpenAIModelGateway:
                 instruction=instruction,
                 payload=payload,
                 schema=schema,
+                request_parameters=request_parameters,
             )
         except GatewayUnavailableError as error:
             return self._fallback_json(
@@ -202,19 +206,29 @@ class OpenAIModelGateway:
 
     def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
         started_at = perf_counter()
+        effective_configuration = _effective_configuration(
+            self.configuration, request.resolved_configuration
+        )
+        request_parameters = _embedding_request_parameters(request.resolved_configuration)
         try:
             vectors, usage = self._embed(
                 self._client,
-                self.configuration,
+                effective_configuration,
                 request,
-                use_requested_model=True,
+                use_requested_model=request.resolved_configuration is None,
+                request_parameters=request_parameters,
             )
         except GatewayUnavailableError as error:
-            return self._fallback_embed(error, started_at=started_at, request=request)
+            return self._fallback_embed(
+                error,
+                started_at=started_at,
+                request=request,
+                request_parameters=request_parameters,
+            )
         result = EmbeddingResponse(
             vectors=vectors,
             provenance=_provenance(
-                self.configuration,
+                effective_configuration,
                 usage,
                 started_at=started_at,
                 fallback_outcome="not_needed",
@@ -231,6 +245,7 @@ class OpenAIModelGateway:
         *,
         started_at: float,
         request: EmbeddingRequest,
+        request_parameters: Mapping[str, object],
     ) -> EmbeddingResponse:
         if self._fallback_client is None or self.configuration.fallback_model is None:
             raise primary_error
@@ -250,6 +265,7 @@ class OpenAIModelGateway:
                 fallback_configuration,
                 request,
                 use_requested_model=False,
+                request_parameters=request_parameters,
             )
         except Exception as fallback_error:
             raise GatewayUnavailableError("primary_and_fallback_unavailable") from fallback_error
@@ -274,6 +290,7 @@ class OpenAIModelGateway:
         request: EmbeddingRequest,
         *,
         use_requested_model: bool,
+        request_parameters: Mapping[str, object],
     ) -> tuple[list[list[float]], object]:
         request_options: dict[str, object] = {
             "model": request.model
@@ -283,6 +300,7 @@ class OpenAIModelGateway:
         }
         if request.dimensions is not None:
             request_options["dimensions"] = request.dimensions
+        request_options.update(request_parameters)
         requested_model = str(request_options["model"])
         call_started_at = perf_counter()
         try:
@@ -391,6 +409,9 @@ class OpenAIModelGateway:
                 instruction=instruction,
                 payload=payload,
                 schema=schema,
+                request_parameters=_request_parameters(
+                    resolved_configuration, fallback_configuration.mode
+                ),
             )
         except Exception as fallback_error:
             raise GatewayUnavailableError("primary_and_fallback_unavailable") from fallback_error
@@ -416,6 +437,7 @@ class OpenAIModelGateway:
         instruction: str,
         payload: Mapping[str, object],
         schema: Mapping[str, object] | None,
+        request_parameters: Mapping[str, object],
     ) -> tuple[str, object]:
         call_started_at = perf_counter()
         try:
@@ -429,6 +451,7 @@ class OpenAIModelGateway:
                         model=configuration.model,
                         input=_messages(instruction, payload),
                         text={"format": _hosted_response_format(schema)},
+                        **request_parameters,
                     )
                     content = cast(str, response.output_text)
                 else:
@@ -436,6 +459,7 @@ class OpenAIModelGateway:
                         model=configuration.model,
                         messages=_chat_messages(instruction, payload),
                         response_format=_compatible_response_format(schema),
+                        **request_parameters,
                     )
                     content = response.choices[0].message.content
                     if not isinstance(content, str):
@@ -765,12 +789,53 @@ def _effective_configuration(
         return configuration
     return replace(
         configuration,
-        model=model_for_route(resolved_configuration, configuration.model),
+        model=model_for_route(
+            resolved_configuration, configuration.model, endpoint_mode=configuration.mode
+        ),
     )
 
 
 def _configuration_environment() -> str:
     return os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local")
+
+
+def _request_parameters(
+    configuration: ResolvedAIConfiguration | None, endpoint_mode: str
+) -> dict[str, object]:
+    if configuration is None or not configuration.parameters:
+        return {}
+    allowed = {"temperature", "max_output_tokens"}
+    if endpoint_mode == "openai-compatible":
+        allowed = {"temperature", "max_tokens"}
+    if set(configuration.parameters) - allowed:
+        raise GatewayConfigurationError("AI configuration contains unsupported provider parameters")
+    parameters = dict(configuration.parameters)
+    if "temperature" in parameters and (
+        isinstance(parameters["temperature"], bool)
+        or not isinstance(parameters["temperature"], int | float)
+    ):
+        raise GatewayConfigurationError("AI configuration temperature must be numeric")
+    for name in {"max_output_tokens", "max_tokens"} & set(parameters):
+        value = parameters[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise GatewayConfigurationError(f"AI configuration {name} must be a positive integer")
+    return parameters
+
+
+def _embedding_request_parameters(
+    configuration: ResolvedAIConfiguration | None,
+) -> dict[str, object]:
+    if configuration is None or not configuration.parameters:
+        return {}
+    allowed = {"encoding_format"}
+    if set(configuration.parameters) - allowed:
+        raise GatewayConfigurationError(
+            "AI embedding configuration contains unsupported parameters"
+        )
+    encoding_format = configuration.parameters.get("encoding_format")
+    if encoding_format is not None and encoding_format not in {"float", "base64"}:
+        raise GatewayConfigurationError("AI embedding encoding_format must be float or base64")
+    return dict(configuration.parameters)
 
 
 def _usage_integer(usage: object, *names: str) -> int | None:

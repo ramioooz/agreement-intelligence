@@ -64,7 +64,11 @@ def resolve_configuration(
 ) -> AIConfigurationResponse | None:
     service._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
     return service.resolve(
-        operation=operation, environment=environment, configuration_id=configuration_id
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        operation=operation,
+        environment=environment,
+        configuration_id=configuration_id,
     )
 
 

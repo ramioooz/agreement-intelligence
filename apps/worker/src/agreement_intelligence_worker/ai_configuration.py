@@ -5,6 +5,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import lru_cache
+from uuid import UUID
 
 from sqlalchemy import create_engine, text
 
@@ -28,7 +29,9 @@ class ResolvedAIConfiguration:
 
 
 ConfigurationSnapshot = ResolvedAIConfiguration
-ConfigurationLoader = Callable[[AIOperation, str], ConfigurationSnapshot | None]
+ConfigurationLoader = Callable[
+    [AIOperation, str, UUID | None, UUID | None], ConfigurationSnapshot | None
+]
 
 
 class ConfigurationResolver:
@@ -36,9 +39,17 @@ class ConfigurationResolver:
         self._loader = loader
 
     def resolve_configuration(
-        self, operation: AIOperation, environment: str
+        self,
+        operation: AIOperation,
+        environment: str,
+        *,
+        organization_id: UUID | None = None,
+        workspace_id: UUID | None = None,
     ) -> ResolvedAIConfiguration:
-        return self._loader(operation, environment) or _BUILT_IN_CONFIGURATIONS[operation]
+        return (
+            self._loader(operation, environment, organization_id, workspace_id)
+            or _BUILT_IN_CONFIGURATIONS[operation]
+        )
 
 
 class DatabaseConfigurationResolver(ConfigurationResolver):
@@ -47,7 +58,15 @@ class DatabaseConfigurationResolver(ConfigurationResolver):
         self._engine = create_engine(normalized_url)
         super().__init__(self._load)
 
-    def _load(self, operation: AIOperation, environment: str) -> ConfigurationSnapshot | None:
+    def _load(
+        self,
+        operation: AIOperation,
+        environment: str,
+        organization_id: UUID | None,
+        workspace_id: UUID | None,
+    ) -> ConfigurationSnapshot | None:
+        if organization_id is None or workspace_id is None:
+            return None
         statement = text(
             """
             SELECT version.operation, version.version, version.prompt_template, version.schema_json,
@@ -56,15 +75,30 @@ class DatabaseConfigurationResolver(ConfigurationResolver):
             JOIN ai_configuration_versions AS version ON version.id = promotion.configuration_id
             WHERE promotion.operation = :operation
               AND promotion.environment = :environment
+              AND promotion.organization_id = :organization_id
+              AND promotion.workspace_id = :workspace_id
+              AND version.organization_id = :organization_id
+              AND version.workspace_id = :workspace_id
               AND version.status = 'published'
             ORDER BY promotion.promoted_at DESC, promotion.id DESC
             LIMIT 1
             """
         )
         with self._engine.connect() as connection:
+            if connection.dialect.name == "postgresql":
+                connection.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(organization_id)},
+                )
             row = (
                 connection.execute(
-                    statement, {"operation": operation.value, "environment": environment}
+                    statement,
+                    {
+                        "operation": operation.value,
+                        "environment": environment,
+                        "organization_id": str(organization_id),
+                        "workspace_id": str(workspace_id),
+                    },
                 )
                 .mappings()
                 .first()
@@ -82,17 +116,35 @@ class DatabaseConfigurationResolver(ConfigurationResolver):
         )
 
 
-def resolve_configuration(operation: AIOperation, environment: str) -> ResolvedAIConfiguration:
-    return configuration_resolver_from_environment().resolve_configuration(operation, environment)
+def resolve_configuration(
+    operation: AIOperation,
+    environment: str,
+    *,
+    organization_id: UUID | None = None,
+    workspace_id: UUID | None = None,
+) -> ResolvedAIConfiguration:
+    return configuration_resolver_from_environment().resolve_configuration(
+        operation,
+        environment,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
 
 
-def model_for_route(configuration: ResolvedAIConfiguration, fallback_model: str) -> str:
-    """Return the configured model only for an explicit provider-neutral route."""
+def model_for_route(
+    configuration: ResolvedAIConfiguration, fallback_model: str, *, endpoint_mode: str
+) -> str:
+    """Return only a route compatible with the configured provider endpoint."""
 
     provider, separator, model = configuration.model_route.partition(":")
-    if separator and provider in {"openai", "openai-compatible"} and model:
+    if (
+        configuration.model_route == "environment-default"
+        and configuration.version.startswith("builtin.")
+    ):
+        return fallback_model
+    if separator and provider == endpoint_mode and model:
         return model
-    return fallback_model
+    raise ValueError("unsupported AI configuration route")
 
 
 @lru_cache
@@ -100,7 +152,9 @@ def configuration_resolver_from_environment() -> ConfigurationResolver:
     database_url = os.environ.get("DATABASE_URL")
     if database_url:
         return DatabaseConfigurationResolver(database_url)
-    return ConfigurationResolver(lambda _operation, _environment: None)
+    return ConfigurationResolver(
+        lambda _operation, _environment, _organization_id, _workspace_id: None
+    )
 
 
 _BUILT_IN_CONFIGURATIONS: dict[AIOperation, ResolvedAIConfiguration] = {
