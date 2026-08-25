@@ -4,6 +4,58 @@
     "fixtures/master-services-agreement.txt",
     "fixtures/executive-side-letter.txt"
   ],
+  "runtime_sources": [
+    {
+      "agreement_id": "11111111-1111-1111-1111-111111111111",
+      "agreement_title": "Master Services Agreement",
+      "anchor_id": "msa-termination",
+      "source_checksum": "msa-v1",
+      "source_version": "v1",
+      "fixture": "fixtures/master-services-agreement.txt",
+      "tenant_id": "tenant-a",
+      "workspace_id": "legal"
+    },
+    {
+      "agreement_id": "11111111-1111-1111-1111-111111111111",
+      "agreement_title": "Master Services Agreement",
+      "anchor_id": "msa-liability",
+      "source_checksum": "msa-v1",
+      "source_version": "v1",
+      "fixture": "fixtures/master-services-agreement.txt",
+      "tenant_id": "tenant-a",
+      "workspace_id": "legal"
+    },
+    {
+      "agreement_id": "11111111-1111-1111-1111-111111111111",
+      "agreement_title": "Master Services Agreement",
+      "anchor_id": "msa-security",
+      "source_checksum": "msa-v1",
+      "source_version": "v1",
+      "fixture": "fixtures/master-services-agreement.txt",
+      "tenant_id": "tenant-a",
+      "workspace_id": "legal"
+    },
+    {
+      "agreement_id": "22222222-2222-2222-2222-222222222222",
+      "agreement_title": "Executive Side Letter",
+      "anchor_id": "side-letter-liability",
+      "source_checksum": "side-letter-v1",
+      "source_version": "v1",
+      "fixture": "fixtures/executive-side-letter.txt",
+      "tenant_id": "tenant-a",
+      "workspace_id": "legal"
+    },
+    {
+      "agreement_id": "33333333-3333-3333-3333-333333333333",
+      "agreement_title": "Board Pricing Schedule",
+      "anchor_id": "board-pricing",
+      "source_checksum": "board-v1",
+      "source_version": "v1",
+      "fixture": "fixtures/executive-side-letter.txt",
+      "tenant_id": "tenant-a",
+      "workspace_id": "board"
+    }
+  ],
   "accepted_baseline": {
     "retrieval_recall_at_5": {"minimum": 0.8, "accepted_baseline": 0.8, "maximum_regression": 0.05},
     "citation_precision": {"minimum": 1.0},

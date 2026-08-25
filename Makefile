@@ -10,7 +10,8 @@ COMPOSE := docker compose --project-name $(STACK_PROJECT_NAME) --env-file $(STAC
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
 	backup-local restore-local format format-check lint typecheck test build check \
-	provider-smoke retrieval-eval version-comparison-eval performance-local resilience-local
+	provider-smoke retrieval-eval version-comparison-eval performance-local resilience-local \
+	ai-eval ai-eval-assisted
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -36,6 +37,8 @@ help:
 	@echo "  make version-comparison-eval Evaluate agreement-version comparison results"
 	@echo "  make performance-local Run opt-in synthetic local performance checks"
 	@echo "  make resilience-local Run opt-in isolated local recovery checks"
+	@echo "  make ai-eval         Run the deterministic unified AI release gate"
+	@echo "  make ai-eval-assisted Run opt-in Promptfoo and Ragas provider evaluations"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -181,3 +184,23 @@ resilience-local:
 	@tests/resilience/test-worker-restart.sh
 	@tests/resilience/test-queue-backlog.sh
 	@tests/resilience/test-database-interruption.sh
+
+ai-eval:
+	uv run --package agreement-intelligence-worker python -m agreement_intelligence_worker.unified_evaluation \
+		--json-report artifacts/evaluation/unified-report.json \
+		--markdown-report artifacts/evaluation/unified-report.md
+
+ai-eval-assisted:
+	@[ -n "$(OPENAI_API_KEY)" ] || { \
+		echo "OPENAI_API_KEY is required for assisted AI evaluation."; exit 1; \
+	}
+	@[ -n "$(RAGAS_RESULTS)" ] || { \
+		echo "RAGAS_RESULTS must name an explicit Ragas input JSON file."; exit 1; \
+	}
+	mkdir -p artifacts/evaluation/promptfoo
+	PROMPTFOO_CONFIG_DIR=artifacts/evaluation/promptfoo \
+		PROMPTFOO_DISABLE_TELEMETRY=1 \
+		pnpm exec promptfoo eval --config evals/promptfoo.yaml --no-cache --no-share \
+		--output artifacts/evaluation/promptfoo-report.json
+	uv run python -m evals.ragas --results "$(RAGAS_RESULTS)" \
+		--output artifacts/evaluation/ragas-report.json
