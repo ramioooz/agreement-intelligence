@@ -155,6 +155,34 @@ class ProcessingJobService:
         self._dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
         return response, True
 
+    def existing_submission(
+        self,
+        principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        agreement_id: UUID,
+        version_id: UUID | None = None,
+        idempotency_key: str,
+        request: SubmitProcessingJobRequest,
+    ) -> ProcessingJobResponse | None:
+        """Resolve an idempotent replay before consuming rate or usage capacity."""
+
+        self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
+        self._agreement_in_scope(
+            agreement_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        existing = self._repository.by_idempotency_key(agreement_id, idempotency_key)
+        if existing is None:
+            return None
+        if existing.profile != request.profile or (
+            version_id is not None and existing.version_id != version_id
+        ):
+            raise IdempotencyKeyConflictError
+        return self._repository.response(existing)
+
     def get(
         self,
         principal: Principal,

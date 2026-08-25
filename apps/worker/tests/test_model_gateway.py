@@ -186,6 +186,25 @@ def test_unavailable_compatible_endpoint_uses_configured_hosted_fallback() -> No
     assert response.provenance.cost_usd is None
 
 
+def test_gateway_records_configured_token_cost() -> None:
+    gateway = OpenAIModelGateway(
+        ModelGatewayConfiguration(
+            mode="openai",
+            model="gpt-5.4-mini",
+            endpoint_kind="hosted",
+            base_url=None,
+            api_key="test-key",
+            input_cost_per_million_tokens=2.0,
+            output_cost_per_million_tokens=8.0,
+        ),
+        client=_HostedClient(_Response(json.dumps({"value": "ok"}))),
+    )
+
+    response = gateway.generate_json(instruction="Return JSON.", payload={"input": "x"})
+
+    assert response.provenance.cost_usd == 0.000078
+
+
 def test_embedding_falls_back_to_hosted_provider_when_compatible_endpoint_is_unavailable() -> None:
     configuration = ModelGatewayConfiguration(
         mode="openai-compatible",

@@ -33,6 +33,7 @@ from agreement_intelligence_worker.model_gateway import (
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 
 def _chunk(*, chunk_id: str, agreement_id: UUID | None = None) -> RankedChunk:
@@ -78,7 +79,11 @@ def test_rrf_is_lexical_only_when_semantic_provider_is_unavailable() -> None:
 
 
 def test_search_filters_results_and_never_returns_cross_tenant_evidence() -> None:
-    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     session: Session = sessionmaker(bind=engine)()
     identity = IdentityService(session)
@@ -138,15 +143,19 @@ def test_search_filters_results_and_never_returns_cross_tenant_evidence() -> Non
         )
     )
     session.commit()
+    organization_id = organization.id
+    workspace_id = workspace.id
+    user_id = user.id
+    outsider_id = outsider.id
     app.dependency_overrides[get_session] = lambda: session
     try:
-        app.dependency_overrides[current_principal] = lambda: Principal(user_id=user.id)
+        app.dependency_overrides[current_principal] = lambda: Principal(user_id=user_id)
         client = TestClient(app)
         response = client.get(
             "/search",
             params={
-                "organization_id": str(organization.id),
-                "workspace_id": str(workspace.id),
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
                 "query": "termination",
                 "agreement_type": "client_agreement",
                 "party": "acme",
@@ -157,12 +166,12 @@ def test_search_filters_results_and_never_returns_cross_tenant_evidence() -> Non
         assert response.json()["items"][0]["citation"]["anchor_ids"] == ["source:page:2:block:1"]
         assert response.json()["items"][0]["semantic_rank"] is None
 
-        app.dependency_overrides[current_principal] = lambda: Principal(user_id=outsider.id)
+        app.dependency_overrides[current_principal] = lambda: Principal(user_id=outsider_id)
         denied = client.get(
             "/search",
             params={
-                "organization_id": str(organization.id),
-                "workspace_id": str(workspace.id),
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
                 "query": "termination",
             },
         )

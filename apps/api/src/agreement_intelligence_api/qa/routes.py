@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated
 from uuid import UUID
 
@@ -11,6 +12,7 @@ from agreement_intelligence_worker.evidence_validation import (
     extract_supporting_quote,
 )
 from agreement_intelligence_worker.model_gateway import (
+    GatewayProvenance,
     GroundedAnswerRequest,
     ModelGateway,
     embedding_configuration_from_environment,
@@ -23,6 +25,7 @@ from sqlalchemy.orm import Session
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
 from agreement_intelligence_api.identity.service import IdentityService
+from agreement_intelligence_api.limits import LimitScope, RateLimitPolicy, enforce_rate_limit
 from agreement_intelligence_api.qa.repository import SQLAlchemyQuestionRepository
 from agreement_intelligence_api.qa.schemas import (
     AnswerResponse,
@@ -44,13 +47,18 @@ from agreement_intelligence_api.search.service import (
     HybridSearchService,
     SQLAlchemySemanticCandidateProvider,
 )
+from agreement_intelligence_api.usage import UsageAmount, UsageLedgerService
 
 router = APIRouter(prefix="/questions", tags=["questions"])
 SessionDependency = Annotated[Session, Depends(get_session)]
 PrincipalDependency = Annotated[Principal, Depends(current_principal)]
 
 
-def get_service(session: SessionDependency) -> GroundedQuestionService:
+def _service(
+    session: Session,
+    *,
+    usage_recorder: Callable[[GatewayProvenance], None] | None = None,
+) -> GroundedQuestionService:
     search_repository = SQLAlchemySearchRepository(session)
     search = HybridSearchService(
         search_repository,
@@ -64,9 +72,13 @@ def get_service(session: SessionDependency) -> GroundedQuestionService:
     return GroundedQuestionService(
         search=search,
         identity=IdentityService(session),
-        answerer=_gateway_answerer(model_gateway_from_environment()),
+        answerer=_gateway_answerer(model_gateway_from_environment(), usage_recorder=usage_recorder),
         repository=SQLAlchemyQuestionRepository(session),
     )
+
+
+def get_service(session: SessionDependency) -> GroundedQuestionService:
+    return _service(session)
 
 
 QuestionServiceDependency = Annotated[GroundedQuestionService, Depends(get_service)]
@@ -115,21 +127,75 @@ def create_turn(
     thread_id: UUID,
     payload: QuestionRequest,
     principal: PrincipalDependency,
-    service: QuestionServiceDependency,
+    session: SessionDependency,
     organization_id: Annotated[UUID, Query()],
     workspace_id: Annotated[UUID, Query()],
 ) -> QuestionTurnResponse:
+    thread = QuestionThread(
+        id=thread_id, organization_id=organization_id, workspace_id=workspace_id
+    )
+    if _service(session).read_thread(principal, thread=thread) is None:
+        from agreement_intelligence_api.identity.authz import hide_resource
+
+        hide_resource()
+    scope = LimitScope(organization_id, workspace_id, principal.user_id)
+    enforce_rate_limit(
+        scope=scope,
+        operation="qa.turn",
+        policy=RateLimitPolicy(limit=10, window_seconds=60, expensive=True),
+    )
+    estimated = UsageAmount(tokens=6_000, cost_usd=0.05)
+    usage = UsageLedgerService(session)
+    reservation = usage.reserve_usage(
+        scope=scope,
+        operation="model.generate.answer",
+        provider="openai",
+        configuration_version="model-gateway.v1",
+        estimated=estimated,
+    )
+    if not reservation.allowed:
+        from fastapi import HTTPException, status
+
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={"code": reservation.reason},
+        )
+
+    usage_settled = False
+
+    def settle(provenance: GatewayProvenance) -> None:
+        nonlocal usage_settled
+        if reservation.reservation_id is None:
+            return
+        usage.settle_usage(
+            reservation.reservation_id,
+            actual=UsageAmount(
+                tokens=provenance.total_tokens or estimated.tokens,
+                cost_usd=provenance.cost_usd
+                if provenance.cost_usd is not None
+                else estimated.cost_usd,
+            ),
+            settlement_key=f"qa:{reservation.reservation_id}",
+        )
+        usage_settled = True
+
+    service = _service(session, usage_recorder=settle)
     turn = service.ask(
         principal,
-        thread=QuestionThread(
-            id=thread_id, organization_id=organization_id, workspace_id=workspace_id
-        ),
+        thread=thread,
         question=payload.question,
     )
+    if reservation.reservation_id is not None and not usage_settled:
+        usage.cancel_usage(reservation.reservation_id)
+        session.commit()
     return _turn_response(turn)
 
 
-def _gateway_answerer(gateway: ModelGateway | None) -> Answerer:
+def _gateway_answerer(
+    gateway: ModelGateway | None,
+    *,
+    usage_recorder: Callable[[GatewayProvenance], None] | None = None,
+) -> Answerer:
     def answer(request: object) -> AnswerCandidate:
         from agreement_intelligence_worker.evidence_validation import GroundedQuestionRequest
 
@@ -145,6 +211,8 @@ def _gateway_answerer(gateway: ModelGateway | None) -> Answerer:
                 workspace_id=request.workspace_id,
             )
         )
+        if usage_recorder is not None:
+            usage_recorder(result.provenance)
         citations = tuple(
             Citation(
                 anchor_id=anchor_id,
