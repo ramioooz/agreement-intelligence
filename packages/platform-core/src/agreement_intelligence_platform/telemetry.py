@@ -16,7 +16,7 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, Status, StatusCode
 
 from agreement_intelligence_platform.observability import record_metric
 from agreement_intelligence_platform.privacy import safe_event_metadata
@@ -92,7 +92,9 @@ def operation_span(
     ) as span:
         try:
             yield span
-        except Exception:
+        except Exception as error:
+            span.set_attribute("outcome", "failure")
+            span.set_status(Status(StatusCode.ERROR, type(error).__name__))
             record_metric(
                 "agreement_intelligence.operation.error_count",
                 1,
@@ -101,6 +103,7 @@ def operation_span(
             )
             raise
         else:
+            span.set_attribute("outcome", "success")
             record_metric(
                 "agreement_intelligence.operation.count",
                 1,

@@ -128,10 +128,18 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
                 "agreement-intelligence.api",
                 "http.request",
                 safe_span_attributes(
-                    {"operation": "http.request", "outcome": "success", "method": request.method}
+                    {
+                        "operation": "http.request",
+                        "outcome": "success",
+                        "method": request.method,
+                        "correlation_id": correlation_id,
+                    }
                 ),
-            ):
+            ) as span:
                 response = await call_next(request)
+                outcome = "success" if response.status_code < 400 else "failure"
+                span.set_attribute("outcome", outcome)
+                span.set_attribute("status_code", response.status_code)
                 span_context = trace.get_current_span().get_span_context()
                 if span_context.is_valid:
                     response.headers["X-Trace-ID"] = f"{span_context.trace_id:032x}"

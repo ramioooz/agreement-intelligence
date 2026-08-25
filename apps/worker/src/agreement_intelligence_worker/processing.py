@@ -325,6 +325,12 @@ class JobProcessor:
             self._fail(job, category="transient_exhausted", message=safe_message)
             return
         delay_seconds = self._retry_policy.delay_seconds(job.attempt_count)
+        record_metric(
+            "agreement_intelligence.retry.count",
+            1,
+            operation="worker.processing",
+            outcome="retry",
+        )
         self._requeue(
             job,
             message=safe_message,
@@ -430,6 +436,7 @@ class SQSProcessingMessageReceiver:
             MaxNumberOfMessages=1,
             WaitTimeSeconds=self._wait_time_seconds,
             MessageAttributeNames=["traceparent", "tracestate"],
+            AttributeNames=["SentTimestamp"],
         )
         messages = result.get("Messages", [])
         if not messages:

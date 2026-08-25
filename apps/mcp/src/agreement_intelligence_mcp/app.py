@@ -168,9 +168,9 @@ def _call(
 ) -> dict[str, object]:
     headers = ctx.headers or {}
     context_token = attach(extract_trace_context(headers))
-    principal = _principal_from_headers(headers)
-    session = session_factory()
     try:
+        principal = _principal_from_headers(headers)
+        session = session_factory()
         with operation_span(
             "agreement-intelligence.mcp",
             "mcp.tool",
@@ -184,7 +184,8 @@ def _call(
                 ToolCallContext.from_headers(tool_name, _safe_context_headers(headers)),
             )
     finally:
-        session.close()
+        if "session" in locals():
+            session.close()
         detach(context_token)
 
 

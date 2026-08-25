@@ -20,6 +20,7 @@ _OPERATIONS: Final = frozenset(
         "model.generate",
         "queue.publish",
         "queue.receive",
+        "qa.answer",
         "retrieval.search",
         "worker.processing",
         "workflow.transition",
@@ -30,6 +31,7 @@ _SPAN_KEYS: Final = frozenset(
     {
         "attempt_count",
         "cost_usd",
+        "correlation_id",
         "evaluation_outcome",
         "input_tokens",
         "latency_ms",

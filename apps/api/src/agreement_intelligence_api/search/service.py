@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
@@ -201,7 +201,7 @@ class HybridSearchService:
             "agreement-intelligence.api",
             "retrieval.search",
             safe_span_attributes({"operation": "retrieval.search", "outcome": "success"}),
-        ):
+        ) as span:
             lexical = self._repository.lexical_candidates(
                 organization_id=organization_id,
                 workspace_id=workspace_id,
@@ -217,8 +217,17 @@ class HybridSearchService:
                 )
             except Exception:
                 semantic = []
-
-        items = [_to_result(item) for item in fuse_reciprocal_rank(lexical, semantic, result_limit)]
+            items = [
+                _to_result(item) for item in fuse_reciprocal_rank(lexical, semantic, result_limit)
+            ]
+            span.set_attributes(
+                cast(
+                    Any,
+                    safe_span_attributes(
+                        {"retrieval_result_count": len(items), "outcome": "success"}
+                    ),
+                )
+            )
         record_metric(
             "agreement_intelligence.retrieval.result_count",
             len(items),

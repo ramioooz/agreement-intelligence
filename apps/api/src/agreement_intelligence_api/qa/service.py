@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import Literal, Protocol, cast
 from uuid import UUID, uuid4
 
+from agreement_intelligence_platform.observability import safe_span_attributes
 from agreement_intelligence_worker.evidence_validation import (
     Answerer,
     AnswerStatus,
@@ -175,7 +176,10 @@ class GroundedQuestionService:
             filters=SearchFilters(query=question, agreement_ids=persisted.agreement_ids),
         )
         citation_sources = _citation_sources_from_search(results)
-        with operation_span("qa.answer.guardrails"):
+        with operation_span(
+            "qa.answer",
+            safe_span_attributes({"operation": "qa.answer", "outcome": "success"}),
+        ):
             answer = answer_question(
                 question=question,
                 authorized_evidence=_evidence_from_search(results, citation_sources),

@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from time import perf_counter
 from typing import Any, Literal, Protocol, cast
 
-from agreement_intelligence_platform.observability import record_metric
+from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
 from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
+from opentelemetry import trace
 
 type GatewayMode = Literal["openai", "openai-compatible"]
 type EndpointKind = Literal["hosted", "openai-compatible"]
@@ -574,6 +575,22 @@ def _provenance(
 
 
 def _record_gateway_metrics(operation: str, provenance: GatewayProvenance) -> None:
+    trace.get_current_span().set_attributes(
+        cast(
+            Any,
+            safe_span_attributes(
+                {
+                    "operation": operation,
+                    "outcome": "success",
+                    "latency_ms": provenance.latency_ms,
+                    "input_tokens": provenance.input_tokens,
+                    "output_tokens": provenance.output_tokens,
+                    "total_tokens": provenance.total_tokens,
+                    "cost_usd": provenance.cost_usd,
+                }
+            ),
+        )
+    )
     record_metric(
         "agreement_intelligence.operation.duration_ms",
         provenance.latency_ms,
