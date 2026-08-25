@@ -5,18 +5,24 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from threading import Lock
+from time import perf_counter
 from typing import Any, cast
 
-from opentelemetry import trace
+from opentelemetry import metrics, trace
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor, SpanExporter
 from opentelemetry.trace import Span
 
+from agreement_intelligence_platform.observability import record_metric
 from agreement_intelligence_platform.privacy import safe_event_metadata
 
 _provider: TracerProvider | None = None
+_meter_provider: MeterProvider | None = None
 _provider_lock = Lock()
 
 
@@ -32,7 +38,7 @@ def configure_telemetry(
     in-memory exporter without changing production configuration.
     """
 
-    global _provider
+    global _meter_provider, _provider
     endpoint = environment.get("OTEL_EXPORTER_OTLP_ENDPOINT", "").strip()
     if span_exporter is None and not endpoint:
         return None
@@ -50,6 +56,19 @@ def configure_telemetry(
         )
         provider.add_span_processor(processor)
         trace.set_tracer_provider(provider)
+        if _meter_provider is None:
+            metric_reader = (
+                PeriodicExportingMetricReader(
+                    OTLPMetricExporter(endpoint=f"{endpoint.rstrip('/')}/v1/metrics")
+                )
+                if endpoint
+                else None
+            )
+            _meter_provider = MeterProvider(
+                resource=Resource.create({"service.name": service_name}),
+                metric_readers=() if metric_reader is None else (metric_reader,),
+            )
+            metrics.set_meter_provider(_meter_provider)
         _provider = provider
         return provider
 
@@ -60,15 +79,37 @@ def operation_span(
     span_name: str,
     attributes: Mapping[str, object] | None = None,
 ) -> Iterator[Span]:
-    """Use an active recording span or create an explicit operation span."""
+    """Create and export a named child span for every operation boundary."""
 
-    current = trace.get_current_span()
-    if current.is_recording():
-        yield current
-        return
     tracer = trace.get_tracer(tracer_name)
+    safe_attributes = cast(Any, safe_event_metadata(attributes or {}))
+    operation = safe_attributes.get("operation", span_name)
+    bounded_operation = operation if isinstance(operation, str) else "other"
+    started_at = perf_counter()
     with tracer.start_as_current_span(
         span_name,
-        attributes=cast(Any, safe_event_metadata(attributes or {})),
+        attributes=safe_attributes,
     ) as span:
-        yield span
+        try:
+            yield span
+        except Exception:
+            record_metric(
+                "agreement_intelligence.operation.error_count",
+                1,
+                operation=bounded_operation,
+                outcome="failure",
+            )
+            raise
+        else:
+            record_metric(
+                "agreement_intelligence.operation.count",
+                1,
+                operation=bounded_operation,
+                outcome="success",
+            )
+            record_metric(
+                "agreement_intelligence.operation.duration_ms",
+                round((perf_counter() - started_at) * 1_000),
+                operation=bounded_operation,
+                outcome="success",
+            )

@@ -63,9 +63,10 @@ class SQSProcessingQueuePublisher:
         }
         trace_headers: dict[str, str] = {}
         inject_trace_context(trace_headers)
-        if traceparent := trace_headers.get("traceparent"):
+        if trace_headers:
             request["MessageAttributes"] = {
-                "traceparent": {"DataType": "String", "StringValue": traceparent}
+                key: {"DataType": "String", "StringValue": value}
+                for key, value in trace_headers.items()
             }
         if _is_fifo_queue(self._queue_url):
             request["MessageGroupId"] = str(job.agreement_id)

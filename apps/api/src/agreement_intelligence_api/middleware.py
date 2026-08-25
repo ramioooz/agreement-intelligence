@@ -9,6 +9,7 @@ from agreement_intelligence_platform.observability import (
 from agreement_intelligence_platform.telemetry import operation_span
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
+from opentelemetry import trace
 from opentelemetry.context import attach, detach
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -131,6 +132,9 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
                 ),
             ):
                 response = await call_next(request)
+                span_context = trace.get_current_span().get_span_context()
+                if span_context.is_valid:
+                    response.headers["X-Trace-ID"] = f"{span_context.trace_id:032x}"
         finally:
             detach(trace_token)
             reset_correlation_id(token)

@@ -75,7 +75,10 @@ def test_queue_messages_propagate_only_w3c_trace_context() -> None:
     now = datetime.now(UTC)
     context_token = attach(
         extract_trace_context(
-            {"traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+            {
+                "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                "tracestate": "vendor=value",
+            }
         )
     )
     try:
@@ -109,5 +112,6 @@ def test_queue_messages_propagate_only_w3c_trace_context() -> None:
         "traceparent": {
             "DataType": "String",
             "StringValue": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        }
+        },
+        "tracestate": {"DataType": "String", "StringValue": "vendor=value"},
     }
