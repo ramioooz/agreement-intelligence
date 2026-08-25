@@ -10,7 +10,7 @@ from typing import Any, Literal, Protocol, cast
 from agreement_intelligence_platform.observability import record_metric, safe_span_attributes
 from agreement_intelligence_platform.telemetry import operation_span
 from openai import APIConnectionError, APIError, APIStatusError, OpenAI, OpenAIError
-from opentelemetry import trace
+from opentelemetry.trace import Span
 
 type GatewayMode = Literal["openai", "openai-compatible"]
 type EndpointKind = Literal["hosted", "openai-compatible"]
@@ -42,6 +42,8 @@ class ModelGatewayConfiguration:
     configuration_version: str = "model-gateway.v1"
     fallback_model: str | None = None
     fallback_api_key: str | None = None
+    input_cost_per_million_tokens: float | None = None
+    output_cost_per_million_tokens: float | None = None
 
 
 @dataclass(frozen=True)
@@ -220,6 +222,8 @@ class OpenAIModelGateway:
             base_url=None,
             api_key=cast(str, self.configuration.fallback_api_key),
             configuration_version=self.configuration.configuration_version,
+            input_cost_per_million_tokens=self.configuration.input_cost_per_million_tokens,
+            output_cost_per_million_tokens=self.configuration.output_cost_per_million_tokens,
         )
         try:
             vectors, usage = self._embed(
@@ -259,17 +263,31 @@ class OpenAIModelGateway:
         }
         if request.dimensions is not None:
             request_options["dimensions"] = request.dimensions
+        requested_model = str(request_options["model"])
+        call_started_at = perf_counter()
         try:
             with operation_span(
                 "agreement-intelligence.worker",
                 "model.embed",
-                safe_span_attributes({"operation": "model.embed", "outcome": "success"}),
-            ):
+                _model_span_attributes(
+                    configuration,
+                    operation="model.embed",
+                    model=requested_model,
+                ),
+            ) as span:
                 response = client.embeddings.create(**request_options)
+                usage = getattr(response, "usage", None)
+                vectors = [list(cast(Sequence[float], item.embedding)) for item in response.data]
+                _set_model_span_result(
+                    span,
+                    configuration,
+                    usage,
+                    started_at=call_started_at,
+                    model=requested_model,
+                )
+                return vectors, usage
         except Exception as error:
             raise _gateway_error(error) from error
-        vectors = [list(cast(Sequence[float], item.embedding)) for item in response.data]
-        return vectors, getattr(response, "usage", None)
 
     def answer(self, request: GroundedAnswerRequest) -> GroundedAnswerResponse:
         result = self.generate_json(
@@ -336,6 +354,8 @@ class OpenAIModelGateway:
             base_url=None,
             api_key=cast(str, self.configuration.fallback_api_key),
             configuration_version=self.configuration.configuration_version,
+            input_cost_per_million_tokens=self.configuration.input_cost_per_million_tokens,
+            output_cost_per_million_tokens=self.configuration.output_cost_per_million_tokens,
         )
         try:
             response = self._generate_json(
@@ -369,28 +389,38 @@ class OpenAIModelGateway:
         payload: Mapping[str, object],
         schema: Mapping[str, object] | None,
     ) -> tuple[str, object]:
+        call_started_at = perf_counter()
         try:
-            if configuration.mode == "openai":
-                with operation_span(
-                    "agreement-intelligence.worker",
-                    "model.generate",
-                    safe_span_attributes({"operation": "model.generate", "outcome": "success"}),
-                ):
+            with operation_span(
+                "agreement-intelligence.worker",
+                "model.generate",
+                _model_span_attributes(configuration, operation="model.generate"),
+            ) as span:
+                if configuration.mode == "openai":
                     response = client.responses.create(
                         model=configuration.model,
                         input=_messages(instruction, payload),
                         text={"format": _hosted_response_format(schema)},
                     )
-                return cast(str, response.output_text), getattr(response, "usage", None)
-            response = client.chat.completions.create(
-                model=configuration.model,
-                messages=_chat_messages(instruction, payload),
-                response_format=_compatible_response_format(schema),
-            )
-            content = response.choices[0].message.content
-            if not isinstance(content, str):
-                raise GatewayResponseError("Compatible endpoint returned an empty response")
-            return content, getattr(response, "usage", None)
+                    content = cast(str, response.output_text)
+                else:
+                    response = client.chat.completions.create(
+                        model=configuration.model,
+                        messages=_chat_messages(instruction, payload),
+                        response_format=_compatible_response_format(schema),
+                    )
+                    content = response.choices[0].message.content
+                    if not isinstance(content, str):
+                        raise GatewayResponseError("Compatible endpoint returned an empty response")
+                _json_object(content)
+                usage = getattr(response, "usage", None)
+                _set_model_span_result(
+                    span,
+                    configuration,
+                    usage,
+                    started_at=call_started_at,
+                )
+                return content, usage
         except GatewayResponseError:
             raise
         except Exception as error:
@@ -403,6 +433,8 @@ def model_gateway_from_environment(
     model_override: str | None = None,
     configuration_version_override: str | None = None,
     fallback_model_override: str | None = None,
+    input_cost_per_million_tokens_override: float | None = None,
+    output_cost_per_million_tokens_override: float | None = None,
 ) -> OpenAIModelGateway | None:
     mode = cast(GatewayMode, os.environ.get("MODEL_GATEWAY_MODE", "openai"))
     if mode not in {"openai", "openai-compatible"}:
@@ -424,6 +456,8 @@ def model_gateway_from_environment(
             base_url=None,
             api_key=api_key,
             configuration_version=version,
+            input_cost_per_million_tokens=input_cost_per_million_tokens_override,
+            output_cost_per_million_tokens=output_cost_per_million_tokens_override,
         )
         return OpenAIModelGateway(configuration, client=client_factory(api_key=api_key))
 
@@ -452,6 +486,8 @@ def model_gateway_from_environment(
             else None
         ),
         fallback_api_key=fallback_key,
+        input_cost_per_million_tokens=input_cost_per_million_tokens_override,
+        output_cost_per_million_tokens=output_cost_per_million_tokens_override,
     )
     return OpenAIModelGateway(
         configuration,
@@ -489,6 +525,8 @@ def embedding_gateway_from_environment(
         model_override=configuration.model,
         configuration_version_override=configuration.configuration_version,
         fallback_model_override=os.environ.get("EMBEDDING_FALLBACK_MODEL") or configuration.model,
+        input_cost_per_million_tokens_override=configuration.input_cost_per_million_tokens,
+        output_cost_per_million_tokens_override=0.0,
     )
 
 
@@ -578,7 +616,7 @@ def _provenance(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         total_tokens=total_tokens,
-        cost_usd=None,
+        cost_usd=_model_cost_usd(configuration, input_tokens, output_tokens),
         retry_outcome="not_retried",
         fallback_outcome=fallback_outcome,
         safe_failure_reason=safe_failure_reason,
@@ -586,28 +624,6 @@ def _provenance(
 
 
 def _record_gateway_metrics(operation: str, provenance: GatewayProvenance) -> None:
-    trace.get_current_span().set_attributes(
-        cast(
-            Any,
-            safe_span_attributes(
-                {
-                    "operation": operation,
-                    "outcome": "success",
-                    "latency_ms": provenance.latency_ms,
-                    "input_tokens": provenance.input_tokens,
-                    "output_tokens": provenance.output_tokens,
-                    "total_tokens": provenance.total_tokens,
-                    "cost_usd": provenance.cost_usd,
-                }
-            ),
-        )
-    )
-    record_metric(
-        "agreement_intelligence.operation.duration_ms",
-        provenance.latency_ms,
-        operation=operation,
-        outcome="success",
-    )
     if provenance.total_tokens is not None:
         record_metric(
             "agreement_intelligence.model.tokens",
@@ -622,6 +638,76 @@ def _record_gateway_metrics(operation: str, provenance: GatewayProvenance) -> No
             operation=operation,
             outcome="success",
         )
+
+
+def _model_span_attributes(
+    configuration: ModelGatewayConfiguration,
+    *,
+    operation: str,
+    model: str | None = None,
+) -> dict[str, object]:
+    return safe_span_attributes(
+        {
+            "operation": operation,
+            "outcome": "success",
+            "provider": "openai" if configuration.mode == "openai" else "openai-compatible",
+            "endpoint_kind": configuration.endpoint_kind,
+            "model": model or configuration.model,
+            "model_configuration_version": configuration.configuration_version,
+        }
+    )
+
+
+def _set_model_span_result(
+    span: Span,
+    configuration: ModelGatewayConfiguration,
+    usage: object,
+    *,
+    started_at: float,
+    model: str | None = None,
+) -> None:
+    input_tokens = _usage_integer(usage, "input_tokens", "prompt_tokens")
+    output_tokens = _usage_integer(usage, "output_tokens", "completion_tokens")
+    total_tokens = _usage_integer(usage, "total_tokens")
+    result_attributes: dict[str, object | None] = {
+        "provider": "openai" if configuration.mode == "openai" else "openai-compatible",
+        "endpoint_kind": configuration.endpoint_kind,
+        "model": model or configuration.model,
+        "model_configuration_version": configuration.configuration_version,
+        "latency_ms": round((perf_counter() - started_at) * 1_000),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+        "cost_usd": _model_cost_usd(
+            configuration,
+            input_tokens,
+            output_tokens,
+        ),
+    }
+    span.set_attributes(
+        cast(
+            Any,
+            safe_span_attributes(
+                {key: value for key, value in result_attributes.items() if value is not None}
+            ),
+        )
+    )
+
+
+def _model_cost_usd(
+    configuration: ModelGatewayConfiguration,
+    input_tokens: int | None,
+    output_tokens: int | None,
+) -> float | None:
+    if input_tokens is None and output_tokens is None:
+        return None
+    if input_tokens is not None and configuration.input_cost_per_million_tokens is None:
+        return None
+    if output_tokens is not None and configuration.output_cost_per_million_tokens is None:
+        return None
+    input_cost = (input_tokens or 0) * (configuration.input_cost_per_million_tokens or 0.0)
+    output_cost = (output_tokens or 0) * (configuration.output_cost_per_million_tokens or 0.0)
+    return round((input_cost + output_cost) / 1_000_000, 12)
 
 
 def _usage_integer(usage: object, *names: str) -> int | None:

@@ -122,6 +122,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
         request.state.correlation_id = correlation_id
         token = set_correlation_id(correlation_id)
         trace_token = attach(extract_trace_context(request.headers))
+        outcome = "success"
 
         try:
             with operation_span(
@@ -135,6 +136,7 @@ class CorrelationIdMiddleware(BaseHTTPMiddleware):
                         "correlation_id": correlation_id,
                     }
                 ),
+                outcome_getter=lambda: outcome,
             ) as span:
                 response = await call_next(request)
                 outcome = "success" if response.status_code < 400 else "failure"

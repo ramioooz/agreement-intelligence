@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from threading import Lock
 from time import perf_counter
@@ -78,6 +78,8 @@ def operation_span(
     tracer_name: str,
     span_name: str,
     attributes: Mapping[str, object] | None = None,
+    *,
+    outcome_getter: Callable[[], str] | None = None,
 ) -> Iterator[Span]:
     """Create and export a named child span for every operation boundary."""
 
@@ -103,9 +105,15 @@ def operation_span(
             )
             raise
         else:
-            attributes_after_operation = span.attributes or {}
-            outcome = attributes_after_operation.get("outcome", "success")
-            metric_outcome = outcome if isinstance(outcome, str) else "success"
+            initial_outcome = safe_attributes.get("outcome", "success")
+            outcome = outcome_getter() if outcome_getter is not None else initial_outcome
+            metric_outcome = (
+                outcome
+                if isinstance(outcome, str)
+                and outcome in {"success", "failure", "retry", "skipped"}
+                else "failure"
+            )
+            span.set_attribute("outcome", metric_outcome)
             record_metric(
                 "agreement_intelligence.operation.count",
                 1,

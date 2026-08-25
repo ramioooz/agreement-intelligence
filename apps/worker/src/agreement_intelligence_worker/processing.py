@@ -5,6 +5,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
@@ -827,7 +828,28 @@ async def run_processing_loop(
     idle_sleep_seconds: float = 1.0,
 ) -> None:
     while not stop_event.is_set():
-        message = await receiver.receive()
+        receive_state = {"outcome": "success"}
+        with operation_span(
+            "agreement-intelligence.worker",
+            "queue.receive",
+            safe_span_attributes(
+                {"operation": "queue.receive", "outcome": receive_state["outcome"]}
+            ),
+            outcome_getter=partial(_receive_outcome, receive_state),
+        ) as receive_span:
+            message = await receiver.receive()
+            if message is None:
+                receive_state["outcome"] = "skipped"
+            elif message.queue_age_ms is not None:
+                receive_span.set_attributes(
+                    cast(Any, safe_span_attributes({"queue_age_ms": message.queue_age_ms}))
+                )
+                record_metric(
+                    "agreement_intelligence.queue.age_ms",
+                    message.queue_age_ms,
+                    operation="queue.receive",
+                    outcome="success",
+                )
         if message is None:
             await asyncio.sleep(idle_sleep_seconds)
             continue
@@ -846,25 +868,6 @@ async def run_processing_loop(
                     )
             finally:
                 detach(context_token)
-            record_metric(
-                "agreement_intelligence.operation.count",
-                1,
-                operation="worker.processing",
-                outcome="success",
-            )
-            if message.queue_age_ms is not None:
-                record_metric(
-                    "agreement_intelligence.queue.age_ms",
-                    message.queue_age_ms,
-                    operation="queue.receive",
-                    outcome="success",
-                )
-            record_metric(
-                "agreement_intelligence.operation.count",
-                1,
-                operation="queue.receive",
-                outcome="success",
-            )
         except Exception:
             logger.exception(
                 "processing message handling failed",
@@ -883,6 +886,10 @@ def _safe_summary(message: str) -> str:
     if _SENSITIVE_MESSAGE_PATTERN.search(normalized):
         return "Processing dependency failure"
     return (normalized or "Processing failed")[:500]
+
+
+def _receive_outcome(state: Mapping[str, str]) -> str:
+    return state["outcome"]
 
 
 def _queue_age_ms(message: Mapping[str, object]) -> int | None:
