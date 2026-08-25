@@ -18,7 +18,7 @@ dependencies = [
   "redis==6.4.0",
   "sqlalchemy==2.0.46",
   "uharfbuzz==0.56.0",
-  "uvicorn[standard]==0.51.0",
+  "uvicorn[standard]==0.52.4",
   "langgraph>=1.0,<2",
   "langgraph-checkpoint-postgres>=3.0,<4",
 ]
