@@ -102,7 +102,10 @@ if (!config.services?.postgres?.volumes?.some(
 }
 
 const localstack = config.services?.localstack;
-if (localstack?.image !== "localstack/localstack:4.14.0") {
+if (
+  localstack?.image !==
+  "localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a"
+) {
   throw new Error("LocalStack must use the portable community image pin");
 }
 
