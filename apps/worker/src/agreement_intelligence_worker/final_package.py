@@ -113,61 +113,74 @@ class TerminalReviewPackageGenerator:
         workflow_id: UUID,
         correlation_id: str,
     ) -> PackageGenerationResult:
-        workflow = (
+        event = (
             connection.execute(
                 text(
                     """
-                SELECT
-                    workflow.id AS workflow_id,
-                    workflow.organization_id,
-                    workflow.workspace_id,
-                    workflow.review_id,
-                    workflow.policy_version_id,
-                    workflow.state,
-                    workflow.revision,
-                    review.agreement_id,
-                    review.agreement_version_id
-                FROM review_workflows AS workflow
-                JOIN review_cases AS review ON review.id = workflow.review_id
-                WHERE workflow.id = :workflow_id
-                """
-                    + (" FOR UPDATE OF workflow" if connection.dialect.name == "postgresql" else "")
+                    SELECT workflow_id, organization_id, workspace_id, event_type,
+                           correlation_id, package_snapshot
+                    FROM review_workflow_outbox
+                    WHERE id = :event_id
+                    """
                 ),
-                {"workflow_id": _database_uuid(connection, workflow_id)},
+                {"event_id": _database_uuid(connection, event_id)},
             )
             .mappings()
             .one_or_none()
         )
-        if workflow is None or workflow["state"] not in _TERMINAL_STATES:
+        if (
+            event is None
+            or event["event_type"] != "review.workflow.terminal"
+            or str(event["workflow_id"]) != str(workflow_id)
+            or event["correlation_id"] != correlation_id
+        ):
+            raise FinalPackageConflictError("terminal workflow event identity conflict")
+        frozen = event["package_snapshot"]
+        if frozen is None:
+            raise FinalPackageConflictError("terminal package snapshot is missing")
+        snapshot = loads(frozen) if isinstance(frozen, str) else dict(frozen)
+        provenance = snapshot.get("provenance")
+        if not isinstance(provenance, dict) or (
+            provenance.get("workflow_event_id") != str(event_id)
+            or provenance.get("workflow_correlation_id") != correlation_id
+            or snapshot.get("workflow_id") != str(workflow_id)
+            or snapshot.get("organization_id") != str(event["organization_id"])
+            or snapshot.get("workspace_id") != str(event["workspace_id"])
+            or snapshot.get("state") not in _TERMINAL_STATES
+        ):
+            raise FinalPackageConflictError("terminal package snapshot identity conflict")
+        locked = connection.scalar(
+            text(
+                "SELECT id FROM review_workflows WHERE id = :workflow_id"
+                + (" FOR UPDATE" if connection.dialect.name == "postgresql" else "")
+            ),
+            {"workflow_id": _database_uuid(connection, workflow_id)},
+        )
+        if locked is None:
             raise FinalPackageNotTerminalError(str(workflow_id))
 
-        manifest_content = self._manifest(
-            connection,
-            workflow=workflow,
-            event_id=event_id,
-            correlation_id=correlation_id,
-        )
+        manifest_content = dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
         manifest_checksum = sha256(manifest_content).hexdigest()
         pdf_content = _deterministic_pdf(
             [
                 "Agreement Intelligence - Final Review Package",
-                f"Agreement ID: {workflow['agreement_id']}",
-                f"Review ID: {workflow['review_id']}",
-                f"Outcome: {workflow['state']}",
+                f"Agreement ID: {snapshot['agreement_id']}",
+                f"Review ID: {snapshot['review_id']}",
+                f"Outcome: {snapshot['state']}",
                 f"Manifest checksum: sha256:{manifest_checksum}",
             ]
         )
         pdf_checksum = sha256(pdf_content).hexdigest()
         base = (
-            f"reviews/{workflow['organization_id']}/{workflow['workspace_id']}/"
-            f"{workflow['review_id']}/final-package"
+            f"reviews/{snapshot['organization_id']}/{snapshot['workspace_id']}/"
+            f"{snapshot['review_id']}/final-package"
         )
         manifest_key = f"{base}/manifest.json"
         pdf_key = f"{base}/report.pdf"
         existing = (
             connection.execute(
                 text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
-                {"review_id": workflow["review_id"]},
+                {"review_id": snapshot["review_id"]},
             )
             .mappings()
             .one_or_none()
@@ -175,7 +188,7 @@ class TerminalReviewPackageGenerator:
         if existing is not None:
             expected = {
                 "workflow_id": str(workflow_id),
-                "state": workflow["state"],
+                "state": snapshot["state"],
                 "manifest_key": manifest_key,
                 "pdf_key": pdf_key,
                 "manifest_checksum": manifest_checksum,
@@ -212,11 +225,11 @@ class TerminalReviewPackageGenerator:
             ),
             {
                 "id": _database_uuid(connection, package_id),
-                "organization_id": workflow["organization_id"],
-                "workspace_id": workflow["workspace_id"],
-                "review_id": workflow["review_id"],
-                "workflow_id": workflow["workflow_id"],
-                "state": workflow["state"],
+                "organization_id": snapshot["organization_id"],
+                "workspace_id": snapshot["workspace_id"],
+                "review_id": snapshot["review_id"],
+                "workflow_id": snapshot["workflow_id"],
+                "state": snapshot["state"],
                 "manifest_key": manifest_key,
                 "pdf_key": pdf_key,
                 "manifest_checksum": manifest_checksum,
@@ -226,7 +239,7 @@ class TerminalReviewPackageGenerator:
         self._record_audit(
             connection,
             package_id=package_id,
-            workflow=workflow,
+            workflow=snapshot,
             event_id=event_id,
             correlation_id=correlation_id,
             manifest_checksum=manifest_checksum,
@@ -252,30 +265,6 @@ class TerminalReviewPackageGenerator:
             or sha256(stored.content).hexdigest() != checksum
         ):
             raise FinalPackageConflictError(f"immutable object conflict: {key}")
-
-    def _manifest(
-        self,
-        connection: Connection,
-        *,
-        workflow: Any,
-        event_id: UUID,
-        correlation_id: str,
-    ) -> bytes:
-        frozen = connection.scalar(
-            text("SELECT package_snapshot FROM review_workflow_outbox WHERE id = :event_id"),
-            {"event_id": _database_uuid(connection, event_id)},
-        )
-        if frozen is None:
-            raise FinalPackageConflictError("terminal package snapshot is missing")
-        snapshot = loads(frozen) if isinstance(frozen, str) else dict(frozen)
-        snapshot["provenance"] = {
-            "generator": "review-final-package-worker",
-            "source": "postgresql-terminal-snapshot",
-            "workflow_correlation_id": correlation_id,
-            "workflow_event_id": str(event_id),
-            "workflow_revision": workflow["revision"],
-        }
-        return dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
     def _record_audit(

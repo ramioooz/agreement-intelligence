@@ -54,9 +54,26 @@ def upgrade() -> None:
         """
         CREATE FUNCTION prevent_terminal_package_snapshot_mutation() RETURNS trigger AS $$
         BEGIN
-          IF OLD.event_type = 'review.workflow.terminal'
-             AND NEW.package_snapshot::jsonb IS DISTINCT FROM OLD.package_snapshot::jsonb THEN
-            RAISE EXCEPTION 'terminal package snapshots are immutable';
+          IF TG_OP = 'DELETE' THEN
+            IF OLD.event_type = 'review.workflow.terminal' THEN
+              RAISE EXCEPTION 'terminal workflow outbox business fields are immutable';
+            END IF;
+            RETURN OLD;
+          END IF;
+          IF (OLD.event_type = 'review.workflow.terminal'
+              OR NEW.event_type = 'review.workflow.terminal')
+             AND (
+               NEW.id IS DISTINCT FROM OLD.id
+               OR NEW.workflow_id IS DISTINCT FROM OLD.workflow_id
+               OR NEW.organization_id IS DISTINCT FROM OLD.organization_id
+               OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id
+               OR NEW.event_type IS DISTINCT FROM OLD.event_type
+               OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
+               OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
+               OR NEW.package_snapshot::jsonb IS DISTINCT FROM OLD.package_snapshot::jsonb
+               OR NEW.created_at IS DISTINCT FROM OLD.created_at
+             ) THEN
+            RAISE EXCEPTION 'terminal workflow outbox business fields are immutable';
           END IF;
           RETURN NEW;
         END;
@@ -66,7 +83,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER review_workflow_terminal_snapshot_immutable
-        BEFORE UPDATE ON review_workflow_outbox
+        BEFORE UPDATE OR DELETE ON review_workflow_outbox
         FOR EACH ROW EXECUTE FUNCTION prevent_terminal_package_snapshot_mutation();
         """
     )

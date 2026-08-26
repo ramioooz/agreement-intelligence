@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from json import dumps, loads
 from pathlib import Path
-from threading import Lock
+from threading import Barrier, Lock
 from uuid import UUID, uuid4
 
 import boto3
@@ -16,6 +16,7 @@ from agreement_intelligence_worker.final_package import (
     TerminalReviewPackageGenerator,
 )
 from agreement_intelligence_worker.review_workflow import SQLAlchemyWorkflowEventProcessor
+from agreement_intelligence_worker.workflow_outbox_relay import WorkflowOutboxRelay
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
@@ -37,6 +38,18 @@ class _ConcurrentCheckpointStore:
     ) -> None:
         with self._lock:
             self.calls.append(event_id)
+
+
+class _CompetingRelayPublisher:
+    def __init__(self, already_published: UUID) -> None:
+        self._barrier = Barrier(2)
+        self._lock = Lock()
+        self.published = [already_published]
+
+    def publish(self, event: dict[str, object]) -> None:
+        with self._lock:
+            self.published.append(UUID(str(event["id"])))
+        self._barrier.wait(timeout=10)
 
 
 def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_package() -> None:
@@ -118,6 +131,64 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         assert loads(manifest)["provenance"]["workflow_correlation_id"] == seeded["correlation_id"]
         assert audit["actor_id"] == FINAL_PACKAGE_WORKER_ACTOR_ID
         assert audit["correlation_id"] == seeded["correlation_id"]
+
+        second_seeded = _seed_terminal_event(engine)
+        relay_role = f"relay_{uuid4().hex}"
+        relay_password = uuid4().hex
+        with base_engine.begin() as connection:
+            connection.execute(
+                text(f"CREATE ROLE \"{relay_role}\" LOGIN PASSWORD '{relay_password}'")
+            )
+        with engine.begin() as connection:
+            connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema_name}" TO "{relay_role}"'))
+            connection.execute(text(f'GRANT SELECT ON organizations TO "{relay_role}"'))
+            connection.execute(
+                text(f'GRANT SELECT, UPDATE ON review_workflow_outbox TO "{relay_role}"')
+            )
+            for event in (seeded, second_seeded):
+                connection.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(event["organization_id"])},
+                )
+                connection.execute(
+                    text(
+                        "UPDATE review_workflow_outbox SET delivered_at = NULL, "
+                        "lease_owner = :owner, "
+                        "lease_expires_at = CURRENT_TIMESTAMP - INTERVAL '1 second' "
+                        "WHERE id = :event_id"
+                    ),
+                    {
+                        "owner": "crashed-after-publish" if event is seeded else None,
+                        "event_id": event["event_id"],
+                    },
+                )
+        relay_url = make_url(scoped_url).set(username=relay_role, password=relay_password)
+        relay_engine = create_engine(
+            relay_url.render_as_string(hide_password=False).replace(
+                "postgresql://", "postgresql+psycopg://", 1
+            )
+        )
+        publisher = _CompetingRelayPublisher(seeded["event_id"])  # type: ignore[arg-type]
+        relays = (
+            WorkflowOutboxRelay(relay_engine, publisher, owner="relay-a"),
+            WorkflowOutboxRelay(relay_engine, publisher, owner="relay-b"),
+        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            relay_results = [executor.submit(relay.relay_once) for relay in relays]
+            assert [result.result() for result in relay_results] == [True, True]
+        assert publisher.published.count(seeded["event_id"]) == 2
+        assert publisher.published.count(second_seeded["event_id"]) == 1
+        with engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM review_workflow_outbox WHERE delivered_at IS NULL")
+                )
+                == 0
+            )
+        relay_engine.dispose()
+        with base_engine.begin() as connection:
+            connection.execute(text(f'DROP OWNED BY "{relay_role}"'))
+            connection.execute(text(f'DROP ROLE "{relay_role}"'))
     finally:
         try:
             listed = s3.list_objects_v2(Bucket=bucket).get("Contents", [])
@@ -143,7 +214,7 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
     event_id = uuid4()
     actor_id = uuid4()
     checkpoint_id = uuid4()
-    correlation_id = "terminal-integration-correlation"
+    correlation_id = f"terminal-integration-{event_id.hex[:16]}"
     with engine.begin() as connection:
         connection.execute(
             text("INSERT INTO organizations (id, name, slug) VALUES (:id, 'Test', :slug)"),
@@ -229,7 +300,7 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                     idempotency_key, revision
                 ) VALUES (
                     :id, :organization_id, :workspace_id, :agreement_id, 'open', :actor_id,
-                    'terminal-integration-review', 0
+                    :review_key, 0
                 )
                 """
             ),
@@ -239,6 +310,7 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                 "workspace_id": workspace_id,
                 "agreement_id": agreement_id,
                 "actor_id": actor_id,
+                "review_key": f"terminal-integration-review-{review_id}",
             },
         )
         connection.execute(
@@ -271,7 +343,7 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                 ) VALUES (
                     :id, :workflow_id, :organization_id, :workspace_id,
                     'review.workflow.terminal', :correlation_id,
-                    'terminal-integration-event', CAST(:package_snapshot AS JSONB),
+                    :event_key, CAST(:package_snapshot AS JSONB),
                     CURRENT_TIMESTAMP, NULL
                 )
                 """
@@ -282,8 +354,11 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                 "organization_id": organization_id,
                 "workspace_id": workspace_id,
                 "correlation_id": correlation_id,
+                "event_key": f"terminal-integration-event-{event_id}",
                 "package_snapshot": dumps(
                     {
+                        "organization_id": str(organization_id),
+                        "workspace_id": str(workspace_id),
                         "review_id": str(review_id),
                         "agreement_id": str(agreement_id),
                         "agreement_version_id": None,
@@ -297,6 +372,13 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                         "comments": [],
                         "findings": [],
                         "audit_event_ids": [],
+                        "provenance": {
+                            "generator": "review-final-package-worker",
+                            "source": "postgresql-terminal-snapshot",
+                            "workflow_correlation_id": correlation_id,
+                            "workflow_event_id": str(event_id),
+                            "workflow_revision": 1,
+                        },
                     },
                     sort_keys=True,
                 ),

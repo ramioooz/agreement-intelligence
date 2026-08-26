@@ -629,9 +629,10 @@ class ReviewWorkflowCoordinator:
         idempotency_key: str,
     ) -> None:
         self._session.flush()
+        event_id = uuid4()
         self._session.add(
             ReviewWorkflowOutboxRecord(
-                id=uuid4(),
+                id=event_id,
                 workflow_id=workflow.id,
                 organization_id=workflow.organization_id,
                 workspace_id=workflow.workspace_id,
@@ -639,7 +640,11 @@ class ReviewWorkflowCoordinator:
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
                 package_snapshot=(
-                    self._terminal_package_snapshot(workflow)
+                    self._terminal_package_snapshot(
+                        workflow,
+                        event_id=event_id,
+                        correlation_id=correlation_id,
+                    )
                     if event_type == "review.workflow.terminal"
                     else None
                 ),
@@ -648,7 +653,13 @@ class ReviewWorkflowCoordinator:
             )
         )
 
-    def _terminal_package_snapshot(self, workflow: ReviewWorkflowRecord) -> dict[str, object]:
+    def _terminal_package_snapshot(
+        self,
+        workflow: ReviewWorkflowRecord,
+        *,
+        event_id: UUID,
+        correlation_id: str,
+    ) -> dict[str, object]:
         review = self._review(workflow.review_id)
         decisions = self._session.scalars(
             select(ReviewWorkflowDecisionRecord)
@@ -686,6 +697,8 @@ class ReviewWorkflowCoordinator:
             .order_by(PlaybookFindingRecord.id)
         ).all()
         return {
+            "organization_id": str(workflow.organization_id),
+            "workspace_id": str(workflow.workspace_id),
             "review_id": str(review.id),
             "agreement_id": str(review.agreement_id),
             "agreement_version_id": str(review.agreement_version_id)
@@ -742,6 +755,13 @@ class ReviewWorkflowCoordinator:
                 for item in findings
             ],
             "audit_event_ids": [str(item) for item in audit_ids],
+            "provenance": {
+                "generator": "review-final-package-worker",
+                "source": "postgresql-terminal-snapshot",
+                "workflow_correlation_id": correlation_id,
+                "workflow_event_id": str(event_id),
+                "workflow_revision": workflow.revision,
+            },
         }
 
     @staticmethod

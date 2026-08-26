@@ -1,8 +1,13 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from agreement_intelligence_worker.workflow_outbox_relay import WorkflowOutboxRelay
+from agreement_intelligence_worker.workflow_outbox_relay import (
+    WorkflowOutboxRelay,
+    run_workflow_outbox_relay,
+)
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import OperationalError
 
 
 class FlakyPublisher:
@@ -90,3 +95,28 @@ def test_relay_recovers_transient_failure_and_expired_crash_lease() -> None:
     assert all(item["lease_owner"] is None for item in recovered)
     assert publisher.calls == 3
     engine.dispose()
+
+
+def test_relay_loop_survives_a_transient_database_failure() -> None:
+    stop_event = asyncio.Event()
+
+    class FlakyRelay:
+        calls = 0
+
+        def relay_once(self) -> bool:
+            self.calls += 1
+            if self.calls == 1:
+                raise OperationalError("SELECT pending", {}, RuntimeError("database restarting"))
+            stop_event.set()
+            return False
+
+    relay = FlakyRelay()
+    asyncio.run(
+        run_workflow_outbox_relay(
+            stop_event,
+            relay,  # type: ignore[arg-type]
+            idle_seconds=0,
+            database_backoff_base_seconds=0,
+        )
+    )
+    assert relay.calls == 2

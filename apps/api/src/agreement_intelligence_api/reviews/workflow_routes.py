@@ -6,6 +6,7 @@ from uuid import UUID
 from botocore.exceptions import (
     ClientError,
     ConnectionClosedError,
+    ConnectTimeoutError,
     EndpointConnectionError,
     ReadTimeoutError,
 )
@@ -335,7 +336,12 @@ def _verified_package_document(
         } or (isinstance(status_code, int) and status_code >= 500):
             _package_retryable("final_package_unavailable")
         raise
-    except (EndpointConnectionError, ConnectionClosedError, ReadTimeoutError):
+    except (
+        EndpointConnectionError,
+        ConnectTimeoutError,
+        ConnectionClosedError,
+        ReadTimeoutError,
+    ):
         _package_retryable("final_package_unavailable")
     if (
         document is None

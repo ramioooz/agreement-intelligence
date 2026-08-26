@@ -40,7 +40,7 @@ from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowQueueDispatcher,
     _workflow_for_decision_update,
 )
-from botocore.exceptions import ClientError, EndpointConnectionError
+from botocore.exceptions import ClientError, ConnectTimeoutError, EndpointConnectionError
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.dialects import postgresql
@@ -271,6 +271,7 @@ def test_final_package_gets_report_missing_or_corrupt_objects_as_retryable_unava
     "failure",
     [
         EndpointConnectionError(endpoint_url="http://storage.invalid"),
+        ConnectTimeoutError(endpoint_url="http://storage.invalid"),
         ClientError({"Error": {"Code": "SlowDown"}}, "GetObject"),
         ClientError({"Error": {"Code": "InternalError"}}, "GetObject"),
     ],
@@ -312,19 +313,19 @@ def test_final_package_get_maps_operational_storage_failures_to_retryable_unavai
     monkeypatch.setattr(
         workflow_routes_module, "storage_from_environment", lambda: FailingStorage()
     )
-    response = client_for_session(review.created_by).get(
-        f"/reviews/{review.id}/final-package",
-        params={
-            "organization_id": str(review.organization_id),
-            "workspace_id": str(review.workspace_id),
-        },
-    )
-    assert response.status_code == 503
-    assert response.headers["retry-after"] == "3"
-    assert response.json()["detail"] == {
-        "code": "final_package_unavailable",
-        "retryable": True,
+    client = client_for_session(review.created_by)
+    params = {
+        "organization_id": str(review.organization_id),
+        "workspace_id": str(review.workspace_id),
     }
+    for suffix in ("", "/manifest", "/pdf"):
+        response = client.get(f"/reviews/{review.id}/final-package{suffix}", params=params)
+        assert response.status_code == 503
+        assert response.headers["retry-after"] == "3"
+        assert response.json()["detail"] == {
+            "code": "final_package_unavailable",
+            "retryable": True,
+        }
 
 
 def test_final_package_get_authorization_hides_review_without_touching_storage(

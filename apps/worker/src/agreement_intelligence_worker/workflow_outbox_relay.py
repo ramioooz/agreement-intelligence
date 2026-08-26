@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 logger = logging.getLogger("agreement_intelligence.worker")
 
@@ -170,10 +171,47 @@ class WorkflowOutboxRelay:
 
 
 async def run_workflow_outbox_relay(
-    stop_event: asyncio.Event, relay: WorkflowOutboxRelay, *, idle_seconds: float = 1.0
+    stop_event: asyncio.Event,
+    relay: WorkflowOutboxRelay,
+    *,
+    idle_seconds: float = 1.0,
+    database_backoff_base_seconds: float = 1.0,
+    database_backoff_max_seconds: float = 30.0,
 ) -> None:
+    database_failures = 0
     while not stop_event.is_set():
-        if relay.relay_once():
+        try:
+            delivered = relay.relay_once()
+        except OperationalError as error:
+            database_failures += 1
+            logger.warning(
+                "review workflow outbox database operation failed",
+                extra={"attempt_count": database_failures, "error_type": type(error).__name__},
+            )
+            delay = min(
+                database_backoff_max_seconds,
+                database_backoff_base_seconds * (2 ** min(database_failures - 1, 8)),
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            continue
+        except DBAPIError as error:
+            if not error.connection_invalidated:
+                raise
+            database_failures += 1
+            delay = min(
+                database_backoff_max_seconds,
+                database_backoff_base_seconds * (2 ** min(database_failures - 1, 8)),
+            )
+            logger.warning(
+                "review workflow outbox database connection invalidated",
+                extra={"attempt_count": database_failures},
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            continue
+        database_failures = 0
+        if delivered:
             continue
         with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=idle_seconds)

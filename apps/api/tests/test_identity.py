@@ -844,7 +844,10 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     )
 
             with (
-                pytest.raises(Exception, match="terminal package snapshots are immutable"),
+                pytest.raises(
+                    Exception,
+                    match="terminal workflow outbox business fields are immutable",
+                ),
                 connection.begin_nested(),
             ):
                 connection.execute(
@@ -855,6 +858,27 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     ),
                     {"outbox_id": tenant_records[organization_a]["outbox"]},
                 )
+
+            for mutation in (
+                "UPDATE review_workflow_outbox SET event_type = 'review.workflow.resume' "
+                "WHERE id = :outbox_id",
+                "UPDATE review_workflow_outbox SET workflow_id = :replacement "
+                "WHERE id = :outbox_id",
+            ):
+                with (
+                    pytest.raises(
+                        Exception,
+                        match="terminal workflow outbox business fields are immutable",
+                    ),
+                    connection.begin_nested(),
+                ):
+                    connection.execute(
+                        text(mutation),
+                        {
+                            "outbox_id": tenant_records[organization_a]["outbox"],
+                            "replacement": uuid4(),
+                        },
+                    )
 
             for table_name, values in (
                 (

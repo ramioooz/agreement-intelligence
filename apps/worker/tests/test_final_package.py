@@ -103,7 +103,7 @@ def test_worker_persists_one_checksum_verified_package_with_system_attribution()
 def test_worker_recovers_after_restart_from_a_partially_written_object_pair() -> None:
     """Fails if an immutable first object prevents a later retry completing metadata."""
     module = _final_package_module()
-    engine, seeded = _seed_terminal_workflow()
+    engine, seeded = _seed_terminal_workflow(correlation_id="restart-correlation-id")
     storage = MemoryPackageStorage()
     storage.fail_once_suffix = "report.pdf"
 
@@ -124,6 +124,7 @@ def test_worker_recovers_after_restart_from_a_partially_written_object_pair() ->
         item.content for key, item in storage.objects.items() if key.endswith("manifest.json")
     )
     with engine.begin() as connection:
+        connection.execute(text("UPDATE review_workflows SET state = 'approved', revision = 99"))
         connection.execute(
             text(
                 "INSERT INTO review_comments VALUES "
@@ -151,8 +152,9 @@ def test_worker_recovers_after_restart_from_a_partially_written_object_pair() ->
         == original_manifest
     )
     with engine.connect() as connection:
-        assert connection.scalar(text("SELECT COUNT(*) FROM review_final_packages")) == 1
+        package = connection.execute(text("SELECT * FROM review_final_packages")).mappings().one()
         assert connection.scalar(text("SELECT COUNT(*) FROM audit_events")) == 1
+    assert package["state"] == "rejected"
     engine.dispose()
 
 
@@ -180,7 +182,7 @@ def test_production_s3_package_write_requires_kms_encryption() -> None:
 def test_worker_rejects_an_existing_object_with_a_different_checksum() -> None:
     """Fails if a retry silently accepts unrelated bytes at an immutable package key."""
     module = _final_package_module()
-    engine, seeded = _seed_terminal_workflow()
+    engine, seeded = _seed_terminal_workflow(correlation_id="conflict-correlation-id")
     storage = MemoryPackageStorage()
     base = (
         f"reviews/{seeded['organization_id']}/{seeded['workspace_id']}/"
@@ -203,7 +205,9 @@ def test_worker_rejects_an_existing_object_with_a_different_checksum() -> None:
     engine.dispose()
 
 
-def _seed_terminal_workflow() -> tuple[object, dict[str, UUID]]:
+def _seed_terminal_workflow(
+    *, correlation_id: str = "terminal-correlation-id"
+) -> tuple[object, dict[str, UUID]]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     review_id = uuid4()
     workflow_id = uuid4()
@@ -229,7 +233,9 @@ def _seed_terminal_workflow() -> tuple[object, dict[str, UUID]]:
       actor_id TEXT NOT NULL, action TEXT NOT NULL, occurred_at TEXT NOT NULL
     );
     CREATE TABLE review_workflow_outbox (
-      id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, package_snapshot TEXT
+      id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, event_type TEXT NOT NULL,
+      correlation_id TEXT NOT NULL, organization_id TEXT NOT NULL,
+      workspace_id TEXT NOT NULL, package_snapshot TEXT
     );
     CREATE TABLE review_workflow_stages (
       id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
@@ -319,12 +325,20 @@ def _seed_terminal_workflow() -> tuple[object, dict[str, UUID]]:
             },
         )
         connection.execute(
-            text("INSERT INTO review_workflow_outbox VALUES (:id, :workflow_id, :snapshot)"),
+            text(
+                "INSERT INTO review_workflow_outbox VALUES "
+                "(:id, :workflow_id, 'review.workflow.terminal', :correlation_id, "
+                ":organization_id, :workspace_id, :snapshot)"
+            ),
             {
                 "id": str(event_id),
                 "workflow_id": str(workflow_id),
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
                 "snapshot": dumps(
                     {
+                        "organization_id": str(organization_id),
+                        "workspace_id": str(workspace_id),
                         "review_id": str(review_id),
                         "agreement_id": str(agreement_id),
                         "agreement_version_id": None,
@@ -353,9 +367,17 @@ def _seed_terminal_workflow() -> tuple[object, dict[str, UUID]]:
                         "comments": [],
                         "findings": [],
                         "audit_event_ids": [],
+                        "provenance": {
+                            "generator": "review-final-package-worker",
+                            "source": "postgresql-terminal-snapshot",
+                            "workflow_correlation_id": correlation_id,
+                            "workflow_event_id": str(event_id),
+                            "workflow_revision": 1,
+                        },
                     },
                     sort_keys=True,
                 ),
+                "correlation_id": correlation_id,
             },
         )
     return engine, {
