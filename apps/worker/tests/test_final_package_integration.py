@@ -322,6 +322,79 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
             s3.get_object(Bucket=bucket, Key=package["manifest_key"])["Body"].read()
             == frozen_manifest
         )
+
+        ordinary_event = _seed_terminal_event(engine)
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(ordinary_event["organization_id"])},
+            )
+            ordinary_source = (
+                connection.execute(
+                    text(
+                        "SELECT idempotency_key, package_snapshot "
+                        "FROM review_workflow_outbox WHERE id = :event_id"
+                    ),
+                    {"event_id": ordinary_event["event_id"]},
+                )
+                .mappings()
+                .one()
+            )
+        assert not ordinary_source["idempotency_key"].endswith("terminal-package-backfill:0034")
+        assert ordinary_source["package_snapshot"] is not None
+        ordinary_partial_storage = _FailOncePackageStorage(object_storage)
+        ordinary_partial_processor = SQLAlchemyWorkflowEventProcessor(
+            engine,
+            checkpoints,
+            TerminalReviewPackageGenerator(ordinary_partial_storage),
+        )
+        with pytest.raises(RuntimeError, match="simulated partial package write"):
+            ordinary_partial_processor.process(
+                ordinary_event["event_id"],
+                organization_id=ordinary_event["organization_id"],
+                workspace_id=ordinary_event["workspace_id"],
+            )
+        ordinary_base = (
+            f"reviews/{ordinary_event['organization_id']}/{ordinary_event['workspace_id']}/"
+            f"{ordinary_event['review_id']}/final-package"
+        )
+        ordinary_manifest = s3.get_object(Bucket=bucket, Key=f"{ordinary_base}/manifest.json")[
+            "Body"
+        ].read()
+        with pytest.raises(RuntimeError, match="lack committed final-package metadata"):
+            command.downgrade(migration_config, "20260825_0032")
+
+        assert (
+            SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+                ordinary_event["event_id"],
+                organization_id=ordinary_event["organization_id"],
+                workspace_id=ordinary_event["workspace_id"],
+            )
+            is True
+        )
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(ordinary_event["organization_id"])},
+            )
+            ordinary_package = (
+                connection.execute(
+                    text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
+                    {"review_id": ordinary_event["review_id"]},
+                )
+                .mappings()
+                .one()
+            )
+        recovered_ordinary_manifest = s3.get_object(
+            Bucket=bucket, Key=ordinary_package["manifest_key"]
+        )["Body"].read()
+        ordinary_pdf = s3.get_object(Bucket=bucket, Key=ordinary_package["pdf_key"])["Body"].read()
+        assert recovered_ordinary_manifest == ordinary_manifest
+        assert (
+            sha256(recovered_ordinary_manifest).hexdigest() == ordinary_package["manifest_checksum"]
+        )
+        assert sha256(ordinary_pdf).hexdigest() == ordinary_package["pdf_checksum"]
+
         assert (
             SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
                 seeded["event_id"],

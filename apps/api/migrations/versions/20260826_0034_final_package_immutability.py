@@ -101,7 +101,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
-        _assert_backfill_events_are_complete()
+        _assert_terminal_snapshot_events_are_complete()
         op.execute(
             "DROP TRIGGER IF EXISTS review_workflow_terminal_snapshot_immutable "
             "ON review_workflow_outbox"
@@ -163,7 +163,7 @@ def _backfill_terminal_package_events() -> None:
             _backfill_terminal_package_event(connection, workflow)
 
 
-def _assert_backfill_events_are_complete() -> None:
+def _assert_terminal_snapshot_events_are_complete() -> None:
     connection = op.get_bind()
     organization_ids = list(
         connection.execute(sa.text("SELECT id FROM organizations ORDER BY id")).scalars()
@@ -183,7 +183,8 @@ def _assert_backfill_events_are_complete() -> None:
                  AND workflow.organization_id = :organization_id
                  AND workflow.workspace_id = event.workspace_id
                 WHERE event.organization_id = :organization_id
-                  AND event.idempotency_key LIKE :idempotency_pattern
+                  AND event.event_type = 'review.workflow.terminal'
+                  AND event.package_snapshot IS NOT NULL
                   AND NOT EXISTS (
                     SELECT 1 FROM review_final_packages AS package
                     WHERE package.review_id = workflow.review_id
@@ -192,14 +193,11 @@ def _assert_backfill_events_are_complete() -> None:
                   )
                 """
             ),
-            {
-                "organization_id": organization_id,
-                "idempotency_pattern": "workflow:%:terminal-package-backfill:0034",
-            },
+            {"organization_id": organization_id},
         )
         if incomplete:
             raise RuntimeError(
-                "cannot downgrade 0034 while terminal package backfill events "
+                "cannot downgrade 0034 while terminal package snapshot events "
                 "lack committed final-package metadata"
             )
 
