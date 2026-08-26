@@ -20,6 +20,10 @@ from agreement_intelligence_api.identity.models import Base
 class ProcessingJobRecord(Base):
     __tablename__ = "processing_jobs"
     __table_args__ = (
+        CheckConstraint(
+            "(claim_token IS NULL) = (claim_lease_expires_at IS NULL)",
+            name="ck_processing_jobs_claim_lease_pair",
+        ),
         UniqueConstraint("agreement_id", "idempotency_key", name="uq_processing_job_idempotency"),
         Index("ix_processing_jobs_agreement_state", "agreement_id", "state"),
     )
@@ -41,6 +45,10 @@ class ProcessingJobRecord(Base):
     failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    claim_lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     queued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     processing_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True

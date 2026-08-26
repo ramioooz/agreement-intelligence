@@ -94,8 +94,9 @@ class InMemoryRepository:
         next_retry_at: datetime,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None:
-        del organization_id, workspace_id
+        claimed_job: ProcessingJob | None = None,
+    ) -> bool:
+        del organization_id, workspace_id, claimed_job
         assert self.job.id == job_id
         self.job = replace(
             self.job,
@@ -104,6 +105,7 @@ class InMemoryRepository:
             failure_message=message,
             next_retry_at=next_retry_at,
         )
+        return True
 
     def fail(
         self,
@@ -113,8 +115,9 @@ class InMemoryRepository:
         message: str,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> None:
-        del organization_id, workspace_id
+        del organization_id, workspace_id, claimed_job
         assert self.job.id == job_id
         self.job = replace(
             self.job, state="failed", failure_category=category, failure_message=message

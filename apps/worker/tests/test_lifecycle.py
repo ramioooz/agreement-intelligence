@@ -130,8 +130,9 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             next_retry_at: datetime,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
-        ) -> None:
-            del job_id, category, message, next_retry_at, organization_id, workspace_id
+            claimed_job: ProcessingJob | None = None,
+        ) -> bool:
+            del job_id, category, message, next_retry_at, organization_id, workspace_id, claimed_job
             raise AssertionError("unexpected retry")
 
         def fail(
@@ -142,8 +143,9 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             message: str,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
+            claimed_job: ProcessingJob | None = None,
         ) -> None:
-            del job_id, category, message, organization_id, workspace_id
+            del job_id, category, message, organization_id, workspace_id, claimed_job
             raise AssertionError("unexpected failure")
 
     class Queue:

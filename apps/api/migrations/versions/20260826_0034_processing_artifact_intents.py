@@ -17,6 +17,17 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    op.add_column("processing_jobs", sa.Column("claim_token", sa.Uuid(), nullable=True))
+    op.add_column(
+        "processing_jobs",
+        sa.Column("claim_lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+    )
+    if op.get_bind().dialect.name != "sqlite":
+        op.create_check_constraint(
+            "ck_processing_jobs_claim_lease_pair",
+            "processing_jobs",
+            "(claim_token IS NULL) = (claim_lease_expires_at IS NULL)",
+        )
     op.create_table(
         "processing_artifact_intents",
         sa.Column("id", sa.Uuid(), nullable=False),
@@ -96,3 +107,7 @@ def downgrade() -> None:
     ).scalar():
         raise RuntimeError("cannot downgrade while processing artifact intents are pending")
     op.drop_table("processing_artifact_intents")
+    if connection.dialect.name != "sqlite":
+        op.drop_constraint("ck_processing_jobs_claim_lease_pair", "processing_jobs", type_="check")
+    op.drop_column("processing_jobs", "claim_lease_expires_at")
+    op.drop_column("processing_jobs", "claim_token")

@@ -224,6 +224,8 @@ class ProcessingJobService:
         job.failure_category = None
         job.failure_message = None
         job.next_retry_at = None
+        job.claim_token = None
+        job.claim_lease_expires_at = None
         job.queued_at = now
         job.updated_at = now
         idempotency_key = job.idempotency_key

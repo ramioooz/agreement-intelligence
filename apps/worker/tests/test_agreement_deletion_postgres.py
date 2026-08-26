@@ -1043,6 +1043,12 @@ def _assert_exhausted_response_loss_cleanup(
     assert claimed is not None
     artifact = CompletedArtifact(job_id=job_id, key=expected_key)
     assert processing_repository.expect(claimed, artifact)
+    with pytest.raises(RuntimeError, match="processing job lease is held"):
+        processing_repository.claim(
+            job_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
     with engine.begin() as connection:
         connection.execute(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -1055,6 +1061,26 @@ def _assert_exhausted_response_loss_cleanup(
             )
             == "expected"
         )
+        connection.execute(
+            text(
+                """
+                UPDATE processing_jobs
+                SET claim_lease_expires_at=now() - interval '1 second'
+                WHERE id=:job_id
+                """
+            ),
+            {"job_id": job_id},
+        )
+
+    recovered_claim = processing_repository.claim(
+        job_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    assert recovered_claim is not None
+    assert recovered_claim.claim_token != claimed.claim_token
+    assert recovered_claim.attempt_count == claimed.attempt_count + 1
+    assert processing_repository.expect(recovered_claim, artifact)
 
     with Session(engine) as session, session.begin():
         session.execute(
@@ -1080,6 +1106,15 @@ def _assert_exhausted_response_loss_cleanup(
             ),
             {"deletion_id": deletion.id},
         ).one() == (expected_key, "pending")
+
+    processing_repository.fail(
+        job_id,
+        category="transient_exhausted",
+        message="stale delivery failed",
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        claimed_job=claimed,
+    )
 
     class ObjectStorage:
         def delete(self, key: str) -> None:
@@ -1121,6 +1156,7 @@ def _assert_exhausted_response_loss_cleanup(
         message="retry remained ambiguous",
         organization_id=organization_id,
         workspace_id=workspace_id,
+        claimed_job=recovered_claim,
     )
     AgreementDeletionProcessor(deletion_repository, ObjectStorage()).handle(
         deletion.id,

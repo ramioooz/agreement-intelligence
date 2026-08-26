@@ -45,6 +45,7 @@ from agreement_intelligence_worker.agreement_deletion import (
 logger = logging.getLogger("agreement_intelligence.worker")
 
 JobState = Literal["queued", "processing", "completed", "failed"]
+_PROCESSING_CLAIM_LEASE = timedelta(minutes=15)
 _SENSITIVE_MESSAGE_PATTERN = re.compile(
     r"\b(agreement|bearer|credential|password|secret|token)\b",
     re.IGNORECASE,
@@ -88,6 +89,8 @@ processing_jobs = Table(
     Column("failure_category", String(64), nullable=True),
     Column("failure_message", String(500), nullable=True),
     Column("next_retry_at", DateTime(timezone=True), nullable=True),
+    Column("claim_token", Uuid(as_uuid=True), nullable=True),
+    Column("claim_lease_expires_at", DateTime(timezone=True), nullable=True),
     Column("queued_at", DateTime(timezone=True), nullable=False),
     Column("processing_started_at", DateTime(timezone=True), nullable=True),
     Column("completed_at", DateTime(timezone=True), nullable=True),
@@ -96,6 +99,10 @@ processing_jobs = Table(
     Column("updated_at", DateTime(timezone=True), server_default=func.now()),
     UniqueConstraint("agreement_id", "idempotency_key", name="uq_processing_job_idempotency"),
     Index("ix_processing_jobs_agreement_state", "agreement_id", "state"),
+    CheckConstraint(
+        "(claim_token IS NULL) = (claim_lease_expires_at IS NULL)",
+        name="ck_processing_jobs_claim_lease_pair",
+    ),
 )
 processing_artifacts = Table(
     "processing_artifacts",
@@ -143,6 +150,10 @@ class PermanentProcessingError(Exception):
         self.category = category
 
 
+class ProcessingLeaseHeldError(RuntimeError):
+    """Another worker owns the unexpired processing attempt."""
+
+
 @dataclass(frozen=True)
 class ProcessingJob:
     id: UUID
@@ -160,6 +171,8 @@ class ProcessingJob:
     next_retry_at: datetime | None = None
     processing_started_at: datetime | None = None
     completed_at: datetime | None = None
+    claim_token: UUID | None = None
+    claim_lease_expires_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -210,7 +223,8 @@ class JobRepository(Protocol):
         next_retry_at: datetime,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None: ...
+        claimed_job: ProcessingJob | None = None,
+    ) -> bool | None: ...
 
     def fail(
         self,
@@ -220,6 +234,7 @@ class JobRepository(Protocol):
         message: str,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> None: ...
 
 
@@ -382,11 +397,12 @@ class JobProcessor:
             operation="worker.processing",
             outcome="retry",
         )
-        self._requeue(
+        if not self._requeue(
             job,
             message=safe_message,
             next_retry_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
-        )
+        ):
+            return
         self._queue.enqueue(
             job.id,
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
@@ -404,15 +420,17 @@ class JobProcessor:
         )
         return completed is not False
 
-    def _requeue(self, job: ProcessingJob, *, message: str, next_retry_at: datetime) -> None:
-        self._repository.requeue(
+    def _requeue(self, job: ProcessingJob, *, message: str, next_retry_at: datetime) -> bool:
+        requeued = self._repository.requeue(
             job.id,
             category="transient",
             message=message,
             next_retry_at=next_retry_at,
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+            claimed_job=job,
         )
+        return requeued is not False
 
     def _fail(self, job: ProcessingJob, *, category: str, message: str) -> None:
         self._repository.fail(
@@ -421,6 +439,7 @@ class JobProcessor:
             message=message,
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+            claimed_job=job,
         )
 
 
@@ -617,7 +636,12 @@ class SQLAlchemyProcessingJobRepository:
             agreement = _agreement_for_update(connection, cast(Mapping[str, Any], job))
             if agreement is None:
                 return None
+            job = _job_for_update(connection, job_id)
+            if job is None or not _matches_tenant_scope(job, organization_id, workspace_id):
+                return None
             if agreement["deletion_requested_at"] is not None:
+                if job["state"] == "processing" and _has_live_claim(job, now=now):
+                    raise ProcessingLeaseHeldError("processing job lease is held")
                 intent = _artifact_intent(
                     connection,
                     job_id,
@@ -647,6 +671,8 @@ class SQLAlchemyProcessingJobRepository:
                             failure_category=None,
                             failure_message=None,
                             next_retry_at=None,
+                            claim_token=None,
+                            claim_lease_expires_at=None,
                             updated_at=now,
                         )
                     )
@@ -655,25 +681,13 @@ class SQLAlchemyProcessingJobRepository:
                 )
                 return None
             if job["state"] == "processing":
-                _update_agreement_processing_state(
-                    connection, job, state="processing", updated_at=now
-                )
-                return ProcessingJob(
-                    id=job_id,
-                    agreement_id=cast(UUID, job["agreement_id"]),
-                    state="processing",
-                    attempt_count=int(job["attempt_count"]),
-                    organization_id=cast(UUID, job["organization_id"]),
-                    workspace_id=cast(UUID, job["workspace_id"]),
-                    profile=cast(str, job["profile"]),
-                    source_storage_key=cast(str | None, job["source_storage_key"]),
-                    source_checksum=cast(str | None, job["source_checksum"]),
-                    source_content_type=cast(str | None, job["source_content_type"]),
-                    processing_started_at=cast(datetime | None, job["processing_started_at"]),
-                )
-            if job["state"] != "queued":
+                if _has_live_claim(job, now=now):
+                    raise ProcessingLeaseHeldError("processing job lease is held")
+            elif job["state"] != "queued":
                 return None
             attempt_count = int(job["attempt_count"]) + 1
+            claim_token = uuid4()
+            claim_lease_expires_at = now + _PROCESSING_CLAIM_LEASE
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -684,6 +698,8 @@ class SQLAlchemyProcessingJobRepository:
                     failure_category=None,
                     failure_message=None,
                     next_retry_at=None,
+                    claim_token=claim_token,
+                    claim_lease_expires_at=claim_lease_expires_at,
                     updated_at=now,
                 )
             )
@@ -700,6 +716,8 @@ class SQLAlchemyProcessingJobRepository:
                 source_checksum=cast(str | None, job["source_checksum"]),
                 source_content_type=cast(str | None, job["source_content_type"]),
                 processing_started_at=now,
+                claim_token=claim_token,
+                claim_lease_expires_at=claim_lease_expires_at,
             )
 
     def expect(self, job: ProcessingJob, artifact: CompletedArtifact) -> bool:
@@ -720,6 +738,9 @@ class SQLAlchemyProcessingJobRepository:
                 },
             )
             if agreement is None:
+                return False
+            job_record = _job_for_update(connection, job.id)
+            if job_record is None or not _owns_claim(job_record, job):
                 return False
             intent = _artifact_intent(
                 connection,
@@ -797,6 +818,8 @@ class SQLAlchemyProcessingJobRepository:
             job = _job_for_update(connection, job_id)
             if agreement is None:
                 return False
+            if job is not None and not _owns_claim(job, claimed_job):
+                return False
             if agreement["deletion_requested_at"] is not None:
                 _inventory_late_artifact(connection, job or job_context, artifact.key, now=now)
                 connection.execute(
@@ -834,6 +857,8 @@ class SQLAlchemyProcessingJobRepository:
                     failure_category=None,
                     failure_message=None,
                     next_retry_at=None,
+                    claim_token=None,
+                    claim_lease_expires_at=None,
                     updated_at=now,
                 )
             )
@@ -909,15 +934,18 @@ class SQLAlchemyProcessingJobRepository:
         next_retry_at: datetime,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None:
+        claimed_job: ProcessingJob | None = None,
+    ) -> bool:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
             job = _job_for_update(connection, job_id)
             if job is None:
-                return
+                return False
             if not _matches_tenant_scope(job, organization_id, workspace_id):
-                return
+                return False
+            if not _owns_claim(job, claimed_job):
+                return False
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
@@ -926,10 +954,13 @@ class SQLAlchemyProcessingJobRepository:
                     failure_category=category,
                     failure_message=message,
                     next_retry_at=next_retry_at,
+                    claim_token=None,
+                    claim_lease_expires_at=None,
                     updated_at=now,
                 )
             )
             _update_agreement_processing_state(connection, job, state="queued", updated_at=now)
+            return True
 
     def fail(
         self,
@@ -939,6 +970,7 @@ class SQLAlchemyProcessingJobRepository:
         message: str,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
@@ -959,6 +991,8 @@ class SQLAlchemyProcessingJobRepository:
             if job is None:
                 return
             if not _matches_tenant_scope(job, organization_id, workspace_id):
+                return
+            if not _owns_claim(job, claimed_job):
                 return
             intent = _artifact_intent(
                 connection,
@@ -984,6 +1018,8 @@ class SQLAlchemyProcessingJobRepository:
                     failure_category=category,
                     failure_message=message,
                     failed_at=now,
+                    claim_token=None,
+                    claim_lease_expires_at=None,
                     updated_at=now,
                 )
             )
@@ -1009,6 +1045,26 @@ def _job_for_update(connection: Any, job_id: UUID) -> Any | None:
         )
         .mappings()
         .one_or_none()
+    )
+
+
+def _has_live_claim(job: Mapping[str, Any], *, now: datetime) -> bool:
+    claim_token = job["claim_token"]
+    lease_expires_at = cast(datetime | None, job["claim_lease_expires_at"])
+    if claim_token is None or lease_expires_at is None:
+        return False
+    if lease_expires_at.tzinfo is None:
+        lease_expires_at = lease_expires_at.replace(tzinfo=UTC)
+    return lease_expires_at > now
+
+
+def _owns_claim(job: Mapping[str, Any], claimed_job: ProcessingJob | None) -> bool:
+    if claimed_job is None:
+        return job["claim_token"] is None
+    return (
+        claimed_job.claim_token is not None
+        and job["state"] == "processing"
+        and job["claim_token"] == claimed_job.claim_token
     )
 
 
