@@ -110,8 +110,9 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             *,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
+            claimed_job: ProcessingJob | None = None,
         ) -> None:
-            del organization_id, workspace_id
+            del organization_id, workspace_id, claimed_job
             assert self.job.id == job_id
             self.artifact = artifact
             self.job = replace(self.job, state="completed", completed_at=datetime.now(UTC))

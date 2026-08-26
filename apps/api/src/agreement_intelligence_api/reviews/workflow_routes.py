@@ -208,11 +208,7 @@ def get_final_package(
     )
     if workflow is None or workflow.state not in {"approved", "rejected", "revision_requested"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="final_package_not_ready")
-    package = session.scalar(
-        select(ReviewFinalPackageRecord).where(ReviewFinalPackageRecord.review_id == review.id)
-    )
-    if package is None:
-        package = _create_final_package(session, review, workflow)
+    package = _create_final_package(session, review, workflow)
     base = f"/reviews/{review.id}/final-package"
     return FinalReviewPackageResponse(
         pdf_url=f"{base}/pdf",
@@ -271,21 +267,12 @@ def download_final_package_pdf(
 
 
 def _stored_package(session: Session, review: ReviewCaseRecord) -> ReviewFinalPackageRecord:
-    package = session.scalar(
-        select(ReviewFinalPackageRecord).where(
-            ReviewFinalPackageRecord.review_id == review.id,
-            ReviewFinalPackageRecord.organization_id == review.organization_id,
-            ReviewFinalPackageRecord.workspace_id == review.workspace_id,
-        )
+    workflow = session.scalar(
+        select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
     )
-    if package is None:
-        workflow = session.scalar(
-            select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
-        )
-        if workflow is None or workflow.state not in {"approved", "rejected", "revision_requested"}:
-            raise HTTPException(status_code=409, detail="final_package_not_ready")
-        package = _create_final_package(session, review, workflow)
-    return package
+    if workflow is None or workflow.state not in {"approved", "rejected", "revision_requested"}:
+        raise HTTPException(status_code=409, detail="final_package_not_ready")
+    return _create_final_package(session, review, workflow)
 
 
 def _create_final_package(
@@ -301,8 +288,11 @@ def _create_final_package(
     existing_package = session.scalar(
         select(ReviewFinalPackageRecord).where(ReviewFinalPackageRecord.review_id == review.id)
     )
+    storage = storage_from_environment()
     if existing_package is not None:
-        return existing_package
+        if _stored_package_is_complete(storage, existing_package):
+            return existing_package
+        _remove_incomplete_package_objects(storage, existing_package)
     decisions = session.scalars(
         select(ReviewWorkflowDecisionRecord)
         .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)
@@ -414,7 +404,26 @@ def _create_final_package(
     base = f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/final-package"
     manifest_key = f"{base}/manifest.json"
     pdf_key = f"{base}/report.pdf"
-    storage = storage_from_environment()
+    package = existing_package
+    if package is None:
+        package = ReviewFinalPackageRecord(
+            organization_id=review.organization_id,
+            workspace_id=review.workspace_id,
+            review_id=review.id,
+            workflow_id=workflow.id,
+            state=workflow.state,
+            manifest_key=manifest_key,
+            pdf_key=pdf_key,
+            manifest_checksum=manifest_checksum,
+            pdf_checksum=pdf_checksum,
+        )
+        session.add(package)
+        # The deterministic keys are committed before S3 so deletion acceptance can
+        # inventory them even if generation or its compensation races and fails.
+        session.commit()
+        _scope_transaction(session, organization_id)
+        if session.scalar(_workflow_for_package_update(review.id)) is None:
+            raise HTTPException(status_code=409, detail="final_package_not_ready")
     created_keys: list[str] = []
     try:
         if _store_verified_immutable(
@@ -436,18 +445,6 @@ def _create_final_package(
             storage.delete(key)
         raise
     try:
-        package = ReviewFinalPackageRecord(
-            organization_id=review.organization_id,
-            workspace_id=review.workspace_id,
-            review_id=review.id,
-            workflow_id=workflow.id,
-            state=workflow.state,
-            manifest_key=manifest_key,
-            pdf_key=pdf_key,
-            manifest_checksum=manifest_checksum,
-            pdf_checksum=pdf_checksum,
-        )
-        session.add(package)
         AuditEventWriter(session).record(
             organization_id=review.organization_id,
             workspace_id=review.workspace_id,
@@ -474,6 +471,26 @@ def _create_final_package(
     _scope_transaction(session, organization_id)
     session.refresh(package)
     return package
+
+
+def _stored_package_is_complete(
+    storage: DocumentStorage, package: ReviewFinalPackageRecord
+) -> bool:
+    manifest = storage.read(package.manifest_key)
+    pdf = storage.read(package.pdf_key)
+    return (
+        manifest is not None
+        and pdf is not None
+        and sha256(manifest.content).hexdigest() == package.manifest_checksum
+        and sha256(pdf.content).hexdigest() == package.pdf_checksum
+    )
+
+
+def _remove_incomplete_package_objects(
+    storage: DocumentStorage, package: ReviewFinalPackageRecord
+) -> None:
+    storage.delete(package.manifest_key)
+    storage.delete(package.pdf_key)
 
 
 def _workflow_for_package_update(review_id: UUID) -> Select[tuple[ReviewWorkflowRecord]]:

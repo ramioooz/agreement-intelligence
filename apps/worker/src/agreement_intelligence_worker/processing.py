@@ -174,6 +174,7 @@ class JobRepository(Protocol):
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> bool | None: ...
 
     def requeue(
@@ -368,6 +369,7 @@ class JobProcessor:
             artifact,
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
+            claimed_job=job,
         )
         return completed is not False
 
@@ -647,6 +649,7 @@ class SQLAlchemyProcessingJobRepository:
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> bool:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
@@ -656,16 +659,27 @@ class SQLAlchemyProcessingJobRepository:
                 .mappings()
                 .one_or_none()
             )
-            if job is None:
+            if job is None and claimed_job is None:
                 return False
-            if not _matches_tenant_scope(job, organization_id, workspace_id):
+            if job is None:
+                assert claimed_job is not None
+                job_context: Mapping[str, Any] = {
+                    "id": claimed_job.id,
+                    "agreement_id": claimed_job.agreement_id,
+                    "organization_id": claimed_job.organization_id,
+                    "workspace_id": claimed_job.workspace_id,
+                    "profile": claimed_job.profile,
+                }
+            else:
+                job_context = cast(Mapping[str, Any], job)
+            if not _matches_tenant_scope(job_context, organization_id, workspace_id):
                 return False
             agreement = (
                 connection.execute(
                     select(agreements)
                     .where(
-                        agreements.c.id == job["agreement_id"],
-                        agreements.c.organization_id == job["organization_id"],
+                        agreements.c.id == job_context["agreement_id"],
+                        agreements.c.organization_id == job_context["organization_id"],
                     )
                     .with_for_update()
                 )
@@ -673,12 +687,12 @@ class SQLAlchemyProcessingJobRepository:
                 .one_or_none()
             )
             job = _job_for_update(connection, job_id)
-            if job is None:
-                return False
             if agreement is None:
                 return False
             if agreement["deletion_requested_at"] is not None:
-                _inventory_late_artifact(connection, job, artifact.key, now=now)
+                _inventory_late_artifact(connection, job or job_context, artifact.key, now=now)
+                return False
+            if job is None:
                 return False
             existing_artifact = connection.execute(
                 select(processing_artifacts.c.id).where(
@@ -874,13 +888,13 @@ def _inventory_late_artifact(
     category = _late_artifact_category(cast(str, job["profile"]), key)
     if category is None:
         return
-    existing = connection.scalar(
-        select(deletion_objects.c.id).where(
+    existing = connection.execute(
+        select(deletion_objects.c.id, deletion_objects.c.state).where(
             deletion_objects.c.deletion_id == request["id"],
             deletion_objects.c.category == category,
             deletion_objects.c.object_key == key,
         )
-    )
+    ).one_or_none()
     if existing is None:
         connection.execute(
             deletion_objects.insert().values(
@@ -895,6 +909,12 @@ def _inventory_late_artifact(
                 last_error=None,
                 updated_at=now,
             )
+        )
+    elif existing.state != "pending":
+        connection.execute(
+            update(deletion_objects)
+            .where(deletion_objects.c.id == existing.id)
+            .values(state="pending", last_error=None, updated_at=now)
         )
 
     terminal_state = request["state"] in {"completed", "failed"}

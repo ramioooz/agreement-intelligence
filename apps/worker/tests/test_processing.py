@@ -58,8 +58,9 @@ class InMemoryRepository:
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> bool | None:
-        del organization_id, workspace_id
+        del organization_id, workspace_id, claimed_job
         if self.job.id != job_id:
             raise LookupError(job_id)
         if self.job.state == "completed":
@@ -224,8 +225,9 @@ def test_completion_failure_does_not_run_evaluation_handler() -> None:
             *,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
+            claimed_job: ProcessingJob | None = None,
         ) -> None:
-            del job_id, artifact, organization_id, workspace_id
+            del job_id, artifact, organization_id, workspace_id, claimed_job
             raise RuntimeError("database completion failed")
 
     repository = FailingRepository(job=_job(), artifacts=[])
@@ -479,6 +481,19 @@ def test_tombstone_completion_durably_inventories_artifact_for_retryable_cleanup
                 updated_at=now,
             )
         )
+        connection.execute(
+            deletion_objects.insert().values(
+                id=uuid4(),
+                deletion_id=deletion_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                category="comparison",
+                object_key=comparison_key,
+                state="deleted",
+                updated_at=now,
+            )
+        )
         if has_outbox:
             connection.execute(
                 deletion_outbox.insert().values(
@@ -503,12 +518,25 @@ def test_tombstone_completion_durably_inventories_artifact_for_retryable_cleanup
 
     assert completed is False
     repository = SQLAlchemyProcessingJobRepository(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            processing_jobs.delete().where(processing_jobs.c.id == comparison_job_id)
+        )
     assert (
         repository.complete(
             comparison_job_id,
             CompletedArtifact(job_id=comparison_job_id, key=comparison_key),
             organization_id=organization_id,
             workspace_id=workspace_id,
+            claimed_job=ProcessingJob(
+                id=comparison_job_id,
+                agreement_id=agreement_id,
+                state="processing",
+                attempt_count=1,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                profile="version-comparison",
+            ),
         )
         is False
     )
