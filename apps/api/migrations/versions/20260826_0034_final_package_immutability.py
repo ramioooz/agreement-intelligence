@@ -9,6 +9,8 @@ The down revision is provisional while issue #210 owns 20260826_0033. Change
 """
 
 from collections.abc import Sequence
+from json import dumps
+from uuid import uuid4
 
 import sqlalchemy as sa
 from alembic import op
@@ -41,6 +43,7 @@ def upgrade() -> None:
     )
     if op.get_bind().dialect.name != "postgresql":
         return
+    _backfill_terminal_package_events()
     op.execute(
         """
         CREATE FUNCTION prevent_review_final_package_mutation() RETURNS trigger AS $$
@@ -107,6 +110,7 @@ def downgrade() -> None:
             "DROP TRIGGER IF EXISTS review_final_packages_immutable ON review_final_packages"
         )
         op.execute("DROP FUNCTION IF EXISTS prevent_review_final_package_mutation")
+        _delete_backfill_events()
     for column in (
         "last_error",
         "lease_expires_at",
@@ -116,3 +120,256 @@ def downgrade() -> None:
         "package_snapshot",
     ):
         op.drop_column("review_workflow_outbox", column)
+
+
+def _backfill_terminal_package_events() -> None:
+    connection = op.get_bind()
+    organization_ids = list(
+        connection.execute(sa.text("SELECT id FROM organizations ORDER BY id")).scalars()
+    )
+    for organization_id in organization_ids:
+        connection.execute(
+            sa.text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        workflows = list(
+            connection.execute(
+                sa.text(
+                    """
+                SELECT workflow.id AS workflow_id, workflow.organization_id,
+                       workflow.workspace_id, workflow.review_id,
+                       workflow.policy_version_id, workflow.state, workflow.revision,
+                       review.agreement_id, review.agreement_version_id
+                FROM review_workflows AS workflow
+                JOIN review_cases AS review ON review.id = workflow.review_id
+                WHERE workflow.state IN ('approved', 'rejected', 'revision_requested')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM review_final_packages AS package
+                    WHERE package.review_id = workflow.review_id
+                  )
+                ORDER BY workflow.created_at, workflow.id
+                    """
+                )
+            ).mappings()
+        )
+        for workflow in workflows:
+            _backfill_terminal_package_event(connection, workflow)
+
+
+def _delete_backfill_events() -> None:
+    connection = op.get_bind()
+    organization_ids = list(
+        connection.execute(sa.text("SELECT id FROM organizations ORDER BY id")).scalars()
+    )
+    for organization_id in organization_ids:
+        connection.execute(
+            sa.text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        connection.execute(
+            sa.text(
+                "DELETE FROM review_workflow_outbox WHERE idempotency_key LIKE :idempotency_pattern"
+            ),
+            {"idempotency_pattern": "workflow:%:terminal-package-backfill:0034"},
+        )
+
+
+def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.RowMapping) -> None:
+    workflow_id = workflow["workflow_id"]
+    review_id = workflow["review_id"]
+    event_id = uuid4()
+    correlation_id = (
+        connection.scalar(
+            sa.text(
+                """
+            SELECT correlation_id FROM review_workflow_outbox
+            WHERE workflow_id = :workflow_id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """
+            ),
+            {"workflow_id": workflow_id},
+        )
+        or f"migration-0034-{workflow_id}"
+    )
+    decisions = connection.execute(
+        sa.text(
+            """
+            SELECT actor_id, action, workflow_stage_id, occurred_at
+            FROM review_workflow_decisions
+            WHERE workflow_id = :workflow_id
+            ORDER BY occurred_at, id
+            """
+        ),
+        {"workflow_id": workflow_id},
+    ).mappings()
+    stages = connection.execute(
+        sa.text(
+            """
+            SELECT id, ordinal, state, activated_at, completed_at
+            FROM review_workflow_stages
+            WHERE workflow_id = :workflow_id
+            ORDER BY ordinal, id
+            """
+        ),
+        {"workflow_id": workflow_id},
+    ).mappings()
+    assignments = connection.execute(
+        sa.text(
+            """
+            SELECT id, assignee_id, status, due_at
+            FROM review_assignments
+            WHERE review_id = :review_id
+            ORDER BY created_at, id
+            """
+        ),
+        {"review_id": review_id},
+    ).mappings()
+    comments = connection.execute(
+        sa.text(
+            """
+            SELECT id, author_id, finding_id, created_at
+            FROM review_comments
+            WHERE review_id = :review_id
+            ORDER BY created_at, id
+            """
+        ),
+        {"review_id": review_id},
+    ).mappings()
+    findings = connection.execute(
+        sa.text(
+            """
+            SELECT finding.id, finding.result, finding.severity, finding.citation_ids
+            FROM playbook_findings AS finding
+            JOIN playbook_evaluations AS evaluation ON evaluation.id = finding.evaluation_id
+            WHERE finding.organization_id = :organization_id
+              AND finding.workspace_id = :workspace_id
+              AND evaluation.agreement_id = :agreement_id
+            ORDER BY finding.id
+            """
+        ),
+        {
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+            "agreement_id": workflow["agreement_id"],
+        },
+    ).mappings()
+    audit_ids = connection.execute(
+        sa.text(
+            """
+            SELECT id FROM audit_events
+            WHERE organization_id = :organization_id
+              AND workspace_id = :workspace_id
+              AND resource_id = :review_id
+            ORDER BY occurred_at, id
+            """
+        ),
+        {
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+            "review_id": review_id,
+        },
+    ).scalars()
+    snapshot = {
+        "organization_id": str(workflow["organization_id"]),
+        "workspace_id": str(workflow["workspace_id"]),
+        "review_id": str(review_id),
+        "agreement_id": str(workflow["agreement_id"]),
+        "agreement_version_id": (
+            str(workflow["agreement_version_id"])
+            if workflow["agreement_version_id"] is not None
+            else None
+        ),
+        "workflow_id": str(workflow_id),
+        "policy_version_id": str(workflow["policy_version_id"]),
+        "state": workflow["state"],
+        "revision": workflow["revision"],
+        "decisions": [
+            {
+                "actor_id": str(item["actor_id"]),
+                "action": item["action"],
+                "stage_id": str(item["workflow_stage_id"]),
+                "occurred_at": _isoformat(item["occurred_at"]),
+            }
+            for item in decisions
+        ],
+        "stages": [
+            {
+                "id": str(item["id"]),
+                "ordinal": item["ordinal"],
+                "state": item["state"],
+                "activated_at": _isoformat(item["activated_at"]),
+                "completed_at": _isoformat(item["completed_at"]),
+            }
+            for item in stages
+        ],
+        "assignments": [
+            {
+                "id": str(item["id"]),
+                "assignee_id": str(item["assignee_id"]),
+                "status": item["status"],
+                "due_at": _isoformat(item["due_at"]),
+            }
+            for item in assignments
+        ],
+        "comments": [
+            {
+                "id": str(item["id"]),
+                "author_id": str(item["author_id"]),
+                "finding_id": str(item["finding_id"]) if item["finding_id"] else None,
+                "created_at": _isoformat(item["created_at"]),
+            }
+            for item in comments
+        ],
+        "findings": [
+            {
+                "id": str(item["id"]),
+                "result": item["result"],
+                "severity": item["severity"],
+                "citation_ids": item["citation_ids"],
+            }
+            for item in findings
+        ],
+        "audit_event_ids": [str(item) for item in audit_ids],
+        "provenance": {
+            "generator": "review-final-package-worker",
+            "source": "postgresql-terminal-migration-snapshot",
+            "workflow_correlation_id": correlation_id,
+            "workflow_event_id": str(event_id),
+            "workflow_revision": workflow["revision"],
+        },
+    }
+    connection.execute(
+        sa.text(
+            """
+            INSERT INTO review_workflow_outbox (
+                id, workflow_id, organization_id, workspace_id, event_type,
+                correlation_id, idempotency_key, package_snapshot, delivered_at,
+                processed_at, attempt_count, created_at
+            ) VALUES (
+                :id, :workflow_id, :organization_id, :workspace_id,
+                'review.workflow.terminal', :correlation_id, :idempotency_key,
+                CAST(:package_snapshot AS JSONB), NULL, NULL, 0, CURRENT_TIMESTAMP
+            )
+            ON CONFLICT (idempotency_key) DO NOTHING
+            """
+        ),
+        {
+            "id": event_id,
+            "workflow_id": workflow_id,
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+            "correlation_id": correlation_id,
+            "idempotency_key": f"workflow:{workflow_id}:terminal-package-backfill:0034",
+            "package_snapshot": dumps(snapshot, sort_keys=True),
+        },
+    )
+
+
+def _isoformat(value: object) -> str | None:
+    if value is None:
+        return None
+    isoformat = getattr(value, "isoformat", None)
+    if not callable(isoformat):
+        raise TypeError("package snapshot timestamps must support isoformat")
+    return str(isoformat())

@@ -82,8 +82,39 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
     try:
         config = Config(str(Path(__file__).parents[2] / "api" / "alembic.ini"))
         config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
+        command.upgrade(config, "20260825_0032")
+        seeded = _seed_terminal_event(engine, include_terminal_event=False)
         command.upgrade(config, "head")
-        seeded = _seed_terminal_event(engine)
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(seeded["organization_id"])},
+            )
+            backfilled = (
+                connection.execute(
+                    text(
+                        "SELECT id, correlation_id, package_snapshot, delivered_at, processed_at "
+                        "FROM review_workflow_outbox "
+                        "WHERE idempotency_key = :idempotency_key"
+                    ),
+                    {
+                        "idempotency_key": (
+                            f"workflow:{seeded['workflow_id']}:terminal-package-backfill:0034"
+                        )
+                    },
+                )
+                .mappings()
+                .one()
+            )
+        assert backfilled["delivered_at"] is None
+        assert backfilled["processed_at"] is None
+        assert backfilled["correlation_id"] == seeded["correlation_id"]
+        assert backfilled["package_snapshot"]["state"] == "rejected"
+        assert backfilled["package_snapshot"]["provenance"]["workflow_event_id"] == str(
+            backfilled["id"]
+        )
+        seeded["event_id"] = backfilled["id"]
+        seeded["correlation_id"] = backfilled["correlation_id"]
         s3.create_bucket(Bucket=bucket)
         checkpoints = _ConcurrentCheckpointStore()
         packages = TerminalReviewPackageGenerator(S3FinalPackageStorage(client=s3, bucket=bucket))
@@ -203,7 +234,9 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         base_engine.dispose()
 
 
-def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
+def _seed_terminal_event(
+    engine: Engine, *, include_terminal_event: bool = True
+) -> dict[str, UUID | str]:
     organization_id = uuid4()
     workspace_id = uuid4()
     agreement_id = uuid4()
@@ -334,9 +367,10 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                 "checkpoint_id": checkpoint_id,
             },
         )
-        connection.execute(
-            text(
-                """
+        if include_terminal_event:
+            connection.execute(
+                text(
+                    """
                 INSERT INTO review_workflow_outbox (
                     id, workflow_id, organization_id, workspace_id, event_type,
                     correlation_id, idempotency_key, package_snapshot, delivered_at, processed_at
@@ -346,44 +380,67 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                     :event_key, CAST(:package_snapshot AS JSONB),
                     CURRENT_TIMESTAMP, NULL
                 )
-                """
-            ),
-            {
-                "id": event_id,
-                "workflow_id": workflow_id,
-                "organization_id": organization_id,
-                "workspace_id": workspace_id,
-                "correlation_id": correlation_id,
-                "event_key": f"terminal-integration-event-{event_id}",
-                "package_snapshot": dumps(
-                    {
-                        "organization_id": str(organization_id),
-                        "workspace_id": str(workspace_id),
-                        "review_id": str(review_id),
-                        "agreement_id": str(agreement_id),
-                        "agreement_version_id": None,
-                        "workflow_id": str(workflow_id),
-                        "policy_version_id": str(policy_version_id),
-                        "state": "rejected",
-                        "revision": 1,
-                        "decisions": [],
-                        "stages": [],
-                        "assignments": [],
-                        "comments": [],
-                        "findings": [],
-                        "audit_event_ids": [],
-                        "provenance": {
-                            "generator": "review-final-package-worker",
-                            "source": "postgresql-terminal-snapshot",
-                            "workflow_correlation_id": correlation_id,
-                            "workflow_event_id": str(event_id),
-                            "workflow_revision": 1,
-                        },
-                    },
-                    sort_keys=True,
+                    """
                 ),
-            },
-        )
+                {
+                    "id": event_id,
+                    "workflow_id": workflow_id,
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                    "correlation_id": correlation_id,
+                    "event_key": f"terminal-integration-event-{event_id}",
+                    "package_snapshot": dumps(
+                        {
+                            "organization_id": str(organization_id),
+                            "workspace_id": str(workspace_id),
+                            "review_id": str(review_id),
+                            "agreement_id": str(agreement_id),
+                            "agreement_version_id": None,
+                            "workflow_id": str(workflow_id),
+                            "policy_version_id": str(policy_version_id),
+                            "state": "rejected",
+                            "revision": 1,
+                            "decisions": [],
+                            "stages": [],
+                            "assignments": [],
+                            "comments": [],
+                            "findings": [],
+                            "audit_event_ids": [],
+                            "provenance": {
+                                "generator": "review-final-package-worker",
+                                "source": "postgresql-terminal-snapshot",
+                                "workflow_correlation_id": correlation_id,
+                                "workflow_event_id": str(event_id),
+                                "workflow_revision": 1,
+                            },
+                        },
+                        sort_keys=True,
+                    ),
+                },
+            )
+        else:
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO review_workflow_outbox (
+                        id, workflow_id, organization_id, workspace_id, event_type,
+                        correlation_id, idempotency_key, delivered_at, processed_at
+                    ) VALUES (
+                        :id, :workflow_id, :organization_id, :workspace_id,
+                        'review.workflow.resume', :correlation_id, :event_key,
+                        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": event_id,
+                    "workflow_id": workflow_id,
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                    "correlation_id": correlation_id,
+                    "event_key": f"terminal-integration-old-processed-{event_id}",
+                },
+            )
     return {
         "organization_id": organization_id,
         "workspace_id": workspace_id,
