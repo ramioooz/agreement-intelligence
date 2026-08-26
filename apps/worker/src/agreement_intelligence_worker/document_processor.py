@@ -51,6 +51,8 @@ class ObjectStorage(Protocol):
 
     def put_immutable(self, key: str, content: bytes, *, content_type: str) -> bool: ...
 
+    def delete(self, key: str) -> None: ...
+
 
 class S3ObjectStorage:
     def __init__(self, *, client: Any, bucket: str) -> None:
@@ -88,6 +90,9 @@ class S3ObjectStorage:
                 return False
             raise
         return True
+
+    def delete(self, key: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
 class DocumentUnderstandingProcessor:
@@ -144,6 +149,9 @@ class DocumentUnderstandingProcessor:
             content_type="application/json",
         )
         return CompletedArtifact(job_id=job.id, key=artifact_key)
+
+    def discard(self, artifact: CompletedArtifact) -> None:
+        self._storage.delete(artifact.key)
 
 
 class _SourceDocument:

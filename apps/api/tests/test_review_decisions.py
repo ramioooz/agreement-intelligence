@@ -232,6 +232,32 @@ def test_decisions_and_exports_hide_findings_outside_authorized_scope(
     assert export.status_code == 404
 
 
+def test_decision_history_and_recording_are_blocked_after_deletion_acceptance(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    seeded = _seed_review(session)
+    agreement = session.get(AgreementRecord, seeded.agreement_id)
+    assert agreement is not None
+    agreement.deletion_requested_at = datetime.now(UTC)
+    session.commit()
+    client = client_for_session(seeded.reviewer_id)
+
+    history = client.get(
+        f"/review-findings/{seeded.finding_id}/decisions",
+        params=seeded.scope,
+    )
+    decision = client.post(
+        f"/review-findings/{seeded.finding_id}/decisions",
+        params=seeded.scope,
+        json={"action": "accepted", "rationale": "Must be hidden after deletion."},
+    )
+
+    assert history.status_code == 404
+    assert decision.status_code == 404
+    assert session.query(ReviewDecisionRecord).count() == 0
+
+
 def test_decision_rationale_rejects_whitespace_only_values(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],

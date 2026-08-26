@@ -4,6 +4,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.access import active_agreement_statement
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.comparisons.models import (
     VersionComparisonChangeRecord,
     VersionComparisonRunRecord,
@@ -20,12 +22,27 @@ class SQLAlchemyVersionComparisonRepository:
         self._session = session
 
     def create(self, record: VersionComparisonRunRecord) -> VersionComparisonRunResponse:
+        active = self._session.scalar(
+            active_agreement_statement(
+                record.agreement_id,
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+                for_update=True,
+            )
+        )
+        if active is None:
+            raise RuntimeError("cannot compare a deleted agreement")
         self._session.add(record)
         self._session.flush()
         return self.response(record)
 
     def get(self, comparison_id: UUID) -> VersionComparisonRunRecord | None:
-        return self._session.get(VersionComparisonRunRecord, comparison_id)
+        return self._session.scalar(
+            select(VersionComparisonRunRecord)
+            .join(AgreementRecord, VersionComparisonRunRecord.agreement_id == AgreementRecord.id)
+            .where(VersionComparisonRunRecord.id == comparison_id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
+        )
 
     def by_identity(
         self,
@@ -35,11 +52,14 @@ class SQLAlchemyVersionComparisonRepository:
         analysis_version: str,
     ) -> VersionComparisonRunRecord | None:
         return self._session.scalar(
-            select(VersionComparisonRunRecord).where(
+            select(VersionComparisonRunRecord)
+            .join(AgreementRecord, VersionComparisonRunRecord.agreement_id == AgreementRecord.id)
+            .where(
                 VersionComparisonRunRecord.agreement_id == agreement_id,
                 VersionComparisonRunRecord.baseline_version_id == baseline_version_id,
                 VersionComparisonRunRecord.target_version_id == target_version_id,
                 VersionComparisonRunRecord.analysis_version == analysis_version,
+                AgreementRecord.deletion_requested_at.is_(None),
             )
         )
 
@@ -47,9 +67,12 @@ class SQLAlchemyVersionComparisonRepository:
         self, agreement_id: UUID, idempotency_key: str
     ) -> VersionComparisonRunRecord | None:
         return self._session.scalar(
-            select(VersionComparisonRunRecord).where(
+            select(VersionComparisonRunRecord)
+            .join(AgreementRecord, VersionComparisonRunRecord.agreement_id == AgreementRecord.id)
+            .where(
                 VersionComparisonRunRecord.agreement_id == agreement_id,
                 VersionComparisonRunRecord.idempotency_key == idempotency_key,
+                AgreementRecord.deletion_requested_at.is_(None),
             )
         )
 
@@ -58,7 +81,17 @@ class SQLAlchemyVersionComparisonRepository:
             self.change_response(record)
             for record in self._session.scalars(
                 select(VersionComparisonChangeRecord)
+                .join(
+                    VersionComparisonRunRecord,
+                    VersionComparisonChangeRecord.comparison_run_id
+                    == VersionComparisonRunRecord.id,
+                )
+                .join(
+                    AgreementRecord,
+                    VersionComparisonRunRecord.agreement_id == AgreementRecord.id,
+                )
                 .where(VersionComparisonChangeRecord.comparison_run_id == comparison_id)
+                .where(AgreementRecord.deletion_requested_at.is_(None))
                 .order_by(VersionComparisonChangeRecord.ordinal)
             )
         ]

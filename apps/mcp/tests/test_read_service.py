@@ -137,6 +137,37 @@ def _context(tool_name: str, traceparent: str | None = None) -> ToolCallContext:
     return ToolCallContext.from_headers(tool_name, headers)
 
 
+def test_deletion_tombstone_blocks_mcp_search_and_direct_status(
+    session: Session,
+) -> None:
+    principal, organization, workspace = _scope(session)
+    agreement_id = _agreement(session, organization, workspace)
+    agreement = session.get(AgreementRecord, agreement_id)
+    assert agreement is not None
+    agreement.deletion_requested_at = datetime.now(UTC)
+    session.commit()
+    service = McpReadService(session, MemoryStorage({}))
+
+    search = service.search_agreements(
+        principal,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        query="Master",
+        limit=10,
+        context=_context("search_agreements"),
+    )
+
+    assert search["items"] == []
+    with pytest.raises(ResourceNotFoundError):
+        service.get_agreement_status(
+            principal,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            context=_context("get_agreement_status"),
+        )
+
+
 def test_invalid_token_is_rejected_by_the_oidc_verifier(monkeypatch: pytest.MonkeyPatch) -> None:
     def reject(_: str) -> Principal:
         raise HTTPException(status_code=401, detail={"code": "authentication_required"})

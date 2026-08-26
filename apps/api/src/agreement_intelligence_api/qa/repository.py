@@ -47,19 +47,26 @@ class SQLAlchemyQuestionRepository:
         self._session.rollback()
 
     def visible_agreement_ids(
-        self, *, organization_id: UUID, workspace_id: UUID, agreement_ids: set[UUID]
+        self,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        agreement_ids: set[UUID],
+        for_update: bool = False,
     ) -> set[UUID]:
         if not agreement_ids:
             return set()
-        return set(
-            self._session.scalars(
-                select(AgreementRecord.id)
-                .where(AgreementRecord.organization_id == organization_id)
-                .where(AgreementRecord.workspace_id == workspace_id)
-                .where(AgreementRecord.archived_at.is_(None))
-                .where(AgreementRecord.id.in_(agreement_ids))
-            )
+        statement = (
+            select(AgreementRecord.id)
+            .where(AgreementRecord.organization_id == organization_id)
+            .where(AgreementRecord.workspace_id == workspace_id)
+            .where(AgreementRecord.archived_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
+            .where(AgreementRecord.id.in_(agreement_ids))
         )
+        if for_update:
+            statement = statement.with_for_update()
+        return set(self._session.scalars(statement))
 
     def list_turns(
         self, *, organization_id: UUID, workspace_id: UUID, thread_id: UUID

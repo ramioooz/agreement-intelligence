@@ -6,6 +6,12 @@ from dataclasses import dataclass
 import boto3
 from agreement_intelligence_platform.telemetry import configure_telemetry
 
+from agreement_intelligence_worker.agreement_deletion import (
+    AgreementDeletionOutboxSweeper,
+    AgreementDeletionProcessor,
+    SQLAlchemyAgreementDeletionRepository,
+    run_deletion_outbox_loop,
+)
 from agreement_intelligence_worker.analysis_provider import (
     fallback_comparator_from_environment,
     provider_from_environment,
@@ -67,11 +73,19 @@ class ProfileProcessor:
             )
         return self._document.process(job)
 
+    def discard(self, artifact: CompletedArtifact) -> None:
+        if artifact.key.startswith("comparisons/"):
+            self._comparison.discard(artifact)
+        elif not artifact.key.startswith("embedding-reindex/"):
+            self._document.discard(artifact)
+
 
 @dataclass(frozen=True)
 class ProcessingRuntime:
     receiver: SQSProcessingMessageReceiver
     processor: JobProcessor
+    deletion_processor: AgreementDeletionProcessor
+    deletion_outbox_sweeper: AgreementDeletionOutboxSweeper
 
 
 @dataclass(frozen=True)
@@ -102,18 +116,28 @@ async def serve() -> None:
                 ),
             )
         return
+    outbox_sweeper = getattr(runtime, "deletion_outbox_sweeper", None)
+    outbox_tasks = (
+        (run_deletion_outbox_loop(stop_event, outbox_sweeper),)
+        if outbox_sweeper is not None
+        else ()
+    )
     if workflow_runtime is None:
         await run_worker(
             stop_event,
             message_receiver=runtime.receiver,
             job_processor=runtime.processor,
+            deletion_processor=getattr(runtime, "deletion_processor", None),
+            background_tasks=outbox_tasks,
         )
     else:
         await run_worker(
             stop_event,
             message_receiver=runtime.receiver,
             job_processor=runtime.processor,
+            deletion_processor=getattr(runtime, "deletion_processor", None),
             background_tasks=(
+                *outbox_tasks,
                 run_workflow_loop(
                     stop_event, workflow_runtime.receiver, workflow_runtime.processor
                 ),
@@ -179,7 +203,19 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
-    return ProcessingRuntime(receiver=receiver, processor=processor)
+    deletion_repository = SQLAlchemyAgreementDeletionRepository(engine)
+    return ProcessingRuntime(
+        receiver=receiver,
+        processor=processor,
+        deletion_processor=AgreementDeletionProcessor(
+            deletion_repository,
+            storage,
+        ),
+        deletion_outbox_sweeper=AgreementDeletionOutboxSweeper(
+            deletion_repository,
+            queue,
+        ),
+    )
 
 
 def workflow_runtime_from_environment() -> WorkflowRuntime | None:

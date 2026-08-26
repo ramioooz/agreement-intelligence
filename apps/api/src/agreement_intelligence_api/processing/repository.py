@@ -4,6 +4,8 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.access import active_agreement_statement
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.processing.models import (
     ProcessingJobRecord,
     ProcessingOutboxRecord,
@@ -16,20 +18,38 @@ class SQLAlchemyProcessingJobRepository:
         self._session = session
 
     def create(self, record: ProcessingJobRecord) -> ProcessingJobResponse:
+        active = self._session.scalar(
+            active_agreement_statement(
+                record.agreement_id,
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+                for_update=True,
+            )
+        )
+        if active is None:
+            raise RuntimeError("cannot process a deleted agreement")
         self._session.add(record)
         self._session.flush()
         return self._to_response(record)
 
     def get(self, job_id: UUID) -> ProcessingJobRecord | None:
-        return self._session.get(ProcessingJobRecord, job_id)
+        return self._session.scalar(
+            select(ProcessingJobRecord)
+            .join(AgreementRecord, ProcessingJobRecord.agreement_id == AgreementRecord.id)
+            .where(ProcessingJobRecord.id == job_id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
+        )
 
     def by_idempotency_key(
         self, agreement_id: UUID, idempotency_key: str
     ) -> ProcessingJobRecord | None:
         return self._session.scalar(
-            select(ProcessingJobRecord).where(
+            select(ProcessingJobRecord)
+            .join(AgreementRecord, ProcessingJobRecord.agreement_id == AgreementRecord.id)
+            .where(
                 ProcessingJobRecord.agreement_id == agreement_id,
                 ProcessingJobRecord.idempotency_key == idempotency_key,
+                AgreementRecord.deletion_requested_at.is_(None),
             )
         )
 

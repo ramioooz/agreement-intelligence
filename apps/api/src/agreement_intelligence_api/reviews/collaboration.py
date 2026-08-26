@@ -10,6 +10,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.agreements.models import AgreementRecord, AgreementVersionRecord
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
 from agreement_intelligence_api.identity.models import Membership, WorkspaceMembership
@@ -124,10 +125,13 @@ class ReviewCollaborationService:
             hide_resource()
         assignments = self._session.scalars(
             select(ReviewAssignmentRecord)
+            .join(ReviewCaseRecord, ReviewAssignmentRecord.review_id == ReviewCaseRecord.id)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewAssignmentRecord.organization_id == organization_id)
             .where(ReviewAssignmentRecord.workspace_id == workspace_id)
             .where(ReviewAssignmentRecord.assignee_id == principal.user_id)
             .where(ReviewAssignmentRecord.status == "active")
+            .where(AgreementRecord.deletion_requested_at.is_(None))
             .order_by(ReviewAssignmentRecord.due_at, ReviewAssignmentRecord.created_at)
         )
         return [self._assignment_response(item) for item in assignments]
@@ -153,10 +157,13 @@ class ReviewCollaborationService:
         unread_count = self._session.scalar(
             select(func.count())
             .select_from(ReviewNotificationEventRecord)
+            .join(ReviewCaseRecord, ReviewNotificationEventRecord.review_id == ReviewCaseRecord.id)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewNotificationEventRecord.organization_id == organization_id)
             .where(ReviewNotificationEventRecord.workspace_id == workspace_id)
             .where(ReviewNotificationEventRecord.recipient_id == principal.user_id)
             .where(ReviewNotificationEventRecord.delivered_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         )
         return ReviewNotificationSummaryResponse(unread_count=unread_count or 0)
 
@@ -364,9 +371,12 @@ class ReviewCollaborationService:
     ) -> ReviewCaseRecord:
         record = self._session.scalar(
             select(ReviewCaseRecord)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewCaseRecord.id == review_id)
             .where(ReviewCaseRecord.organization_id == organization_id)
             .where(ReviewCaseRecord.workspace_id == workspace_id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
+            .with_for_update()
         )
         if record is None:
             hide_resource()
@@ -376,10 +386,12 @@ class ReviewCollaborationService:
         self, agreement_id: UUID, organization_id: UUID, workspace_id: UUID
     ) -> AgreementRecord:
         record = self._session.scalar(
-            select(AgreementRecord)
-            .where(AgreementRecord.id == agreement_id)
-            .where(AgreementRecord.organization_id == organization_id)
-            .where(AgreementRecord.workspace_id == workspace_id)
+            active_agreement_statement(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                for_update=True,
+            )
         )
         if record is None:
             hide_resource()

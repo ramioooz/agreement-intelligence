@@ -68,6 +68,30 @@ class _AlwaysImmutableStorage:
     def read(self, key: str) -> StoredDocument | None:
         return None
 
+    def delete(self, key: str) -> None:
+        pass
+
+
+class _FailingPackageStorage:
+    def __init__(self) -> None:
+        self.objects: set[str] = set()
+        self.deleted: list[str] = []
+
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        del content, content_type, sha256
+        if key.endswith("report.pdf"):
+            raise RuntimeError("S3 unavailable")
+        self.objects.add(key)
+        return True
+
+    def read(self, key: str) -> StoredDocument | None:
+        del key
+        return None
+
+    def delete(self, key: str) -> None:
+        self.deleted.append(key)
+        self.objects.discard(key)
+
 
 def _recording_refresh(
     calls: list[tuple[str, object]], original_refresh: Callable[..., None]
@@ -85,6 +109,9 @@ def test_final_package_creation_locks_the_workflow_before_checking_for_an_existi
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
 
     assert "FOR UPDATE OF review_workflows" in sql
+    assert "agreements" in sql
+    assert "agreements.deletion_requested_at IS NULL" in sql
+    assert "FOR UPDATE OF review_workflows, agreements" in sql
 
 
 def test_existing_immutable_package_object_must_match_the_expected_checksum() -> None:
@@ -236,6 +263,57 @@ def test_final_package_restores_tenant_scope_before_refreshing_after_commit(
 
     assert [kind for kind, _ in calls[-2:]] == ["scope", "refresh"]
     assert calls[-2][1] == review.organization_id
+
+
+def test_final_package_rechecks_tombstone_before_writing_objects(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-deletion-fence",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    agreement = session.get(AgreementRecord, review.agreement_id)
+    assert workflow_record is not None
+    assert agreement is not None
+    workflow_record.state = "rejected"
+    agreement.deletion_requested_at = datetime.now(UTC)
+    session.commit()
+    storage = _FailingPackageStorage()
+    monkeypatch.setattr(workflow_routes_module, "storage_from_environment", lambda: storage)
+
+    with pytest.raises(HTTPException, match="final_package_not_ready"):
+        _create_final_package(session, review, workflow_record)
+
+    assert storage.objects == set()
+
+
+def test_partial_final_package_write_is_compensated_before_unlocking_agreement(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-compensation",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.commit()
+    storage = _FailingPackageStorage()
+    monkeypatch.setattr(workflow_routes_module, "storage_from_environment", lambda: storage)
+
+    with pytest.raises(RuntimeError, match="S3 unavailable"):
+        _create_final_package(session, review, workflow_record)
+
+    assert storage.objects == set()
+    assert storage.deleted == [
+        f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/"
+        "final-package/manifest.json"
+    ]
 
 
 def test_stage_activation_assigns_each_eligible_actor_once(session: Session) -> None:

@@ -133,6 +133,9 @@ class VersionComparisonProcessor:
             self._mark_failed(job, str(error))
             raise
 
+    def discard(self, artifact: CompletedArtifact) -> None:
+        self._storage.delete(artifact.key)
+
     def _process(self, job: ProcessingJob) -> CompletedArtifact:
         with self._engine.begin() as connection:
             _set_tenant_context(connection, job)

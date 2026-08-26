@@ -1,9 +1,11 @@
 from collections.abc import Generator, Mapping, MutableMapping
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.documents.storage import S3DocumentStorage, StoredDocument
 from agreement_intelligence_api.documents.validation import (
     DocumentValidationError,
@@ -67,6 +69,28 @@ class FakeIdentityService:
         )
 
 
+class EmptyDeletionSession:
+    def get_bind(self) -> object:
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    def scalar(self, statement: object) -> None:
+        del statement
+        return None
+
+    def scalars(self, statement: object) -> list[object]:
+        del statement
+        return []
+
+    def add(self, record: object) -> None:
+        del record
+
+    def flush(self) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+
 @fixture(autouse=True)
 def document_test_app(monkeypatch: MonkeyPatch) -> Generator[None]:
     monkeypatch.delenv("MAX_DOCUMENT_UPLOAD_BYTES", raising=False)
@@ -78,6 +102,7 @@ def document_test_app(monkeypatch: MonkeyPatch) -> Generator[None]:
     app.dependency_overrides[get_identity_service] = lambda: FakeIdentityService(
         allowed_workspaces={UUID(WORKSPACE_ID)}
     )
+    app.dependency_overrides[get_session] = lambda: EmptyDeletionSession()
     yield
     app.dependency_overrides.clear()
     if hasattr(app.state, "document_storage"):

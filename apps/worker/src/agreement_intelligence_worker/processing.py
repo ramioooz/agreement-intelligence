@@ -35,6 +35,12 @@ from sqlalchemy import (
     update,
 )
 
+from agreement_intelligence_worker.agreement_deletion import (
+    deletion_objects,
+    deletion_outbox,
+    deletion_requests,
+)
+
 logger = logging.getLogger("agreement_intelligence.worker")
 
 JobState = Literal["queued", "processing", "completed", "failed"]
@@ -51,6 +57,7 @@ agreements = Table(
     Column("current_version_id", Uuid(as_uuid=True), nullable=True),
     Column("processing_state", String(32), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("deletion_requested_at", DateTime(timezone=True), nullable=True),
 )
 agreement_versions = Table(
     "agreement_versions",
@@ -147,6 +154,8 @@ class ProcessingMessage:
     workspace_id: UUID | None = None
     trace_headers: Mapping[str, str] = field(default_factory=dict)
     queue_age_ms: int | None = None
+    message_type: str = "processing"
+    deletion_id: UUID | None = None
 
 
 class JobRepository(Protocol):
@@ -165,7 +174,7 @@ class JobRepository(Protocol):
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None: ...
+    ) -> bool | None: ...
 
     def requeue(
         self,
@@ -204,6 +213,10 @@ class ProcessingMessageReceiver(Protocol):
     async def receive(self) -> ProcessingMessage | None: ...
 
     async def ack(self, message: ProcessingMessage) -> None: ...
+
+
+class DeletionMessageProcessor(Protocol):
+    def handle(self, deletion_id: UUID, *, organization_id: UUID, workspace_id: UUID) -> None: ...
 
 
 class AgreementProcessor(Protocol):
@@ -292,7 +305,11 @@ class JobProcessor:
         except Exception:
             self._handle_transient_failure(job, "Unexpected processing dependency failure")
         else:
-            self._complete(job, artifact)
+            if not self._complete(job, artifact):
+                discard = getattr(self._processor, "discard", None)
+                if callable(discard):
+                    discard(artifact)
+                return
             if self._completion_handler is not None:
                 self._completion_handler.completed(job, artifact)
 
@@ -345,13 +362,14 @@ class JobProcessor:
             delay_seconds=delay_seconds,
         )
 
-    def _complete(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
-        self._repository.complete(
+    def _complete(self, job: ProcessingJob, artifact: CompletedArtifact) -> bool:
+        completed = self._repository.complete(
             job.id,
             artifact,
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
         )
+        return completed is not False
 
     def _requeue(self, job: ProcessingJob, *, message: str, next_retry_at: datetime) -> None:
         self._repository.requeue(
@@ -418,6 +436,38 @@ class SQSProcessingQueue:
             )
         self._client.send_message(**request)
 
+    def enqueue_deletion(
+        self,
+        deletion_id: UUID,
+        *,
+        agreement_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        delay_seconds: int,
+    ) -> None:
+        body = json.dumps(
+            {
+                "message_type": "agreement_deletion",
+                "deletion_id": str(deletion_id),
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
+                "agreement_id": str(agreement_id),
+            },
+            sort_keys=True,
+        )
+        request: dict[str, object] = {
+            "QueueUrl": self._queue_url,
+            "MessageBody": body,
+            "DelaySeconds": delay_seconds,
+        }
+        if _is_fifo_queue(self._queue_url):
+            request.pop("DelaySeconds")
+            request["MessageGroupId"] = str(agreement_id)
+            request["MessageDeduplicationId"] = (
+                f"{deletion_id}:retry:{delay_seconds}:{datetime.now(UTC).isoformat()}"
+            )
+        self._client.send_message(**request)
+
 
 class SQSProcessingMessageReceiver:
     def __init__(
@@ -454,13 +504,19 @@ class SQSProcessingMessageReceiver:
             if key in {"traceparent", "tracestate"}
             and isinstance(value := attribute.get("StringValue"), str)
         }
+        message_type = str(body.get("message_type", "processing"))
+        deletion_id = (
+            UUID(str(body["deletion_id"])) if message_type == "agreement_deletion" else None
+        )
         return ProcessingMessage(
-            job_id=UUID(str(body["job_id"])),
+            job_id=UUID(str(body.get("job_id", deletion_id))),
             organization_id=UUID(str(body["organization_id"])),
             workspace_id=UUID(str(body["workspace_id"])),
             receipt_handle=str(message["ReceiptHandle"]),
             trace_headers=trace_headers,
             queue_age_ms=_queue_age_ms(message),
+            message_type=message_type,
+            deletion_id=deletion_id,
         )
 
     async def ack(self, message: ProcessingMessage) -> None:
@@ -501,6 +557,14 @@ class SQLAlchemyProcessingJobRepository:
             if organization_id is not None and job["organization_id"] != organization_id:
                 return None
             if workspace_id is not None and job["workspace_id"] != workspace_id:
+                return None
+            deletion_requested_at = connection.scalar(
+                select(agreements.c.deletion_requested_at).where(
+                    agreements.c.id == job["agreement_id"],
+                    agreements.c.organization_id == job["organization_id"],
+                )
+            )
+            if deletion_requested_at is not None:
                 return None
             artifact_exists = (
                 connection.execute(
@@ -583,7 +647,7 @@ class SQLAlchemyProcessingJobRepository:
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None:
+    ) -> bool:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
@@ -593,9 +657,29 @@ class SQLAlchemyProcessingJobRepository:
                 .one_or_none()
             )
             if job is None:
-                return
+                return False
             if not _matches_tenant_scope(job, organization_id, workspace_id):
-                return
+                return False
+            agreement = (
+                connection.execute(
+                    select(agreements)
+                    .where(
+                        agreements.c.id == job["agreement_id"],
+                        agreements.c.organization_id == job["organization_id"],
+                    )
+                    .with_for_update()
+                )
+                .mappings()
+                .one_or_none()
+            )
+            job = _job_for_update(connection, job_id)
+            if job is None:
+                return False
+            if agreement is None:
+                return False
+            if agreement["deletion_requested_at"] is not None:
+                _inventory_late_artifact(connection, job, artifact.key, now=now)
+                return False
             existing_artifact = connection.execute(
                 select(processing_artifacts.c.id).where(
                     processing_artifacts.c.job_id == job_id,
@@ -627,6 +711,7 @@ class SQLAlchemyProcessingJobRepository:
                 )
             )
             _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
+            return True
 
     def completed_artifact(
         self,
@@ -645,6 +730,14 @@ class SQLAlchemyProcessingJobRepository:
             if job is None or job["state"] != "completed":
                 return None
             if not _matches_tenant_scope(job, organization_id, workspace_id):
+                return None
+            deletion_requested_at = connection.scalar(
+                select(agreements.c.deletion_requested_at).where(
+                    agreements.c.id == job["agreement_id"],
+                    agreements.c.organization_id == job["organization_id"],
+                )
+            )
+            if deletion_requested_at is not None:
                 return None
             artifact = (
                 connection.execute(
@@ -751,10 +844,116 @@ def _is_fifo_queue(queue_url: str) -> bool:
 
 def _job_for_update(connection: Any, job_id: UUID) -> Any | None:
     return (
-        connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+        connection.execute(
+            select(processing_jobs).where(processing_jobs.c.id == job_id).with_for_update()
+        )
         .mappings()
         .one_or_none()
     )
+
+
+def _inventory_late_artifact(
+    connection: Any, job: Mapping[str, Any], key: str, *, now: datetime
+) -> None:
+    request = (
+        connection.execute(
+            select(deletion_requests)
+            .where(
+                deletion_requests.c.agreement_id == job["agreement_id"],
+                deletion_requests.c.organization_id == job["organization_id"],
+                deletion_requests.c.workspace_id == job["workspace_id"],
+            )
+            .with_for_update()
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if request is None:
+        raise RuntimeError("tombstoned agreement has no active deletion request")
+
+    category = _late_artifact_category(cast(str, job["profile"]), key)
+    if category is None:
+        return
+    existing = connection.scalar(
+        select(deletion_objects.c.id).where(
+            deletion_objects.c.deletion_id == request["id"],
+            deletion_objects.c.category == category,
+            deletion_objects.c.object_key == key,
+        )
+    )
+    if existing is None:
+        connection.execute(
+            deletion_objects.insert().values(
+                id=uuid4(),
+                deletion_id=request["id"],
+                organization_id=job["organization_id"],
+                workspace_id=job["workspace_id"],
+                agreement_id=job["agreement_id"],
+                category=category,
+                object_key=key,
+                state="pending",
+                last_error=None,
+                updated_at=now,
+            )
+        )
+
+    terminal_state = request["state"] in {"completed", "failed"}
+    retry_cycle = int(request["retry_cycle"]) + (1 if terminal_state else 0)
+    connection.execute(
+        update(deletion_requests)
+        .where(deletion_requests.c.id == request["id"])
+        .values(
+            state="retrying",
+            attempt_count=0 if terminal_state else request["attempt_count"],
+            retry_cycle=retry_cycle,
+            claim_token=None,
+            lease_expires_at=None,
+            next_attempt_at=now,
+            failure_category="artifact_race",
+            failure_message="Processing completed after deletion was accepted",
+            completed_at=None,
+            failed_at=None,
+            updated_at=now,
+        )
+    )
+    result = connection.execute(
+        update(deletion_outbox)
+        .where(deletion_outbox.c.deletion_id == request["id"])
+        .values(
+            attempt_count=0,
+            next_attempt_at=now,
+            lease_token=None,
+            lease_expires_at=None,
+            last_error=None,
+            delivered_at=None,
+            updated_at=now,
+        )
+    )
+    if result.rowcount == 0:
+        connection.execute(
+            deletion_outbox.insert().values(
+                id=uuid4(),
+                deletion_id=request["id"],
+                organization_id=job["organization_id"],
+                workspace_id=job["workspace_id"],
+                agreement_id=job["agreement_id"],
+                attempt_count=0,
+                next_attempt_at=now,
+                lease_token=None,
+                lease_expires_at=None,
+                last_error=None,
+                delivered_at=None,
+                updated_at=now,
+            )
+        )
+
+
+def _late_artifact_category(profile: str, key: str) -> str | None:
+    if profile.startswith("embedding-reindex:") or key.startswith("embedding-reindex/"):
+        return None
+    if profile == "version-comparison":
+        return "comparison"
+    return "analysis"
 
 
 def _required_tenant_scope(value: UUID | None, field_name: str) -> UUID:
@@ -827,6 +1026,7 @@ async def run_processing_loop(
     *,
     receiver: ProcessingMessageReceiver,
     processor: JobProcessor,
+    deletion_processor: DeletionMessageProcessor | None = None,
     idle_sleep_seconds: float = 1.0,
 ) -> None:
     while not stop_event.is_set():
@@ -863,11 +1063,24 @@ async def run_processing_loop(
                     "worker.processing",
                     safe_span_attributes({"operation": "worker.processing", "outcome": "success"}),
                 ):
-                    processor.handle(
-                        message.job_id,
-                        organization_id=message.organization_id,
-                        workspace_id=message.workspace_id,
-                    )
+                    if message.message_type == "agreement_deletion":
+                        if deletion_processor is None or message.deletion_id is None:
+                            raise ValueError("agreement deletion processor is not configured")
+                        organization_id = _required_tenant_scope(
+                            message.organization_id, "organization_id"
+                        )
+                        workspace_id = _required_tenant_scope(message.workspace_id, "workspace_id")
+                        deletion_processor.handle(
+                            message.deletion_id,
+                            organization_id=organization_id,
+                            workspace_id=workspace_id,
+                        )
+                    else:
+                        processor.handle(
+                            message.job_id,
+                            organization_id=message.organization_id,
+                            workspace_id=message.workspace_id,
+                        )
             finally:
                 detach(context_token)
         except Exception:

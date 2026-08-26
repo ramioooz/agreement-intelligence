@@ -6,11 +6,13 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.reviews.models import (
+    PlaybookEvaluationRecord,
     PlaybookFindingRecord,
     ReviewAuditEventRecord,
     ReviewDecisionRecord,
@@ -41,7 +43,7 @@ class ReviewDecisionService:
         request: ReviewDecisionRequest,
     ) -> ReviewDecisionResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
-        finding = self._finding(finding_id, organization_id, workspace_id)
+        finding = self._finding(finding_id, organization_id, workspace_id, lock_agreement=True)
         now = datetime.now(UTC)
         decision = ReviewDecisionRecord(
             id=uuid4(),
@@ -122,15 +124,29 @@ class ReviewDecisionService:
             hide_resource()
 
     def _finding(
-        self, finding_id: UUID, organization_id: UUID, workspace_id: UUID
+        self,
+        finding_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        *,
+        lock_agreement: bool = False,
     ) -> PlaybookFindingRecord:
-        finding = self._session.scalar(
+        statement = (
             select(PlaybookFindingRecord)
+            .join(
+                PlaybookEvaluationRecord,
+                PlaybookFindingRecord.evaluation_id == PlaybookEvaluationRecord.id,
+            )
+            .join(AgreementRecord, PlaybookEvaluationRecord.agreement_id == AgreementRecord.id)
             .options(selectinload(PlaybookFindingRecord.decisions))
             .where(PlaybookFindingRecord.id == finding_id)
             .where(PlaybookFindingRecord.organization_id == organization_id)
             .where(PlaybookFindingRecord.workspace_id == workspace_id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         )
+        if lock_agreement:
+            statement = statement.with_for_update(of=AgreementRecord)
+        finding = self._session.scalar(statement)
         if finding is None:
             hide_resource()
         return finding

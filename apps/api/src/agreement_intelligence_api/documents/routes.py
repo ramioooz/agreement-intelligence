@@ -15,7 +15,10 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
+from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.documents.service import (
     DocumentAccessDeniedError,
     DocumentNotFoundError,
@@ -47,6 +50,7 @@ class UploadResponse(BaseModel):
 
 PrincipalDependency = Annotated[Principal, Depends(current_principal)]
 IdentityServiceDependency = Annotated[IdentityService, Depends(get_identity_service)]
+SessionDependency = Annotated[Session, Depends(get_session)]
 
 
 def _authorized_scope(
@@ -112,15 +116,21 @@ async def upload_document(
     file: Annotated[UploadFile, File()],
     scope: Annotated[UploadScope, Depends(get_upload_scope)],
     service: Annotated[DocumentService, Depends(get_document_service)],
+    session: SessionDependency,
 ) -> UploadResponse:
     try:
         content = await file.read(service._max_bytes + 1)
-        uploaded = service.upload(
-            scope,
+        document = service.prepare(
             filename=file.filename,
             content=content,
             declared_content_type=file.content_type,
         )
+        repository = SQLAlchemyAgreementRepository(session)
+        object_key = service.object_key(scope, document)
+        repository.lock_source_object(object_key)
+        uploaded = service.upload_validated(scope, document)
+        repository.record_source_upload(uploaded)
+        session.commit()
     except DocumentValidationError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     finally:
@@ -135,7 +145,14 @@ def download_document(
     object_key: str,
     scope: Annotated[UploadScope, Depends(get_download_scope)],
     service: Annotated[DocumentService, Depends(get_document_service)],
+    session: SessionDependency,
 ) -> StreamingResponse:
+    if SQLAlchemyAgreementRepository(session).is_object_pending_deletion(
+        object_key,
+        organization_id=scope.tenant_id,
+        workspace_id=scope.workspace_id,
+    ):
+        raise HTTPException(status_code=404, detail="Document not found.")
     try:
         document = service.download(scope, object_key=object_key)
     except DocumentAccessDeniedError as error:

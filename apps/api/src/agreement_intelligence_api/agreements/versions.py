@@ -11,7 +11,12 @@ from agreement_intelligence_api.agreements.schemas import (
     AgreementVersionResponse,
 )
 from agreement_intelligence_api.agreements.service import AgreementNotFoundError, AgreementService
-from agreement_intelligence_api.documents.service import UploadedDocument
+from agreement_intelligence_api.documents.service import (
+    DocumentService,
+    UploadedDocument,
+    UploadScope,
+)
+from agreement_intelligence_api.documents.validation import ValidatedDocument
 from agreement_intelligence_api.identity.authz import Principal
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -173,6 +178,21 @@ class AgreementVersionService:
         )
         self._identity.session.commit()
         return created, True
+
+    def upload_source(
+        self,
+        document_service: DocumentService,
+        scope: UploadScope,
+        document: ValidatedDocument,
+    ) -> UploadedDocument:
+        object_key = document_service.object_key(scope, document)
+        self._repository.lock_source_object(object_key)
+        uploaded = document_service.upload_validated(scope, document)
+        self._repository.record_source_upload(uploaded)
+        # The registry reservation must survive lineage validation and request failures so a
+        # concurrent deletion either preserves this upload or makes create_version reject it.
+        self._identity.session.commit()
+        return uploaded
 
     def authorize_upload(
         self,

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.db import get_session
@@ -414,48 +415,62 @@ def _create_final_package(
     manifest_key = f"{base}/manifest.json"
     pdf_key = f"{base}/report.pdf"
     storage = storage_from_environment()
-    _store_verified_immutable(
-        storage,
-        key=manifest_key,
-        content=manifest_content,
-        content_type="application/json",
-    )
-    _store_verified_immutable(
-        storage,
-        key=pdf_key,
-        content=pdf_content,
-        content_type="application/pdf",
-    )
-    package = ReviewFinalPackageRecord(
-        organization_id=review.organization_id,
-        workspace_id=review.workspace_id,
-        review_id=review.id,
-        workflow_id=workflow.id,
-        state=workflow.state,
-        manifest_key=manifest_key,
-        pdf_key=pdf_key,
-        manifest_checksum=manifest_checksum,
-        pdf_checksum=pdf_checksum,
-    )
-    session.add(package)
-    AuditEventWriter(session).record(
-        organization_id=review.organization_id,
-        workspace_id=review.workspace_id,
-        actor_id=review.created_by,
-        action="review_final_package_generated",
-        resource_type="review_final_package",
-        resource_id=package.id,
-        outcome="accepted",
-        correlation_id=f"review-package-{review.id}",
-        before_ref={"state": "not_generated"},
-        after_ref={
-            "state": workflow.state,
-            "manifest_checksum": manifest_checksum,
-            "pdf_checksum": pdf_checksum,
-        },
-        metadata={"review_id": str(review.id), "workflow_id": str(workflow.id)},
-    )
-    session.commit()
+    created_keys: list[str] = []
+    try:
+        if _store_verified_immutable(
+            storage,
+            key=manifest_key,
+            content=manifest_content,
+            content_type="application/json",
+        ):
+            created_keys.append(manifest_key)
+        if _store_verified_immutable(
+            storage,
+            key=pdf_key,
+            content=pdf_content,
+            content_type="application/pdf",
+        ):
+            created_keys.append(pdf_key)
+    except Exception:
+        for key in reversed(created_keys):
+            storage.delete(key)
+        raise
+    try:
+        package = ReviewFinalPackageRecord(
+            organization_id=review.organization_id,
+            workspace_id=review.workspace_id,
+            review_id=review.id,
+            workflow_id=workflow.id,
+            state=workflow.state,
+            manifest_key=manifest_key,
+            pdf_key=pdf_key,
+            manifest_checksum=manifest_checksum,
+            pdf_checksum=pdf_checksum,
+        )
+        session.add(package)
+        AuditEventWriter(session).record(
+            organization_id=review.organization_id,
+            workspace_id=review.workspace_id,
+            actor_id=review.created_by,
+            action="review_final_package_generated",
+            resource_type="review_final_package",
+            resource_id=package.id,
+            outcome="accepted",
+            correlation_id=f"review-package-{review.id}",
+            before_ref={"state": "not_generated"},
+            after_ref={
+                "state": workflow.state,
+                "manifest_checksum": manifest_checksum,
+                "pdf_checksum": pdf_checksum,
+            },
+            metadata={"review_id": str(review.id), "workflow_id": str(workflow.id)},
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        for key in reversed(created_keys):
+            storage.delete(key)
+        raise
     _scope_transaction(session, organization_id)
     session.refresh(package)
     return package
@@ -464,8 +479,11 @@ def _create_final_package(
 def _workflow_for_package_update(review_id: UUID) -> Select[tuple[ReviewWorkflowRecord]]:
     return (
         select(ReviewWorkflowRecord)
+        .join(ReviewCaseRecord, ReviewWorkflowRecord.review_id == ReviewCaseRecord.id)
+        .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
         .where(ReviewWorkflowRecord.review_id == review_id)
-        .with_for_update(of=ReviewWorkflowRecord)
+        .where(AgreementRecord.deletion_requested_at.is_(None))
+        .with_for_update(of=(ReviewWorkflowRecord, AgreementRecord))
     )
 
 
@@ -475,7 +493,7 @@ def _store_verified_immutable(
     key: str,
     content: bytes,
     content_type: str,
-) -> None:
+) -> bool:
     checksum = sha256(content).hexdigest()
     if storage.put_immutable(
         key,
@@ -483,7 +501,7 @@ def _store_verified_immutable(
         content_type=content_type,
         sha256=checksum,
     ):
-        return
+        return True
     stored = storage.read(key)
     if (
         stored is None
@@ -491,6 +509,7 @@ def _store_verified_immutable(
         or sha256(stored.content).hexdigest() != checksum
     ):
         raise HTTPException(status_code=409, detail="final_package_object_conflict")
+    return False
 
 
 @router.post("/{review_id}/workflow/decisions", response_model=ReviewWorkflowResponse)
@@ -548,10 +567,13 @@ def _review_for_permission(
     ):
         hide_resource()
     review = session.scalar(
-        select(ReviewCaseRecord).where(
+        select(ReviewCaseRecord)
+        .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
+        .where(
             ReviewCaseRecord.id == review_id,
             ReviewCaseRecord.organization_id == organization_id,
             ReviewCaseRecord.workspace_id == workspace_id,
+            AgreementRecord.deletion_requested_at.is_(None),
         )
     )
     if review is None:
@@ -580,10 +602,13 @@ def _review_for_any_permission(
     ):
         hide_resource()
     review = session.scalar(
-        select(ReviewCaseRecord).where(
+        select(ReviewCaseRecord)
+        .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
+        .where(
             ReviewCaseRecord.id == review_id,
             ReviewCaseRecord.organization_id == organization_id,
             ReviewCaseRecord.workspace_id == workspace_id,
+            AgreementRecord.deletion_requested_at.is_(None),
         )
     )
     if review is None:

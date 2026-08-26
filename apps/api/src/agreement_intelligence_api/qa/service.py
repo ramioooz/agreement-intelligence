@@ -108,6 +108,18 @@ class GroundedQuestionService:
         agreement_ids: tuple[UUID, ...] | None = None,
     ) -> QuestionThread:
         self._require_access(principal, organization_id=organization_id, workspace_id=workspace_id)
+        if agreement_ids and self._repository is not None:
+            requested = set(agreement_ids)
+            if (
+                self._repository.visible_agreement_ids(
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agreement_ids=requested,
+                    for_update=True,
+                )
+                != requested
+            ):
+                raise PermissionError("question thread is not available")
         thread = QuestionThread(
             id=uuid4(),
             organization_id=organization_id,
@@ -249,12 +261,24 @@ class GroundedQuestionService:
         )
         if record is None:
             return None
-        return QuestionThread(
+        loaded = QuestionThread(
             id=record.id,
             organization_id=record.organization_id,
             workspace_id=record.workspace_id,
             agreement_ids=tuple(UUID(value) for value in record.agreement_ids or ()) or None,
         )
+        if loaded.agreement_ids:
+            requested = set(loaded.agreement_ids)
+            if (
+                self._repository.visible_agreement_ids(
+                    organization_id=loaded.organization_id,
+                    workspace_id=loaded.workspace_id,
+                    agreement_ids=requested,
+                )
+                != requested
+            ):
+                return None
+        return loaded
 
     def _load_turns(self, thread: QuestionThread) -> list[QuestionTurn]:
         if self._repository is None:

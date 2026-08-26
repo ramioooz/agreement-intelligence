@@ -22,6 +22,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session, selectinload
 from sqlalchemy.sql import Select
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.approval_policies.models import (
     ApprovalPolicyStageRecord,
     ApprovalPolicyVersionRecord,
@@ -335,7 +336,15 @@ class ReviewWorkflowCoordinator:
         return self._snapshot(workflow)
 
     def _review(self, review_id: UUID) -> ReviewCaseRecord:
-        review = self._session.get(ReviewCaseRecord, review_id)
+        review = self._session.scalar(
+            select(ReviewCaseRecord)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
+            .where(
+                ReviewCaseRecord.id == review_id,
+                AgreementRecord.deletion_requested_at.is_(None),
+            )
+            .with_for_update()
+        )
         if review is None:
             raise ReviewWorkflowConflictError
         return review
@@ -422,8 +431,11 @@ class ReviewWorkflowCoordinator:
         count = 0
         workflows = self._session.scalars(
             select(ReviewWorkflowRecord)
+            .join(ReviewCaseRecord, ReviewWorkflowRecord.review_id == ReviewCaseRecord.id)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .options(selectinload(ReviewWorkflowRecord.stages))
             .where(ReviewWorkflowRecord.state == "waiting_for_approval")
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         ).all()
         for workflow in workflows:
             stage = next((item for item in workflow.stages if item.state == "active"), None)
@@ -673,7 +685,10 @@ class ReviewWorkflowOutboxDispatcher:
         events = self._session.scalars(
             select(ReviewWorkflowOutboxRecord)
             .join(ReviewWorkflowOutboxRecord.workflow)
+            .join(ReviewCaseRecord, ReviewWorkflowRecord.review_id == ReviewCaseRecord.id)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewWorkflowOutboxRecord.delivered_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
             .order_by(ReviewWorkflowOutboxRecord.created_at, ReviewWorkflowOutboxRecord.id)
             .limit(limit)
         ).all()
@@ -717,7 +732,14 @@ class ReviewWorkflowQueueDispatcher:
         _scope_transaction(self._session, organization_id)
         events = self._session.scalars(
             select(ReviewWorkflowOutboxRecord)
+            .join(
+                ReviewWorkflowRecord,
+                ReviewWorkflowOutboxRecord.workflow_id == ReviewWorkflowRecord.id,
+            )
+            .join(ReviewCaseRecord, ReviewWorkflowRecord.review_id == ReviewCaseRecord.id)
+            .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewWorkflowOutboxRecord.delivered_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
             .order_by(ReviewWorkflowOutboxRecord.created_at, ReviewWorkflowOutboxRecord.id)
             .limit(limit)
         ).all()

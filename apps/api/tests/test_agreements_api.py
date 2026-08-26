@@ -17,11 +17,12 @@ from agreement_intelligence_api.processing.models import (
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
-from pytest import fixture, raises
-from sqlalchemy import create_engine, text
+from pytest import MonkeyPatch, fixture, raises
+from sqlalchemy import create_engine, select, text
 from sqlalchemy import inspect as inspect_database
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 AUTH_CORRELATION_ID = "11111111-1111-4111-8111-111111111111"
 MISSING_SCOPE_CORRELATION_ID = "22222222-2222-4222-8222-222222222222"
@@ -41,7 +42,11 @@ CROSS_TENANT_CORRELATION_IDS = {
 
 @fixture
 def session() -> Generator[Session]:
-    engine = create_engine("sqlite+pysqlite:///:memory:", connect_args={"check_same_thread": False})
+    engine = create_engine(
+        "sqlite+pysqlite:///:memory:",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
     Base.metadata.create_all(engine)
     database_session = sessionmaker(bind=engine)()
     try:
@@ -196,14 +201,15 @@ def test_create_agreement_persists_repository_metadata(
     assert detail.json() == created
 
 
-def test_platform_admin_can_permanently_delete_an_agreement(
+def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanup(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],
 ) -> None:
     user_id, organization, workspace = _create_business_user_scope(session)
     payload = _agreement_payload("Disposable agreement")
+    checksum = "a" * 64
     payload["files"][0]["storage_key"] = (
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/abc/original.pdf"
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{checksum}/original.pdf"
     )
     agreement = client_for_session(user_id).post(
         "/agreements",
@@ -213,7 +219,7 @@ def test_platform_admin_can_permanently_delete_an_agreement(
     agreement_id = UUID(agreement.json()["id"])
     artifact_key = (
         f"tenants/{organization.id}/workspaces/{workspace.id}/agreements/{agreement_id}/"
-        "analysis/abc/analysis.json"
+        f"analysis/{checksum}/document-analysis.v1.json"
     )
     job_id = uuid4()
     now = datetime.now(UTC)
@@ -248,12 +254,14 @@ def test_platform_admin_can_permanently_delete_an_agreement(
     admin_id = _create_platform_admin(session, organization, workspace)
     client = client_for_session(admin_id)
     deleted_keys: list[str] = []
+    read_keys: list[str] = []
 
     class Storage:
         def put_immutable(self, *args: object, **kwargs: object) -> bool:
             return True
 
         def read(self, key: str) -> None:
+            read_keys.append(key)
             return None
 
         def delete(self, key: str) -> None:
@@ -266,7 +274,10 @@ def test_platform_admin_can_permanently_delete_an_agreement(
         params=_scope_query(organization, workspace),
     )
 
-    assert deleted.status_code == 204
+    assert deleted.status_code == 202
+    deletion = deleted.json()
+    assert deletion["agreement_id"] == str(agreement_id)
+    assert deletion["state"] == "accepted"
     assert (
         client.get(
             f"/agreements/{agreement_id}",
@@ -274,17 +285,356 @@ def test_platform_admin_can_permanently_delete_an_agreement(
         ).status_code
         == 404
     )
-    assert deleted_keys == [
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/abc/original.pdf",
-        artifact_key,
-    ]
+    blocked_processing = client.post(
+        f"/agreements/{agreement_id}/processing-jobs",
+        params=_scope_query(organization, workspace),
+        headers={"Idempotency-Key": "blocked-after-delete"},
+        json={"profile": "baseline"},
+    )
+    assert blocked_processing.status_code == 404
+    blocked_comparison = client.post(
+        f"/agreements/{agreement_id}/version-comparisons",
+        params=_scope_query(organization, workspace),
+        headers={"Idempotency-Key": "blocked-comparison-after-delete"},
+        json={},
+    )
+    assert blocked_comparison.status_code == 404
+    blocked_review = client.post(
+        "/reviews",
+        params=_scope_query(organization, workspace),
+        json={
+            "agreement_id": str(agreement_id),
+            "idempotency_key": "blocked-review-after-delete",
+        },
+    )
+    assert blocked_review.status_code == 404
+    blocked_source = client.get(
+        "/documents/download",
+        params={
+            **_scope_query(organization, workspace),
+            "object_key": payload["files"][0]["storage_key"],
+        },
+    )
+    assert blocked_source.status_code == 404
+    assert read_keys == []
+    assert deleted_keys == []
     from agreement_intelligence_api.agreements.models import AgreementDeletionAuditEventRecord
 
     audit = session.query(AgreementDeletionAuditEventRecord).one()
     assert audit.agreement_id == agreement_id
     assert audit.actor_id == admin_id
     assert audit.file_checksums == ["sha256:abc123"]
+    assert audit.event_type == "requested"
+
+    from agreement_intelligence_api.agreements.models import (
+        AgreementDeletionObjectRecord,
+        AgreementDeletionOutboxRecord,
+        AgreementDeletionRequestRecord,
+    )
+
+    request_record = session.query(AgreementDeletionRequestRecord).one()
+    assert request_record.id == UUID(deletion["id"])
+    assert request_record.state == "accepted"
+    inventory = (
+        session.query(AgreementDeletionObjectRecord)
+        .order_by(AgreementDeletionObjectRecord.category.desc())
+        .all()
+    )
+    assert {(item.category, item.object_key) for item in inventory} == {
+        ("source", payload["files"][0]["storage_key"]),
+        ("analysis", artifact_key),
+    }
+    outbox = session.query(AgreementDeletionOutboxRecord).one()
+    assert outbox.deletion_id == request_record.id
     del app.state.document_storage
+
+
+def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sources(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    from agreement_intelligence_api.agreements.models import (
+        AgreementDeletionObjectRecord,
+        AgreementDeletionRequestRecord,
+        AgreementRecord,
+        AgreementVersionRecord,
+    )
+    from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
+    from agreement_intelligence_api.comparisons.models import VersionComparisonRunRecord
+    from agreement_intelligence_api.processing.models import (
+        ProcessingArtifactRecord,
+        ProcessingJobRecord,
+    )
+
+    owner_id, organization, workspace = _create_business_user_scope(session)
+    client = client_for_session(owner_id)
+    scope = _scope_query(organization, workspace)
+    shared_key = (
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{'a' * 64}/original.pdf"
+    )
+    target_payload = _agreement_payload("Target")
+    target_payload["files"][0]["storage_key"] = shared_key
+    target = client.post("/agreements", params=scope, json=target_payload).json()
+
+    target_id = UUID(target["id"])
+    historical_key = (
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{'b' * 64}/original.pdf"
+    )
+    current_alias = (
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{'c' * 64}/original.pdf"
+    )
+    now = datetime.now(UTC)
+    version_one = session.scalar(
+        select(AgreementVersionRecord).where(AgreementVersionRecord.agreement_id == target_id)
+    )
+    assert version_one is not None
+    keeper = AgreementRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        title="Keeper",
+        agreement_type="client",
+        status="draft",
+        parties=[],
+        files=[{**target_payload["files"][0], "storage_key": shared_key}],
+        processing_state="pending",
+        audit_metadata={},
+        audit_events=[],
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(keeper)
+    session.flush()
+    session.add(
+        AgreementVersionRecord(
+            agreement_id=keeper.id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            version_number=1,
+            predecessor_version_id=None,
+            file_name="shared.pdf",
+            content_type="application/pdf",
+            storage_key=shared_key,
+            checksum="a" * 64,
+            byte_size=10,
+            uploaded_by=owner_id,
+            uploaded_at=now,
+            processing_state="completed",
+            idempotency_key="keeper-v1",
+        )
+    )
+    session.add(
+        AgreementVersionRecord(
+            agreement_id=target_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            version_number=2,
+            predecessor_version_id=version_one.id,
+            file_name="history.pdf",
+            content_type="application/pdf",
+            storage_key=historical_key,
+            checksum="sha256:history",
+            byte_size=20,
+            uploaded_by=owner_id,
+            uploaded_at=now,
+            processing_state="completed",
+            idempotency_key="history-v2",
+        )
+    )
+    record = session.get(AgreementRecord, target_id)
+    assert record is not None
+    record.files = [{**record.files[0], "storage_key": current_alias}]
+    comparison_id = uuid4()
+    comparison_key = f"comparisons/{comparison_id}/version-comparison.v1.json"
+    comparison_job = ProcessingJobRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=target_id,
+        version_id=version_one.id,
+        idempotency_key="comparison-inventory",
+        profile="version-comparison",
+        state="completed",
+        attempt_count=1,
+        queued_at=now,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    embedding_job = ProcessingJobRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=target_id,
+        version_id=None,
+        idempotency_key="embedding-inventory",
+        profile=f"embedding-reindex:{uuid4()}",
+        state="completed",
+        attempt_count=1,
+        queued_at=now,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add_all([comparison_job, embedding_job])
+    session.flush()
+    session.add_all(
+        [
+            ProcessingArtifactRecord(
+                job_id=comparison_job.id,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                agreement_id=target_id,
+                artifact_key=comparison_key,
+            ),
+            ProcessingArtifactRecord(
+                job_id=embedding_job.id,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                agreement_id=target_id,
+                artifact_key=f"embedding-reindex/{uuid4()}.json",
+            ),
+            VersionComparisonRunRecord(
+                id=comparison_id,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                agreement_id=target_id,
+                baseline_version_id=version_one.id,
+                target_version_id=version_one.id,
+                processing_job_id=comparison_job.id,
+                idempotency_key="comparison-inventory",
+                analysis_version="v1",
+                state="completed",
+                analysis_provenance={},
+                created_at=now,
+                updated_at=now,
+                completed_at=now,
+            ),
+        ]
+    )
+    session.commit()
+
+    admin_id = _create_platform_admin(session, organization, workspace)
+    accepted = client_for_session(admin_id).delete(f"/agreements/{target_id}", params=scope)
+
+    assert accepted.status_code == 202
+    deletion = session.query(AgreementDeletionRequestRecord).one()
+    assert deletion.state == "accepted"
+    inventory = {
+        (item.category, item.object_key)
+        for item in session.query(AgreementDeletionObjectRecord).all()
+    }
+    assert ("source", shared_key) in inventory
+    assert ("source", historical_key) in inventory
+    assert ("source", current_alias) in inventory
+    assert ("comparison", comparison_key) in inventory
+    assert ("analysis", comparison_key) not in inventory
+    assert not any(key.startswith("embedding-reindex/") for _, key in inventory)
+    repository = SQLAlchemyAgreementRepository(session)
+    assert not repository.is_object_pending_deletion(
+        shared_key,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+    )
+    assert repository.is_object_pending_deletion(
+        historical_key,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+    )
+
+
+def test_cross_tenant_deletion_is_denied_without_creating_an_intent(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    from agreement_intelligence_api.agreements.models import AgreementDeletionRequestRecord
+
+    owner_id, organization, workspace = _create_business_user_scope(session)
+    agreement = (
+        client_for_session(owner_id)
+        .post(
+            "/agreements",
+            params=_scope_query(organization, workspace),
+            json=_agreement_payload("Tenant A"),
+        )
+        .json()
+    )
+    _other_owner, other_organization, other_workspace = _create_business_user_scope(session)
+    other_admin = _create_platform_admin(session, other_organization, other_workspace)
+
+    denied = client_for_session(other_admin).delete(
+        f"/agreements/{agreement['id']}",
+        params=_scope_query(other_organization, other_workspace),
+    )
+
+    assert denied.status_code == 404
+    assert session.query(AgreementDeletionRequestRecord).count() == 0
+
+
+def test_deletion_acceptance_persists_outbox_without_calling_external_queue(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    from agreement_intelligence_api.agreements.models import AgreementDeletionOutboxRecord
+
+    owner_id, organization, workspace = _create_business_user_scope(session)
+    agreement = (
+        client_for_session(owner_id)
+        .post(
+            "/agreements",
+            params=_scope_query(organization, workspace),
+            json=_agreement_payload("Outbox"),
+        )
+        .json()
+    )
+    admin_id = _create_platform_admin(session, organization, workspace)
+
+    accepted = client_for_session(admin_id).delete(
+        f"/agreements/{agreement['id']}",
+        params=_scope_query(organization, workspace),
+    )
+    assert accepted.status_code == 202
+    outbox = session.query(AgreementDeletionOutboxRecord).one()
+    assert outbox.delivered_at is None
+    assert outbox.next_attempt_at is not None
+
+
+def test_database_failure_does_not_publish_or_mutate_external_storage(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: MonkeyPatch,
+) -> None:
+    owner_id, organization, workspace = _create_business_user_scope(session)
+    agreement = (
+        client_for_session(owner_id)
+        .post(
+            "/agreements",
+            params=_scope_query(organization, workspace),
+            json=_agreement_payload("Commit failure"),
+        )
+        .json()
+    )
+    admin_id = _create_platform_admin(session, organization, workspace)
+
+    deleted_keys: list[str] = []
+
+    class Storage:
+        def delete(self, key: str) -> None:
+            deleted_keys.append(key)
+
+    app.state.document_storage = Storage()
+
+    def fail_commit() -> None:
+        raise RuntimeError("database unavailable")
+
+    monkeypatch.setattr(session, "commit", fail_commit)
+    try:
+        with raises(RuntimeError, match="database unavailable"):
+            client_for_session(admin_id).delete(
+                f"/agreements/{agreement['id']}",
+                params=_scope_query(organization, workspace),
+            )
+        assert deleted_keys == []
+    finally:
+        session.rollback()
+        del app.state.document_storage
 
 
 def test_list_scopes_results_filters_and_uses_cursor_pagination(
@@ -581,6 +931,7 @@ def test_agreement_migration_creates_repository_tables(tmp_path: Path) -> None:
         create_engine(f"sqlite+pysqlite:///{database_path}")
     ).get_table_names()
     assert "agreements" in table_names
+    assert "document_object_registry" in table_names
 
 
 def test_retrieval_index_build_migration_rejects_an_agreement_from_another_scope(

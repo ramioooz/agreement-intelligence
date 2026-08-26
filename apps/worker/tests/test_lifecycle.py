@@ -3,8 +3,11 @@ import logging
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
+from typing import Any, cast
 from uuid import UUID, uuid4
 
+import pytest
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
@@ -199,5 +202,53 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             job_id=job.id, key=f"checkpoints/{job.id}/placeholder.json"
         )
         assert receiver.acked == ["receipt-1"]
+
+    asyncio.run(exercise())
+
+
+def test_worker_fails_health_when_a_background_sweeper_dies(tmp_path: Path) -> None:
+    async def failing_sweeper() -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("deletion sweeper failed")
+
+    async def exercise() -> None:
+        started_at = monotonic()
+        with pytest.raises(RuntimeError, match="deletion sweeper failed"):
+            await asyncio.wait_for(
+                run_worker(
+                    asyncio.Event(),
+                    heartbeat_path=tmp_path / "worker-heartbeat",
+                    heartbeat_interval_seconds=0.01,
+                    background_tasks=(failing_sweeper(),),
+                ),
+                timeout=1,
+            )
+        assert monotonic() - started_at < 0.2
+
+    asyncio.run(exercise())
+
+
+def test_worker_fails_health_when_queue_receive_crashes(tmp_path: Path) -> None:
+    class FailingReceiver:
+        async def receive(self) -> ProcessingMessage | None:
+            raise ValueError("malformed queue JSON")
+
+        async def ack(self, message: ProcessingMessage) -> None:
+            del message
+
+    async def exercise() -> None:
+        started_at = monotonic()
+        with pytest.raises(ValueError, match="malformed queue JSON"):
+            await asyncio.wait_for(
+                run_worker(
+                    asyncio.Event(),
+                    heartbeat_path=tmp_path / "worker-heartbeat",
+                    heartbeat_interval_seconds=0.01,
+                    message_receiver=FailingReceiver(),
+                    job_processor=cast(Any, object()),
+                ),
+                timeout=1,
+            )
+        assert monotonic() - started_at < 0.2
 
     asyncio.run(exercise())
