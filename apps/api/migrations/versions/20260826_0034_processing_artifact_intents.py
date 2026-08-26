@@ -80,10 +80,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    if (
-        op.get_bind()
-        .execute(sa.text("SELECT EXISTS (SELECT 1 FROM processing_artifact_intents)"))
-        .scalar()
-    ):
+    connection = op.get_bind()
+    if connection.dialect.name == "postgresql":
+        # The non-superuser migration owner has no tenant context. Temporarily
+        # bypass FORCE RLS for this global safety check; a refusal rolls the DDL
+        # back in the same transaction and restores FORCE automatically.
+        op.execute("ALTER TABLE processing_artifact_intents NO FORCE ROW LEVEL SECURITY")
+    if connection.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM processing_artifact_intents)")
+    ).scalar():
         raise RuntimeError("cannot downgrade while processing artifact intents are pending")
     op.drop_table("processing_artifact_intents")

@@ -2,16 +2,24 @@ import json
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from typing import Any
+from uuid import UUID, uuid4
 
 import pytest
 from agreement_intelligence_worker.agreement_deletion import (
     AgreementDeletionProcessor,
     SQLAlchemyAgreementDeletionRepository,
 )
+from agreement_intelligence_worker.processing import (
+    CompletedArtifact,
+    JobProcessor,
+    PermanentProcessingError,
+    ProcessingJob,
+    SQLAlchemyProcessingJobRepository,
+)
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import create_engine, text
+from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
@@ -508,6 +516,329 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
                 {"keeper_id": keeper_id, "source_key": source_key},
             )
             == 1
+        )
+    _assert_permanent_failure_cleanup(
+        engine=engine,
+        repository=repository,
+        storage=storage,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        actor_id=actor_id,
+        empty_json=empty_json,
+        empty_object=empty_object,
+        upload_wins_key=upload_wins_key,
+        worker_wins_key=worker_wins_key,
+        deletion_id=deletion_id,
+    )
+
+
+def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
+    request: pytest.FixtureRequest,
+) -> None:
+    database_url = os.environ.get("AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL")
+    if not database_url:
+        pytest.skip("disposable PostgreSQL URL is required")
+    suffix = uuid4().hex
+    role_name = f"intent_migrator_{suffix}"
+    schema_name = f"intent_downgrade_{suffix}"
+    role_password = f"migration-{suffix}"
+    database_name = make_url(database_url).database
+    assert database_name is not None
+    admin_engine = create_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
+    with admin_engine.begin() as connection:
+        connection.execute(text(f"CREATE ROLE \"{role_name}\" LOGIN PASSWORD '{role_password}'"))
+        connection.execute(text(f'GRANT CREATE ON DATABASE "{database_name}" TO "{role_name}"'))
+        connection.execute(text(f'CREATE SCHEMA "{schema_name}" AUTHORIZATION "{role_name}"'))
+    role_url = (
+        make_url(database_url)
+        .set(
+            username=role_name,
+            password=role_password,
+            query={"options": f"-csearch_path={schema_name},public"},
+        )
+        .render_as_string(hide_password=False)
+    )
+    role_engine = create_engine(role_url.replace("postgresql://", "postgresql+psycopg://", 1))
+
+    def cleanup() -> None:
+        role_engine.dispose()
+        with admin_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+            connection.execute(text(f'DROP OWNED BY "{role_name}"'))
+            connection.execute(text(f'DROP ROLE IF EXISTS "{role_name}"'))
+        admin_engine.dispose()
+
+    request.addfinalizer(cleanup)
+    with role_engine.begin() as connection:
+        connection.execute(
+            text("CREATE TABLE alembic_version (version_num varchar(32) PRIMARY KEY)")
+        )
+    config = Config(str(Path(__file__).parents[2] / "api" / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", role_url.replace("%", "%%"))
+    command.upgrade(config, "head")
+    organization_id, workspace_id, agreement_id = uuid4(), uuid4(), uuid4()
+    with role_engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO organizations (id,name,slug) VALUES (:id,'Intent test',:slug)"),
+            {"id": organization_id, "slug": f"intent-{organization_id}"},
+        )
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO workspaces (id,organization_id,name,slug)
+                VALUES (:id,:organization_id,'Legal','legal')
+                """
+            ),
+            {"id": workspace_id, "organization_id": organization_id},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO agreements (
+                    id,organization_id,workspace_id,title,agreement_type,status,
+                    parties,files,processing_state,audit_metadata,audit_events
+                ) VALUES (
+                    :id,:organization_id,:workspace_id,'Intent agreement','client','draft',
+                    CAST('[]' AS json),CAST('[]' AS json),'processing',
+                    CAST('{}' AS json),CAST('[]' AS json)
+                )
+                """
+            ),
+            {
+                "id": agreement_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO processing_artifact_intents (
+                    id,job_id,organization_id,workspace_id,agreement_id,
+                    profile,category,artifact_key
+                ) VALUES (
+                    :id,:job_id,:organization_id,:workspace_id,:agreement_id,
+                    'baseline','analysis',:artifact_key
+                )
+                """
+            ),
+            {
+                "id": uuid4(),
+                "job_id": uuid4(),
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "agreement_id": agreement_id,
+                "artifact_key": (
+                    f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/"
+                    f"{agreement_id}/analysis/{'a' * 64}/document-analysis.v1.json"
+                ),
+            },
+        )
+
+    with pytest.raises(RuntimeError, match="processing artifact intents are pending"):
+        command.downgrade(config, "20260826_0033")
+
+    with role_engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM processing_artifact_intents")) == 1
+        assert connection.scalar(
+            text(
+                """
+                SELECT relforcerowsecurity FROM pg_class
+                WHERE oid='processing_artifact_intents'::regclass
+                """
+            )
+        )
+
+
+def _assert_permanent_failure_cleanup(
+    *,
+    engine: Engine,
+    repository: SQLAlchemyAgreementDeletionRepository,
+    storage: Any,
+    organization_id: UUID,
+    workspace_id: UUID,
+    actor_id: UUID,
+    empty_json: str,
+    empty_object: str,
+    upload_wins_key: str,
+    worker_wins_key: str,
+    deletion_id: UUID,
+) -> None:
+    failed_agreement_id, failed_job_id, failed_deletion_id = uuid4(), uuid4(), uuid4()
+    expected_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/{failed_agreement_id}/"
+        f"analysis/{'f' * 64}/document-analysis.v1.json"
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO agreements (
+                    id,organization_id,workspace_id,title,agreement_type,status,
+                    parties,files,processing_state,audit_metadata,audit_events
+                ) VALUES (
+                    :id,:organization_id,:workspace_id,'Permanent failure','client','draft',
+                    CAST(:empty_json AS json),CAST(:empty_json AS json),'queued',
+                    CAST(:empty_object AS json),CAST(:empty_json AS json)
+                )
+                """
+            ),
+            {
+                "id": failed_agreement_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "empty_json": empty_json,
+                "empty_object": empty_object,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO processing_jobs (
+                    id,organization_id,workspace_id,agreement_id,idempotency_key,
+                    profile,state,attempt_count,queued_at
+                ) VALUES (
+                    :id,:organization_id,:workspace_id,:agreement_id,
+                    'permanent-failure','baseline','queued',0,now()
+                )
+                """
+            ),
+            {
+                "id": failed_job_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "agreement_id": failed_agreement_id,
+            },
+        )
+
+    class PermanentFailureProcessor:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+            return CompletedArtifact(job_id=job.id, key=expected_key)
+
+        def process(self, job: ProcessingJob) -> CompletedArtifact:
+            del job
+            with engine.begin() as connection:
+                connection.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(organization_id)},
+                )
+                connection.execute(
+                    text(
+                        "UPDATE agreements SET deletion_requested_at=now() WHERE id=:agreement_id"
+                    ),
+                    {"agreement_id": failed_agreement_id},
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO agreement_deletion_requests (
+                            id,organization_id,workspace_id,agreement_id,actor_id,title,
+                            agreement_type,file_checksums,state,attempt_count,retry_cycle,
+                            next_attempt_at,accepted_at,completed_at,updated_at
+                        ) VALUES (
+                            :id,:organization_id,:workspace_id,:agreement_id,:actor_id,
+                            'Permanent failure','client',CAST('[]' AS json),'completed',
+                            0,1,now(),now(),now(),now()
+                        )
+                        """
+                    ),
+                    {
+                        "id": failed_deletion_id,
+                        "organization_id": organization_id,
+                        "workspace_id": workspace_id,
+                        "agreement_id": failed_agreement_id,
+                        "actor_id": actor_id,
+                    },
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO agreement_deletion_objects (
+                            id,deletion_id,organization_id,workspace_id,agreement_id,
+                            category,object_key,state
+                        ) VALUES (
+                            :id,:deletion_id,:organization_id,:workspace_id,:agreement_id,
+                            'analysis',:object_key,'deleted'
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "deletion_id": failed_deletion_id,
+                        "organization_id": organization_id,
+                        "workspace_id": workspace_id,
+                        "agreement_id": failed_agreement_id,
+                        "object_key": expected_key,
+                    },
+                )
+            raise PermanentProcessingError("input is invalid")
+
+    class NoRetryQueue:
+        def enqueue(self, *_: object, **__: object) -> None:
+            raise AssertionError("permanent failure must not enqueue a retry")
+
+    JobProcessor(
+        SQLAlchemyProcessingJobRepository(engine), NoRetryQueue(), PermanentFailureProcessor()
+    ).handle(
+        failed_job_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM processing_artifact_intents WHERE job_id=:job_id"),
+                {"job_id": failed_job_id},
+            )
+            == 0
+        )
+        deletion_state, object_state = connection.execute(
+            text(
+                """
+                SELECT request.state, object.state
+                FROM agreement_deletion_requests AS request
+                JOIN agreement_deletion_objects AS object
+                  ON object.deletion_id=request.id
+                WHERE request.id=:deletion_id
+                """
+            ),
+            {"deletion_id": failed_deletion_id},
+        ).one()
+        assert deletion_state == "retrying"
+        assert object_state == "pending"
+
+    AgreementDeletionProcessor(repository, storage).handle(
+        failed_deletion_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT state FROM agreement_deletion_requests WHERE id=:id"),
+                {"id": failed_deletion_id},
+            )
+            == "completed"
         )
         registry_states = {
             row.object_key: row.state

@@ -928,11 +928,39 @@ class SQLAlchemyProcessingJobRepository:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
+            job_context = (
+                connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+                .mappings()
+                .one_or_none()
+            )
+            if job_context is None or not _matches_tenant_scope(
+                job_context, organization_id, workspace_id
+            ):
+                return
+            agreement = _agreement_for_update(connection, cast(Mapping[str, Any], job_context))
+            if agreement is None:
+                return
             job = _job_for_update(connection, job_id)
             if job is None:
                 return
             if not _matches_tenant_scope(job, organization_id, workspace_id):
                 return
+            intent = _artifact_intent(
+                connection,
+                job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                lock=True,
+            )
+            if intent is not None:
+                if agreement["deletion_requested_at"] is not None:
+                    _reconcile_artifact_intent(connection, intent, now=now)
+                else:
+                    connection.execute(
+                        processing_artifact_intents.delete().where(
+                            processing_artifact_intents.c.job_id == job_id
+                        )
+                    )
             connection.execute(
                 update(processing_jobs)
                 .where(processing_jobs.c.id == job_id)
