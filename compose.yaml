@@ -29,7 +29,7 @@ services:
   localstack:
     image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
     environment:
-      SERVICES: s3,sqs
+      SERVICES: s3,sqs,secretsmanager
       AWS_DEFAULT_REGION: ${AWS_REGION:?required}
     ports:
       - "127.0.0.1:${LOCALSTACK_PORT:-4566}:4566"

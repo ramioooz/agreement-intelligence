@@ -16,20 +16,24 @@ variable "use_localstack" {
   default     = true
 }
 
-variable "document_bucket" {
+variable "name_prefix" {
   type        = string
-  description = "Agreement document bucket name."
-  default     = "agreement-intelligence-documents"
+  description = "Prefix shared by provisioned resources."
+  default     = "agreement-intelligence"
+
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.name_prefix))
+    error_message = "name_prefix must start and end with a lowercase letter or digit and otherwise contain only lowercase letters, digits, and hyphens."
+  }
 }
 
-variable "processing_queue" {
+variable "environment_name" {
   type        = string
-  description = "Durable document processing queue name."
-  default     = "agreement-processing"
-}
+  description = "Environment suffix used to isolate resource names and state."
+  default     = "local"
 
-variable "processing_dlq" {
-  type        = string
-  description = "Durable document processing dead-letter queue name."
-  default     = "agreement-processing-dlq"
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.environment_name))
+    error_message = "environment_name must start and end with a lowercase letter or digit and otherwise contain only lowercase letters, digits, and hyphens."
+  }
 }

@@ -29,6 +29,15 @@ artifacts/backups/
 .env.*.local
 .env.stack-test
 local-models/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+.terraform.tfstate.lock.info
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
 
 # Editors and operating systems
 .DS_Store

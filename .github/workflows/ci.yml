@@ -40,9 +40,25 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      localstack:
+        image: localstack/localstack:4.14.0@sha256:3ebc37595918b8accb852f8048fef2aff047d465167edd655528065b07bc364a
+        env:
+          SERVICES: s3,sqs,secretsmanager
+          AWS_DEFAULT_REGION: us-east-1
+        ports:
+          - 4566:4566
+        options: >-
+          --health-cmd "curl --fail --silent http://127.0.0.1:4566/_localstack/health"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/agreement_intelligence_test
       REDIS_URL: redis://localhost:6379/0
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: us-east-1
+      LOCALSTACK_ENDPOINT: http://localhost:4566
 
     steps:
       - name: Check out repository
@@ -75,6 +91,11 @@ jobs:
         with:
           terraform_version: 1.12.2
 
+      - name: Install local infrastructure tools
+        run: |
+          uv tool install terraform-local==0.24.1
+          uv tool install checkov==3.2.495
+
       - name: Install locked dependencies
         run: make setup
 
@@ -103,6 +124,9 @@ jobs:
 
       - name: Validate local cloud infrastructure
         run: make terraform-check
+
+      - name: Provision and inspect emulated infrastructure
+        run: make terraform-provision-local
 
       - name: Check whitespace
         run: git diff --check "origin/${{ github.base_ref }}...HEAD"

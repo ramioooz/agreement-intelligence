@@ -1,0 +1,17 @@
+compact: true
+download-external-modules: false
+framework:
+  - terraform
+quiet: true
+skip-check:
+  # Local parity does not provision the production logging destination.
+  - CKV_AWS_18
+  # Cross-region replication and customer-managed KMS keys require real AWS.
+  - CKV_AWS_144
+  - CKV_AWS_145
+  - CKV_AWS_149
+  # Lifecycle/notification policies belong to the deferred AWS environment.
+  - CKV_AWS_300
+  - CKV2_AWS_61
+  - CKV2_AWS_62
+  - CKV2_AWS_57

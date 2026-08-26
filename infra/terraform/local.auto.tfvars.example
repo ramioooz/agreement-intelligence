@@ -1,0 +1,5 @@
+region           = "us-east-1"
+endpoint         = "http://localhost:4566"
+use_localstack   = true
+name_prefix      = "agreement-intelligence"
+environment_name = "local"

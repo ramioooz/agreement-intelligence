@@ -10,6 +10,7 @@ COMPOSE := docker compose --project-name $(STACK_PROJECT_NAME) --env-file $(STAC
 .PHONY: help check-toolchain check-container-toolchain setup \
 	stack-build stack-up stack-down stack-status stack-logs stack-check stack-reset \
 	backup-local restore-local format format-check lint typecheck test build check \
+	terraform-check terraform-provision-local \
 	provider-smoke retrieval-eval version-comparison-eval performance-local resilience-local \
 	ai-eval ai-eval-assisted
 
@@ -32,6 +33,8 @@ help:
 	@echo "  make test           Run JavaScript and Python tests"
 	@echo "  make build          Build every application"
 	@echo "  make check          Run all pre-review source checks"
+	@echo "  make terraform-check Validate Terraform formatting, policy, and LocalStack planning"
+	@echo "  make terraform-provision-local Apply, inspect, and destroy Terraform in LocalStack"
 	@echo "  make provider-smoke Run an opt-in configured-provider smoke check"
 	@echo "  make retrieval-eval Evaluate retrieval and grounded-answer results"
 	@echo "  make version-comparison-eval Evaluate agreement-version comparison results"
@@ -151,6 +154,9 @@ check:
 
 terraform-check:
 	./tests/infra/test-terraform-contract.sh
+
+terraform-provision-local:
+	./tests/infra/test-localstack-provisioning.sh
 
 provider-smoke:
 	uv run --env-file "$(STACK_ENV_FILE)" python -m agreement_intelligence_worker.provider_smoke
