@@ -482,4 +482,3 @@ def workflow_conflict_handler(_: Request, __: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": "review_workflow_conflict"}
     )
-

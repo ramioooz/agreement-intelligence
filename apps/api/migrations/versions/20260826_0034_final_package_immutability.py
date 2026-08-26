@@ -1,11 +1,8 @@
 """Enforce final review package metadata immutability in PostgreSQL.
 
 Revision ID: 20260826_0034
-Revises: 20260825_0032
+Revises: 20260826_0033
 Create Date: 2026-08-26
-
-The down revision is provisional while issue #210 owns 20260826_0033. Change
-``down_revision`` to ``20260826_0033`` after that migration merges.
 """
 
 from collections.abc import Sequence
@@ -16,7 +13,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision: str = "20260826_0034"
-down_revision: str | None = "20260825_0032"
+down_revision: str | None = "20260826_0033"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | None = None
 

@@ -255,9 +255,7 @@ def test_terminal_event_generates_package_before_checkpoint_and_retries_after_fa
     workflow_id, event_id, checkpoint_id = uuid4(), uuid4(), uuid4()
     organization_id, workspace_id = uuid4(), uuid4()
     with engine.begin() as connection:
-        connection.execute(
-            insert(agreements).values(id=agreement_id, deletion_requested_at=None)
-        )
+        connection.execute(insert(agreements).values(id=agreement_id, deletion_requested_at=None))
         connection.execute(insert(reviews).values(id=review_id, agreement_id=agreement_id))
         connection.execute(
             insert(workflows).values(
