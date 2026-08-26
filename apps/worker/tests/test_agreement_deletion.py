@@ -245,6 +245,30 @@ def test_database_completion_failure_persists_retry_and_reopens_delivery() -> No
     assert not repository.completed
 
 
+def test_database_completion_exhaustion_records_visible_terminal_failure() -> None:
+    deletion, objects = _deletion()
+    repository = InMemoryRepository(
+        deletion,
+        objects,
+        completion_error=RuntimeError("database unavailable"),
+    )
+
+    AgreementDeletionProcessor(
+        repository,
+        RecordingStorage(),
+        retry_policy=DeletionRetryPolicy(max_attempts=1),
+    ).handle(
+        deletion.id,
+        organization_id=deletion.organization_id,
+        workspace_id=deletion.workspace_id,
+    )
+
+    assert repository.state == "failed"
+    assert repository.failure_category == "database_cleanup"
+    assert repository.failed
+    assert not repository.completed
+
+
 def test_total_database_outage_keeps_delivery_unacknowledged() -> None:
     deletion, objects = _deletion()
     repository = InMemoryRepository(
