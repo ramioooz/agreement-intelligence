@@ -311,6 +311,21 @@ class SQLAlchemyAgreementRepository:
     def get_deletion(self, deletion_id: UUID) -> AgreementDeletionRequestRecord | None:
         return self._session.get(AgreementDeletionRequestRecord, deletion_id)
 
+    def is_object_pending_deletion(
+        self,
+        object_key: str,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+    ) -> bool:
+        inventories = self._session.scalars(
+            select(AgreementDeletionRequestRecord.object_keys).where(
+                AgreementDeletionRequestRecord.organization_id == organization_id,
+                AgreementDeletionRequestRecord.workspace_id == workspace_id,
+            )
+        )
+        return any(object_key in inventory for inventory in inventories)
+
     @staticmethod
     def deletion_response(record: AgreementDeletionRequestRecord) -> AgreementDeletionResponse:
         return AgreementDeletionResponse(

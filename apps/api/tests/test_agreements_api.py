@@ -253,12 +253,14 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
     admin_id = _create_platform_admin(session, organization, workspace)
     client = client_for_session(admin_id)
     deleted_keys: list[str] = []
+    read_keys: list[str] = []
 
     class Storage:
         def put_immutable(self, *args: object, **kwargs: object) -> bool:
             return True
 
         def read(self, key: str) -> None:
+            read_keys.append(key)
             return None
 
         def delete(self, key: str) -> None:
@@ -289,6 +291,15 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
         json={"profile": "baseline"},
     )
     assert blocked_processing.status_code == 404
+    blocked_source = client.get(
+        "/documents/download",
+        params={
+            **_scope_query(organization, workspace),
+            "object_key": payload["files"][0]["storage_key"],
+        },
+    )
+    assert blocked_source.status_code == 404
+    assert read_keys == []
     assert deleted_keys == []
     from agreement_intelligence_api.agreements.models import AgreementDeletionAuditEventRecord
 

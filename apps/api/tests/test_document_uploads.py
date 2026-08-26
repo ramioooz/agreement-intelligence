@@ -4,6 +4,7 @@ from typing import Any, cast
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.documents.storage import S3DocumentStorage, StoredDocument
 from agreement_intelligence_api.documents.validation import (
     DocumentValidationError,
@@ -67,6 +68,12 @@ class FakeIdentityService:
         )
 
 
+class EmptyDeletionSession:
+    def scalars(self, statement: object) -> list[object]:
+        del statement
+        return []
+
+
 @fixture(autouse=True)
 def document_test_app(monkeypatch: MonkeyPatch) -> Generator[None]:
     monkeypatch.delenv("MAX_DOCUMENT_UPLOAD_BYTES", raising=False)
@@ -78,6 +85,7 @@ def document_test_app(monkeypatch: MonkeyPatch) -> Generator[None]:
     app.dependency_overrides[get_identity_service] = lambda: FakeIdentityService(
         allowed_workspaces={UUID(WORKSPACE_ID)}
     )
+    app.dependency_overrides[get_session] = lambda: EmptyDeletionSession()
     yield
     app.dependency_overrides.clear()
     if hasattr(app.state, "document_storage"):
