@@ -16,7 +16,7 @@ from agreement_intelligence_platform.telemetry import operation_span
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import START, StateGraph
 from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, select, text, update
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.sql import Select
 
 logger = logging.getLogger("agreement_intelligence.worker")
@@ -37,6 +37,7 @@ workflow_events = Table(
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
     Column("workflow_id", Uuid(as_uuid=True), nullable=False),
     Column("event_type", String(64), nullable=False),
+    Column("correlation_id", String(64), nullable=True),
     Column("processed_at", DateTime(timezone=True), nullable=True),
 )
 workflows = Table(
@@ -85,6 +86,17 @@ class WorkflowCheckpointStore(Protocol):
         workflow_id: UUID,
         event_type: str,
     ) -> None: ...
+
+
+class FinalPackageGenerator(Protocol):
+    def generate(
+        self,
+        connection: Connection,
+        *,
+        event_id: UUID,
+        workflow_id: UUID,
+        correlation_id: str,
+    ) -> object: ...
 
 
 class SQSWorkflowMessageReceiver:
@@ -173,9 +185,15 @@ def _compiled_checkpoint_graph(checkpointer: Any) -> Any:
 
 
 class SQLAlchemyWorkflowEventProcessor:
-    def __init__(self, engine: Engine, checkpoints: WorkflowCheckpointStore) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        checkpoints: WorkflowCheckpointStore,
+        packages: FinalPackageGenerator | None = None,
+    ) -> None:
         self._engine = engine
         self._checkpoints = checkpoints
+        self._packages = packages
 
     def process(self, event_id: UUID, *, organization_id: UUID, workspace_id: UUID) -> bool:
         transition_outcome = "success"
@@ -204,6 +222,15 @@ class SQLAlchemyWorkflowEventProcessor:
                     ):
                         transition_outcome = "skipped"
                     else:
+                        if row["event_type"] == "review.workflow.terminal":
+                            if self._packages is None:
+                                raise RuntimeError("terminal package generator is not configured")
+                            self._packages.generate(
+                                connection,
+                                event_id=event_id,
+                                workflow_id=row["workflow_id"],
+                                correlation_id=row["correlation_id"],
+                            )
                         self._checkpoints.persist(
                             event_id=event_id,
                             checkpoint_id=row["checkpoint_id"],

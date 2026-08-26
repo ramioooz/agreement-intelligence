@@ -1,6 +1,6 @@
 from hashlib import sha256
-from json import dumps, loads
-from typing import Annotated, cast
+from json import loads
+from typing import Annotated, NoReturn, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -10,33 +10,26 @@ from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.audit.models import AuditEventRecord
-from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.db import get_session
-from agreement_intelligence_api.documents.storage import DocumentStorage, storage_from_environment
+from agreement_intelligence_api.documents.storage import (
+    DocumentStorage,
+    StoredDocument,
+    storage_from_environment,
+)
 from agreement_intelligence_api.identity.authz import Principal, current_principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
-from agreement_intelligence_api.reviews.export import _render_pdf
-from agreement_intelligence_api.reviews.final_package import (
-    active_final_package_workflow_for_update,
-    reserve_final_package_intent,
-)
 from agreement_intelligence_api.reviews.models import (
-    PlaybookEvaluationRecord,
-    PlaybookFindingRecord,
-    ReviewAssignmentRecord,
     ReviewCaseRecord,
     ReviewCommentRecord,
     ReviewFinalPackageRecord,
     ReviewWorkflowDecisionRecord,
     ReviewWorkflowRecord,
-    ReviewWorkflowStageRecord,
 )
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowCoordinator,
     ReviewWorkflowQueueDispatcher,
     WorkflowSnapshot,
-    _scope_transaction,
     workflow_queue_publisher_from_environment,
 )
 from agreement_intelligence_api.reviews.workflow_schemas import (
@@ -211,7 +204,28 @@ def get_final_package(
     )
     if workflow is None or workflow.state not in {"approved", "rejected", "revision_requested"}:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="final_package_not_ready")
-    package = _create_final_package(session, review, workflow)
+    package = session.scalar(
+        select(ReviewFinalPackageRecord).where(
+            ReviewFinalPackageRecord.review_id == review.id,
+            ReviewFinalPackageRecord.organization_id == review.organization_id,
+            ReviewFinalPackageRecord.workspace_id == review.workspace_id,
+        )
+    )
+    if package is None:
+        _package_retryable("final_package_pending")
+    storage = storage_from_environment()
+    _verified_package_document(
+        storage,
+        key=package.manifest_key,
+        checksum=package.manifest_checksum,
+        content_type="application/json",
+    )
+    _verified_package_document(
+        storage,
+        key=package.pdf_key,
+        checksum=package.pdf_checksum,
+        content_type="application/pdf",
+    )
     base = f"/reviews/{review.id}/final-package"
     return FinalReviewPackageResponse(
         pdf_url=f"{base}/pdf",
@@ -240,9 +254,12 @@ def download_final_package_manifest(
         workspace_id=workspace_id,
     )
     record = _stored_package(session, review)
-    document = storage_from_environment().read(record.manifest_key)
-    if document is None:
-        raise HTTPException(status_code=404, detail="final_package_unavailable")
+    document = _verified_package_document(
+        storage_from_environment(),
+        key=record.manifest_key,
+        checksum=record.manifest_checksum,
+        content_type="application/json",
+    )
     return cast(dict[str, object], loads(document.content))
 
 
@@ -263,254 +280,56 @@ def download_final_package_pdf(
         workspace_id=workspace_id,
     )
     record = _stored_package(session, review)
-    document = storage_from_environment().read(record.pdf_key)
-    if document is None:
-        raise HTTPException(status_code=404, detail="final_package_unavailable")
+    document = _verified_package_document(
+        storage_from_environment(),
+        key=record.pdf_key,
+        checksum=record.pdf_checksum,
+        content_type="application/pdf",
+    )
     return Response(content=document.content, media_type="application/pdf")
 
 
 def _stored_package(session: Session, review: ReviewCaseRecord) -> ReviewFinalPackageRecord:
-    workflow = session.scalar(
-        select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
-    )
-    if workflow is None or workflow.state not in {"approved", "rejected", "revision_requested"}:
-        raise HTTPException(status_code=409, detail="final_package_not_ready")
-    return _create_final_package(session, review, workflow)
-
-
-def _create_final_package(
-    session: Session, review: ReviewCaseRecord, workflow: ReviewWorkflowRecord
-) -> ReviewFinalPackageRecord:
-    organization_id = review.organization_id
-    locked_workflow = session.scalar(_workflow_for_package_update(review.id))
-    if locked_workflow is None:
-        raise HTTPException(status_code=409, detail="final_package_not_ready")
-    workflow = locked_workflow
-    if workflow.state not in {"approved", "rejected", "revision_requested"}:
-        raise HTTPException(status_code=409, detail="final_package_not_ready")
-    existing_package = session.scalar(
-        select(ReviewFinalPackageRecord).where(ReviewFinalPackageRecord.review_id == review.id)
-    )
-    storage = storage_from_environment()
-    if existing_package is not None:
-        if _stored_package_is_complete(storage, existing_package):
-            return existing_package
-        _remove_incomplete_package_objects(storage, existing_package)
-    decisions = session.scalars(
-        select(ReviewWorkflowDecisionRecord)
-        .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)
-        .order_by(ReviewWorkflowDecisionRecord.occurred_at)
-    ).all()
-    stages = session.scalars(
-        select(ReviewWorkflowStageRecord)
-        .where(ReviewWorkflowStageRecord.workflow_id == workflow.id)
-        .order_by(ReviewWorkflowStageRecord.ordinal)
-    ).all()
-    assignments = session.scalars(
-        select(ReviewAssignmentRecord)
-        .where(ReviewAssignmentRecord.review_id == review.id)
-        .order_by(ReviewAssignmentRecord.created_at)
-    ).all()
-    comments = session.scalars(
-        select(ReviewCommentRecord)
-        .where(ReviewCommentRecord.review_id == review.id)
-        .order_by(ReviewCommentRecord.created_at)
-    ).all()
-    audit_refs = session.scalars(
-        select(AuditEventRecord)
-        .where(AuditEventRecord.organization_id == review.organization_id)
-        .where(AuditEventRecord.workspace_id == review.workspace_id)
-        .where(AuditEventRecord.resource_id == review.id)
-        .order_by(AuditEventRecord.occurred_at)
-    ).all()
-    findings = session.scalars(
-        select(PlaybookFindingRecord)
-        .join(
-            PlaybookEvaluationRecord,
-            PlaybookEvaluationRecord.id == PlaybookFindingRecord.evaluation_id,
+    package = session.scalar(
+        select(ReviewFinalPackageRecord).where(
+            ReviewFinalPackageRecord.review_id == review.id,
+            ReviewFinalPackageRecord.organization_id == review.organization_id,
+            ReviewFinalPackageRecord.workspace_id == review.workspace_id,
         )
-        .where(PlaybookFindingRecord.organization_id == review.organization_id)
-        .where(PlaybookFindingRecord.workspace_id == review.workspace_id)
-        .where(PlaybookEvaluationRecord.agreement_id == review.agreement_id)
-    ).all()
-    manifest = {
-        "review_id": str(review.id),
-        "agreement_id": str(review.agreement_id),
-        "agreement_version_id": (
-            str(review.agreement_version_id) if review.agreement_version_id else None
-        ),
-        "workflow_id": str(workflow.id),
-        "policy_version_id": str(workflow.policy_version_id),
-        "state": workflow.state,
-        "revision": workflow.revision,
-        "decisions": [
-            {
-                "actor_id": str(item.actor_id),
-                "action": item.action,
-                "stage_id": str(item.workflow_stage_id),
-                "occurred_at": item.occurred_at.isoformat(),
-            }
-            for item in decisions
-        ],
-        "stages": [
-            {
-                "id": str(item.id),
-                "ordinal": item.ordinal,
-                "state": item.state,
-                "activated_at": item.activated_at.isoformat() if item.activated_at else None,
-                "completed_at": item.completed_at.isoformat() if item.completed_at else None,
-            }
-            for item in stages
-        ],
-        "assignments": [
-            {
-                "id": str(item.id),
-                "assignee_id": str(item.assignee_id),
-                "status": item.status,
-                "due_at": item.due_at.isoformat() if item.due_at else None,
-            }
-            for item in assignments
-        ],
-        "comments": [
-            {
-                "id": str(item.id),
-                "author_id": str(item.author_id),
-                "finding_id": str(item.finding_id) if item.finding_id else None,
-                "created_at": item.created_at.isoformat(),
-            }
-            for item in comments
-        ],
-        "findings": [
-            {
-                "id": str(item.id),
-                "result": item.result,
-                "severity": item.severity,
-                "citation_ids": item.citation_ids,
-            }
-            for item in findings
-        ],
-        "audit_event_ids": [str(item.id) for item in audit_refs],
-        "provenance": {"source": "postgresql", "workflow_revision": workflow.revision},
-    }
-    manifest_content = dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-    manifest_checksum = sha256(manifest_content).hexdigest()
-    pdf_content = _render_pdf(
-        [
-            "Agreement Intelligence - Final Review Package",
-            f"Agreement ID: {review.agreement_id}",
-            f"Review ID: {review.id}",
-            f"Outcome: {workflow.state}",
-            f"Manifest checksum: sha256:{manifest_checksum}",
-        ]
     )
-    pdf_checksum = sha256(pdf_content).hexdigest()
-    base = f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/final-package"
-    manifest_key = f"{base}/manifest.json"
-    pdf_key = f"{base}/report.pdf"
-    package = reserve_final_package_intent(
-        session,
-        review=review,
-        workflow=workflow,
-        manifest_key=manifest_key,
-        pdf_key=pdf_key,
-        manifest_checksum=manifest_checksum,
-        pdf_checksum=pdf_checksum,
-    )
-    created_keys: list[str] = []
-    try:
-        if _store_verified_immutable(
-            storage,
-            key=manifest_key,
-            content=manifest_content,
-            content_type="application/json",
-        ):
-            created_keys.append(manifest_key)
-        if _store_verified_immutable(
-            storage,
-            key=pdf_key,
-            content=pdf_content,
-            content_type="application/pdf",
-        ):
-            created_keys.append(pdf_key)
-    except Exception:
-        for key in reversed(created_keys):
-            storage.delete(key)
-        raise
-    try:
-        AuditEventWriter(session).record(
-            organization_id=review.organization_id,
-            workspace_id=review.workspace_id,
-            actor_id=review.created_by,
-            action="review_final_package_generated",
-            resource_type="review_final_package",
-            resource_id=package.id,
-            outcome="accepted",
-            correlation_id=f"review-package-{review.id}",
-            before_ref={"state": "not_generated"},
-            after_ref={
-                "state": workflow.state,
-                "manifest_checksum": manifest_checksum,
-                "pdf_checksum": pdf_checksum,
-            },
-            metadata={"review_id": str(review.id), "workflow_id": str(workflow.id)},
+    if package is None:
+        workflow = session.scalar(
+            select(ReviewWorkflowRecord).where(ReviewWorkflowRecord.review_id == review.id)
         )
-        session.commit()
-    except Exception:
-        session.rollback()
-        for key in reversed(created_keys):
-            storage.delete(key)
-        raise
-    _scope_transaction(session, organization_id)
-    session.refresh(package)
+        if workflow is None or workflow.state not in {"approved", "rejected", "revision_requested"}:
+            raise HTTPException(status_code=409, detail="final_package_not_ready")
+        _package_retryable("final_package_pending")
     return package
 
 
-def _stored_package_is_complete(
-    storage: DocumentStorage, package: ReviewFinalPackageRecord
-) -> bool:
-    manifest = storage.read(package.manifest_key)
-    pdf = storage.read(package.pdf_key)
-    return (
-        manifest is not None
-        and pdf is not None
-        and sha256(manifest.content).hexdigest() == package.manifest_checksum
-        and sha256(pdf.content).hexdigest() == package.pdf_checksum
-    )
-
-
-def _remove_incomplete_package_objects(
-    storage: DocumentStorage, package: ReviewFinalPackageRecord
-) -> None:
-    storage.delete(package.manifest_key)
-    storage.delete(package.pdf_key)
-
-
-_workflow_for_package_update = active_final_package_workflow_for_update
-
-
-def _store_verified_immutable(
+def _verified_package_document(
     storage: DocumentStorage,
     *,
     key: str,
-    content: bytes,
+    checksum: str,
     content_type: str,
-) -> bool:
-    checksum = sha256(content).hexdigest()
-    if storage.put_immutable(
-        key,
-        content,
-        content_type=content_type,
-        sha256=checksum,
-    ):
-        return True
-    stored = storage.read(key)
+) -> StoredDocument:
+    document = storage.read(key)
     if (
-        stored is None
-        or stored.content_type != content_type
-        or sha256(stored.content).hexdigest() != checksum
+        document is None
+        or document.content_type != content_type
+        or sha256(document.content).hexdigest() != checksum
     ):
-        raise HTTPException(status_code=409, detail="final_package_object_conflict")
-    return False
+        _package_retryable("final_package_unavailable")
+    return document
+
+
+def _package_retryable(code: str) -> NoReturn:
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={"code": code, "retryable": True},
+        headers={"Retry-After": "3"},
+    )
 
 
 @router.post("/{review_id}/workflow/decisions", response_model=ReviewWorkflowResponse)
@@ -635,3 +454,4 @@ def workflow_conflict_handler(_: Request, __: Exception) -> JSONResponse:
     return JSONResponse(
         status_code=status.HTTP_409_CONFLICT, content={"detail": "review_workflow_conflict"}
     )
+

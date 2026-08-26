@@ -311,7 +311,11 @@ class ReviewWorkflowCoordinator:
         workflow.updated_at = now
         self._emit(
             workflow,
-            event_type="review.workflow.resume",
+            event_type=(
+                "review.workflow.terminal"
+                if workflow.state in {"approved", "rejected", "revision_requested"}
+                else "review.workflow.resume"
+            ),
             correlation_id=correlation_id,
             idempotency_key=f"workflow:{workflow.id}:decision:{idempotency_key}",
         )

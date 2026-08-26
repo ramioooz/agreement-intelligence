@@ -229,7 +229,6 @@ from agreement_intelligence_api.reviews.models import (
     ReviewWorkflowRecord,
 )
 from agreement_intelligence_api.reviews.workflow import ReviewWorkflowCoordinator
-from agreement_intelligence_api.reviews.workflow_routes import _create_final_package
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -355,15 +354,12 @@ try:
     assert workflow is not None
     review = session.get(ReviewCaseRecord, review_id)
     assert review is not None
-    first_package = _create_final_package(session, review, workflow)
-    second_package = _create_final_package(session, review, workflow)
-    assert first_package.id == second_package.id
-    start_event = session.scalar(
+    terminal_event = session.scalar(
         select(ReviewWorkflowOutboxRecord)
         .where(ReviewWorkflowOutboxRecord.workflow_id == workflow.id)
-        .where(ReviewWorkflowOutboxRecord.idempotency_key.like("%:start"))
+        .where(ReviewWorkflowOutboxRecord.event_type == "review.workflow.terminal")
     )
-    assert start_event is not None
+    assert terminal_event is not None
     assignment_count = session.scalar(
         select(func.count()).select_from(ReviewAssignmentRecord).where(
             ReviewAssignmentRecord.review_id == review.id
@@ -383,17 +379,13 @@ try:
         "|".join(
             (
                 str(workflow.id),
-                str(start_event.id),
+                str(terminal_event.id),
                 str(organization_id),
                 str(workspace_id),
                 str(review_id),
                 str(assignment_count),
                 str(notification_count),
                 str(package_count),
-                first_package.manifest_key,
-                first_package.pdf_key,
-                first_package.manifest_checksum,
-                first_package.pdf_checksum,
             )
         )
     )
@@ -402,13 +394,47 @@ finally:
 PY
 )
 IFS='|' read -r workflow_id workflow_event_id workflow_organization_id workflow_workspace_id \
-  workflow_review_id workflow_assignments workflow_notifications workflow_packages \
-  manifest_key pdf_key manifest_checksum pdf_checksum <<EOF
+  workflow_review_id workflow_assignments workflow_notifications workflow_packages <<EOF
 $workflow_seed
 EOF
 [ "$workflow_assignments" = "1" ] && [ "$workflow_notifications" = "1" ] && \
-  [ "$workflow_packages" = "1" ] || {
-  echo "Workflow seed did not create one durable assignment, notification, and package: $workflow_seed" >&2
+  [ "$workflow_packages" = "0" ] || {
+  echo "Workflow seed created package state before terminal worker delivery: $workflow_seed" >&2
+  exit 1
+}
+workflow_queue_name=$(sed -n 's/^SQS_NOTIFICATION_QUEUE=//p' "$env_file")
+workflow_queue_url=$($compose exec -T localstack awslocal sqs get-queue-url \
+  --queue-name "$workflow_queue_name" --query QueueUrl --output text)
+workflow_body=$(printf \
+  '{"kind":"review-workflow","event_id":"%s","organization_id":"%s","workspace_id":"%s"}' \
+  "$workflow_event_id" "$workflow_organization_id" "$workflow_workspace_id")
+$compose exec -T localstack awslocal sqs send-message \
+  --queue-url "$workflow_queue_url" --message-body "$workflow_body" >/dev/null
+workflow_started=$(date +%s)
+while :; do
+  processed=$($compose exec -T postgres psql -U postgres -d "$app_db" -At -c \
+    "SELECT processed_at IS NOT NULL FROM review_workflow_outbox WHERE id = '$workflow_event_id';")
+  [ "$processed" = "t" ] && break
+  [ $(( $(date +%s) - workflow_started )) -lt 60 ] || {
+    echo "Worker did not checkpoint the workflow event." >&2
+    exit 1
+  }
+  sleep 1
+done
+checkpoint_count=$($compose exec -T postgres psql -U postgres -d "$app_db" -At -c \
+  "SELECT COUNT(*) FROM checkpoints WHERE thread_id = 'review-workflow-event:$workflow_event_id';")
+[ "$checkpoint_count" -gt 0 ] || {
+  echo "Workflow event did not persist a PostgreSQL LangGraph checkpoint." >&2
+  exit 1
+}
+package_result=$($compose exec -T postgres psql -U postgres -d "$app_db" -At -F '|' -c \
+  "SELECT manifest_key, pdf_key, manifest_checksum, pdf_checksum
+     FROM review_final_packages WHERE review_id = '$workflow_review_id';")
+IFS='|' read -r manifest_key pdf_key manifest_checksum pdf_checksum <<EOF
+$package_result
+EOF
+[ -n "$manifest_key" ] && [ -n "$pdf_key" ] || {
+  echo "Terminal workflow event did not create durable package metadata." >&2
   exit 1
 }
 $compose run --rm -T --no-deps \
@@ -436,31 +462,6 @@ for key_name, checksum_name in (
     )["Body"].read()
     assert hashlib.sha256(body).hexdigest() == os.environ[checksum_name]
 PY
-workflow_queue_name=$(sed -n 's/^SQS_NOTIFICATION_QUEUE=//p' "$env_file")
-workflow_queue_url=$($compose exec -T localstack awslocal sqs get-queue-url \
-  --queue-name "$workflow_queue_name" --query QueueUrl --output text)
-workflow_body=$(printf \
-  '{"kind":"review-workflow","event_id":"%s","organization_id":"%s","workspace_id":"%s"}' \
-  "$workflow_event_id" "$workflow_organization_id" "$workflow_workspace_id")
-$compose exec -T localstack awslocal sqs send-message \
-  --queue-url "$workflow_queue_url" --message-body "$workflow_body" >/dev/null
-workflow_started=$(date +%s)
-while :; do
-  processed=$($compose exec -T postgres psql -U postgres -d "$app_db" -At -c \
-    "SELECT processed_at IS NOT NULL FROM review_workflow_outbox WHERE id = '$workflow_event_id';")
-  [ "$processed" = "t" ] && break
-  [ $(( $(date +%s) - workflow_started )) -lt 60 ] || {
-    echo "Worker did not checkpoint the workflow event." >&2
-    exit 1
-  }
-  sleep 1
-done
-checkpoint_count=$($compose exec -T postgres psql -U postgres -d "$app_db" -At -c \
-  "SELECT COUNT(*) FROM checkpoints WHERE thread_id = 'review-workflow-event:$workflow_event_id';")
-[ "$checkpoint_count" -gt 0 ] || {
-  echo "Workflow event did not persist a PostgreSQL LangGraph checkpoint." >&2
-  exit 1
-}
 $compose exec -T localstack awslocal sqs send-message \
   --queue-url "$workflow_queue_url" --message-body "$workflow_body" >/dev/null
 duplicate_started=$(date +%s)
@@ -489,7 +490,7 @@ $durable_counts
 EOF
 [ "$duplicate_assignments" = "$workflow_assignments" ] && \
   [ "$duplicate_notifications" = "$workflow_notifications" ] && \
-  [ "$duplicate_packages" = "$workflow_packages" ] && \
+  [ "$duplicate_packages" = "1" ] && \
   [ "$duplicate_checkpoints" = "$checkpoint_count" ] || {
   echo "Duplicate workflow delivery changed durable state: before=$workflow_seed after=$durable_counts" >&2
   exit 1

@@ -617,6 +617,7 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     "review": uuid4(),
                     "workflow": uuid4(),
                     "outbox": uuid4(),
+                    "package": uuid4(),
                 }
                 tenant_records[organization_id] = records
                 parameters = {
@@ -764,6 +765,21 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     ),
                     parameters,
                 )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO review_final_packages (
+                            id, organization_id, workspace_id, review_id, workflow_id, state,
+                            manifest_key, pdf_key, manifest_checksum, pdf_checksum
+                        ) VALUES (
+                            :package, :organization_id, :workspace_id, :review, :workflow,
+                            'rejected', 'manifest-' || :suffix, 'pdf-' || :suffix,
+                            'manifest-checksum-' || :suffix, 'pdf-checksum-' || :suffix
+                        )
+                        """
+                    ),
+                    parameters,
+                )
 
             connection.execute(
                 text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -812,6 +828,19 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     ),
                     {"organization_b": organization_b, "workspace_id": workspace_a},
                 )
+
+            for mutation in (
+                "UPDATE review_final_packages SET state = 'approved' WHERE id = :package_id",
+                "DELETE FROM review_final_packages WHERE id = :package_id",
+            ):
+                with (
+                    pytest.raises(Exception, match="review final packages are immutable"),
+                    connection.begin_nested(),
+                ):
+                    connection.execute(
+                        text(mutation),
+                        {"package_id": tenant_records[organization_a]["package"]},
+                    )
 
             for table_name, values in (
                 (

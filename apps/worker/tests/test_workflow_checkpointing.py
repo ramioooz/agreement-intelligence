@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from agreement_intelligence_worker import review_workflow
 from agreement_intelligence_worker.review_workflow import (
     PostgresWorkflowCheckpointStore,
@@ -121,6 +122,26 @@ class RecordingCheckpointStore:
         self.calls.append((event_id, checkpoint_id, workflow_id, event_type))
 
 
+class RecordingFinalPackageGenerator:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.calls: list[tuple[object, object, object, object]] = []
+        self.failure = failure
+
+    def generate(
+        self,
+        connection: object,
+        *,
+        event_id: object,
+        workflow_id: object,
+        correlation_id: object,
+    ) -> None:
+        self.calls.append((connection, event_id, workflow_id, correlation_id))
+        if self.failure is not None:
+            failure = self.failure
+            self.failure = None
+            raise failure
+
+
 def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     workflow_metadata.create_all(engine)
@@ -223,4 +244,61 @@ def test_workflow_event_for_deleted_agreement_is_not_processed() -> None:
         is False
     )
     assert checkpoints.calls == []
+    engine.dispose()
+
+
+def test_terminal_event_generates_package_before_checkpoint_and_retries_after_failure() -> None:
+    """Fails if terminal work can be marked processed after package generation fails."""
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    workflow_metadata.create_all(engine)
+    agreement_id, review_id = uuid4(), uuid4()
+    workflow_id, event_id, checkpoint_id = uuid4(), uuid4(), uuid4()
+    organization_id, workspace_id = uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            insert(agreements).values(id=agreement_id, deletion_requested_at=None)
+        )
+        connection.execute(insert(reviews).values(id=review_id, agreement_id=agreement_id))
+        connection.execute(
+            insert(workflows).values(
+                id=workflow_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                review_id=review_id,
+                checkpoint_id=checkpoint_id,
+            )
+        )
+        connection.execute(
+            insert(workflow_events).values(
+                id=event_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                workflow_id=workflow_id,
+                event_type="review.workflow.terminal",
+                processed_at=None,
+            )
+        )
+    checkpoints = RecordingCheckpointStore()
+    packages = RecordingFinalPackageGenerator(failure=RuntimeError("storage unavailable"))
+    processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages)
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(workflow_events.c.processed_at).where(workflow_events.c.id == event_id)
+            )
+            is None
+        )
+    assert checkpoints.calls == []
+
+    assert (
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+        is True
+    )
+    assert len(packages.calls) == 2
+    assert packages.calls[-1][1:] == (event_id, workflow_id, None)
+    assert checkpoints.calls == [(event_id, checkpoint_id, workflow_id, "review.workflow.terminal")]
     engine.dispose()

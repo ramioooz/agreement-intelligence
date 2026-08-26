@@ -28,6 +28,10 @@ from agreement_intelligence_worker.embedding_indexing import (
     SQLAlchemyEmbeddingIndexSink,
     embedding_reindex_configuration_id,
 )
+from agreement_intelligence_worker.final_package import (
+    S3FinalPackageStorage,
+    TerminalReviewPackageGenerator,
+)
 from agreement_intelligence_worker.lifecycle import run_worker
 from agreement_intelligence_worker.logging_config import configure_logging
 from agreement_intelligence_worker.model_gateway import (
@@ -259,20 +263,33 @@ def workflow_runtime_from_environment() -> WorkflowRuntime | None:
     queue_url = os.environ.get("SQS_NOTIFICATION_QUEUE")
     region = os.environ.get("AWS_REGION")
     database_url = os.environ.get("DATABASE_URL")
+    bucket = os.environ.get("S3_DOCUMENT_BUCKET")
     if not queue_url:
         return None
-    if not region or not database_url:
-        raise RuntimeError("AWS_REGION and DATABASE_URL are required for review workflow runtime")
-    client = boto3.client(
+    if not region or not database_url or not bucket:
+        raise RuntimeError(
+            "AWS_REGION, DATABASE_URL, and S3_DOCUMENT_BUCKET are required "
+            "for review workflow runtime"
+        )
+    queue_client = boto3.client(
         "sqs", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"), region_name=region
     )
     if "://" not in queue_url:
-        queue_url = str(client.get_queue_url(QueueName=queue_url)["QueueUrl"])
+        queue_url = str(queue_client.get_queue_url(QueueName=queue_url)["QueueUrl"])
+    storage_client = boto3.client(
+        "s3", endpoint_url=os.environ.get("AWS_ENDPOINT_URL"), region_name=region
+    )
+    engine = processing_engine_from_url(database_url)
+    checkpoints = PostgresWorkflowCheckpointStore(database_url)
+    packages = TerminalReviewPackageGenerator(
+        S3FinalPackageStorage(client=storage_client, bucket=bucket)
+    )
     return WorkflowRuntime(
-        receiver=SQSWorkflowMessageReceiver(client=client, queue_url=queue_url),
+        receiver=SQSWorkflowMessageReceiver(client=queue_client, queue_url=queue_url),
         processor=SQLAlchemyWorkflowEventProcessor(
-            processing_engine_from_url(database_url),
-            PostgresWorkflowCheckpointStore(database_url),
+            engine,
+            checkpoints,
+            packages,
         ),
     )
 
