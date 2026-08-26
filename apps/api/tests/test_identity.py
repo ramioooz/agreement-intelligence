@@ -758,7 +758,8 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                             id, workflow_id, organization_id, workspace_id, event_type,
                             correlation_id, idempotency_key
                         ) VALUES (
-                            :outbox, :workflow, :organization_id, :workspace_id, 'resume',
+                            :outbox, :workflow, :organization_id, :workspace_id,
+                            'review.workflow.terminal',
                             'test', 'workflow-outbox-' || :suffix
                         )
                         """
@@ -841,6 +842,19 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                         text(mutation),
                         {"package_id": tenant_records[organization_a]["package"]},
                     )
+
+            with (
+                pytest.raises(Exception, match="terminal package snapshots are immutable"),
+                connection.begin_nested(),
+            ):
+                connection.execute(
+                    text(
+                        "UPDATE review_workflow_outbox "
+                        'SET package_snapshot = \'{"state":"rejected"}\'::json '
+                        "WHERE id = :outbox_id"
+                    ),
+                    {"outbox_id": tenant_records[organization_a]["outbox"]},
+                )
 
             for table_name, values in (
                 (

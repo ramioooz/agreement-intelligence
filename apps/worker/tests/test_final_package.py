@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from importlib import import_module
-from json import loads
+from json import dumps, loads
 from types import ModuleType, SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -65,16 +65,21 @@ def test_worker_persists_one_checksum_verified_package_with_system_attribution()
     assert storage.put_calls == first_put_calls
     assert len(storage.objects) == 2
     with engine.connect() as connection:
-        package = connection.execute(
-            text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
-            {"review_id": str(seeded["review_id"])},
-        ).mappings().one()
-        audit = connection.execute(
-            text(
-                "SELECT * FROM audit_events "
-                "WHERE action = 'review_final_package_generated'"
+        package = (
+            connection.execute(
+                text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
+                {"review_id": str(seeded["review_id"])},
             )
-        ).mappings().one()
+            .mappings()
+            .one()
+        )
+        audit = (
+            connection.execute(
+                text("SELECT * FROM audit_events WHERE action = 'review_final_package_generated'")
+            )
+            .mappings()
+            .one()
+        )
     manifest = storage.objects[package["manifest_key"]]
     pdf = storage.objects[package["pdf_key"]]
     assert module.sha256(manifest.content).hexdigest() == package["manifest_checksum"]
@@ -115,6 +120,22 @@ def test_worker_recovers_after_restart_from_a_partially_written_object_pair() ->
         assert connection.scalar(text("SELECT COUNT(*) FROM review_final_packages")) == 0
         assert connection.scalar(text("SELECT COUNT(*) FROM audit_events")) == 0
 
+    original_manifest = next(
+        item.content for key, item in storage.objects.items() if key.endswith("manifest.json")
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO review_comments VALUES "
+                "(:id, :review_id, :author_id, NULL, '2026-08-26T11:00:00+00:00')"
+            ),
+            {
+                "id": str(uuid4()),
+                "review_id": str(seeded["review_id"]),
+                "author_id": str(uuid4()),
+            },
+        )
+
     with engine.begin() as connection:
         recovered = module.TerminalReviewPackageGenerator(storage).generate(
             connection,
@@ -125,10 +146,35 @@ def test_worker_recovers_after_restart_from_a_partially_written_object_pair() ->
 
     assert recovered.created is True
     assert len(storage.objects) == 2
+    assert (
+        next(item.content for key, item in storage.objects.items() if key.endswith("manifest.json"))
+        == original_manifest
+    )
     with engine.connect() as connection:
         assert connection.scalar(text("SELECT COUNT(*) FROM review_final_packages")) == 1
         assert connection.scalar(text("SELECT COUNT(*) FROM audit_events")) == 1
     engine.dispose()
+
+
+def test_production_s3_package_write_requires_kms_encryption() -> None:
+    module = _final_package_module()
+    requests: list[dict[str, object]] = []
+    client = SimpleNamespace(put_object=lambda **request: requests.append(request))
+    storage = module.S3FinalPackageStorage(
+        client=client,
+        bucket="documents",
+        production=True,
+        kms_key_id="alias/documents",
+    )
+
+    assert storage.put_immutable(
+        "reviews/package.json",
+        b"{}",
+        content_type="application/json",
+        sha256=module.sha256(b"{}").hexdigest(),
+    )
+    assert requests[0]["ServerSideEncryption"] == "aws:kms"
+    assert requests[0]["SSEKMSKeyId"] == "alias/documents"
 
 
 def test_worker_rejects_an_existing_object_with_a_different_checksum() -> None:
@@ -181,6 +227,9 @@ def _seed_terminal_workflow() -> tuple[object, dict[str, UUID]]:
     CREATE TABLE review_workflow_decisions (
       id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, workflow_stage_id TEXT NOT NULL,
       actor_id TEXT NOT NULL, action TEXT NOT NULL, occurred_at TEXT NOT NULL
+    );
+    CREATE TABLE review_workflow_outbox (
+      id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, package_snapshot TEXT
     );
     CREATE TABLE review_workflow_stages (
       id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
@@ -267,6 +316,46 @@ def _seed_terminal_workflow() -> tuple[object, dict[str, UUID]]:
                 "workflow_id": str(workflow_id),
                 "stage_id": str(stage_id),
                 "actor_id": str(actor_id),
+            },
+        )
+        connection.execute(
+            text("INSERT INTO review_workflow_outbox VALUES (:id, :workflow_id, :snapshot)"),
+            {
+                "id": str(event_id),
+                "workflow_id": str(workflow_id),
+                "snapshot": dumps(
+                    {
+                        "review_id": str(review_id),
+                        "agreement_id": str(agreement_id),
+                        "agreement_version_id": None,
+                        "workflow_id": str(workflow_id),
+                        "policy_version_id": str(policy_version_id),
+                        "state": "rejected",
+                        "revision": 1,
+                        "decisions": [
+                            {
+                                "action": "reject",
+                                "actor_id": str(actor_id),
+                                "stage_id": str(stage_id),
+                                "occurred_at": "2026-08-26T10:01:00+00:00",
+                            }
+                        ],
+                        "stages": [
+                            {
+                                "id": str(stage_id),
+                                "ordinal": 1,
+                                "state": "completed",
+                                "activated_at": "2026-08-26T10:00:00+00:00",
+                                "completed_at": "2026-08-26T10:01:00+00:00",
+                            }
+                        ],
+                        "assignments": [],
+                        "comments": [],
+                        "findings": [],
+                        "audit_event_ids": [],
+                    },
+                    sort_keys=True,
+                ),
             },
         )
     return engine, {

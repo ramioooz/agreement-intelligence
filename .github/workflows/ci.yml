@@ -54,6 +54,7 @@ jobs:
           --health-retries 20
     env:
       AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/agreement_intelligence_test
+      AGREEMENT_INTELLIGENCE_TEST_LOCALSTACK_URL: http://localhost:4566
       REDIS_URL: redis://localhost:6379/0
       AWS_ACCESS_KEY_ID: test
       AWS_SECRET_ACCESS_KEY: test

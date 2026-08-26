@@ -57,6 +57,11 @@ from agreement_intelligence_worker.review_workflow import (
     run_workflow_loop,
 )
 from agreement_intelligence_worker.version_comparison_processor import VersionComparisonProcessor
+from agreement_intelligence_worker.workflow_outbox_relay import (
+    SQSWorkflowEventPublisher,
+    WorkflowOutboxRelay,
+    run_workflow_outbox_relay,
+)
 
 
 class ProfileProcessor:
@@ -133,6 +138,7 @@ class ProcessingRuntime:
 class WorkflowRuntime:
     receiver: SQSWorkflowMessageReceiver
     processor: SQLAlchemyWorkflowEventProcessor
+    relay: WorkflowOutboxRelay
 
 
 async def serve() -> None:
@@ -154,6 +160,7 @@ async def serve() -> None:
                     run_workflow_loop(
                         stop_event, workflow_runtime.receiver, workflow_runtime.processor
                     ),
+                    run_workflow_outbox_relay(stop_event, workflow_runtime.relay),
                 ),
             )
         return
@@ -182,6 +189,7 @@ async def serve() -> None:
                 run_workflow_loop(
                     stop_event, workflow_runtime.receiver, workflow_runtime.processor
                 ),
+                run_workflow_outbox_relay(stop_event, workflow_runtime.relay),
             ),
         )
 
@@ -282,7 +290,12 @@ def workflow_runtime_from_environment() -> WorkflowRuntime | None:
     engine = processing_engine_from_url(database_url)
     checkpoints = PostgresWorkflowCheckpointStore(database_url)
     packages = TerminalReviewPackageGenerator(
-        S3FinalPackageStorage(client=storage_client, bucket=bucket)
+        S3FinalPackageStorage(
+            client=storage_client,
+            bucket=bucket,
+            production=os.environ.get("APP_ENV", "development").lower() == "production",
+            kms_key_id=os.environ.get("S3_DOCUMENT_KMS_KEY_ID"),
+        )
     )
     return WorkflowRuntime(
         receiver=SQSWorkflowMessageReceiver(client=queue_client, queue_url=queue_url),
@@ -290,6 +303,10 @@ def workflow_runtime_from_environment() -> WorkflowRuntime | None:
             engine,
             checkpoints,
             packages,
+        ),
+        relay=WorkflowOutboxRelay(
+            engine,
+            SQSWorkflowEventPublisher(client=queue_client, queue_url=queue_url),
         ),
     )
 

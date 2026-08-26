@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
-from json import loads
+from json import dumps, loads
 from pathlib import Path
 from threading import Lock
 from uuid import UUID, uuid4
@@ -44,12 +44,16 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
     postgres_url = os.environ.get("AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL")
     endpoint = os.environ.get("AGREEMENT_INTELLIGENCE_TEST_LOCALSTACK_URL")
     if not postgres_url or not endpoint:
+        if os.environ.get("CI"):
+            pytest.fail("CI must provide PostgreSQL and LocalStack for terminal package coverage")
         pytest.skip("disposable PostgreSQL and LocalStack endpoints are required")
 
     schema_name = f"terminal_package_{uuid4().hex}"
-    scoped_url = make_url(postgres_url).set(
-        query={"options": f"-csearch_path={schema_name},public"}
-    ).render_as_string(hide_password=False)
+    scoped_url = (
+        make_url(postgres_url)
+        .set(query={"options": f"-csearch_path={schema_name},public"})
+        .render_as_string(hide_password=False)
+    )
     base_engine = create_engine(postgres_url.replace("postgresql://", "postgresql+psycopg://", 1))
     engine = create_engine(scoped_url.replace("postgresql://", "postgresql+psycopg://", 1))
     bucket = f"terminal-packages-{uuid4().hex}"
@@ -63,21 +67,13 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
     with base_engine.begin() as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
     try:
-        config = Config(
-            str(
-                Path(__file__).parents[2]
-                / "api"
-                / "alembic.ini"
-            )
-        )
+        config = Config(str(Path(__file__).parents[2] / "api" / "alembic.ini"))
         config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
         command.upgrade(config, "head")
         seeded = _seed_terminal_event(engine)
         s3.create_bucket(Bucket=bucket)
         checkpoints = _ConcurrentCheckpointStore()
-        packages = TerminalReviewPackageGenerator(
-            S3FinalPackageStorage(client=s3, bucket=bucket)
-        )
+        packages = TerminalReviewPackageGenerator(S3FinalPackageStorage(client=s3, bucket=bucket))
 
         def process() -> bool:
             return SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
@@ -98,23 +94,28 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                 text("SELECT set_config('app.organization_id', :organization_id, true)"),
                 {"organization_id": str(seeded["organization_id"])},
             )
-            package = connection.execute(
-                text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
-                {"review_id": seeded["review_id"]},
-            ).mappings().one()
-            audit = connection.execute(
-                text(
-                    "SELECT * FROM audit_events "
-                    "WHERE action = 'review_final_package_generated'"
+            package = (
+                connection.execute(
+                    text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
+                    {"review_id": seeded["review_id"]},
                 )
-            ).mappings().one()
+                .mappings()
+                .one()
+            )
+            audit = (
+                connection.execute(
+                    text(
+                        "SELECT * FROM audit_events WHERE action = 'review_final_package_generated'"
+                    )
+                )
+                .mappings()
+                .one()
+            )
         manifest = s3.get_object(Bucket=bucket, Key=package["manifest_key"])["Body"].read()
         pdf = s3.get_object(Bucket=bucket, Key=package["pdf_key"])["Body"].read()
         assert sha256(manifest).hexdigest() == package["manifest_checksum"]
         assert sha256(pdf).hexdigest() == package["pdf_checksum"]
-        assert loads(manifest)["provenance"]["workflow_correlation_id"] == seeded[
-            "correlation_id"
-        ]
+        assert loads(manifest)["provenance"]["workflow_correlation_id"] == seeded["correlation_id"]
         assert audit["actor_id"] == FINAL_PACKAGE_WORKER_ACTOR_ID
         assert audit["correlation_id"] == seeded["correlation_id"]
     finally:
@@ -266,11 +267,12 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                 """
                 INSERT INTO review_workflow_outbox (
                     id, workflow_id, organization_id, workspace_id, event_type,
-                    correlation_id, idempotency_key, delivered_at, processed_at
+                    correlation_id, idempotency_key, package_snapshot, delivered_at, processed_at
                 ) VALUES (
                     :id, :workflow_id, :organization_id, :workspace_id,
                     'review.workflow.terminal', :correlation_id,
-                    'terminal-integration-event', CURRENT_TIMESTAMP, NULL
+                    'terminal-integration-event', CAST(:package_snapshot AS JSONB),
+                    CURRENT_TIMESTAMP, NULL
                 )
                 """
             ),
@@ -280,6 +282,24 @@ def _seed_terminal_event(engine: Engine) -> dict[str, UUID | str]:
                 "organization_id": organization_id,
                 "workspace_id": workspace_id,
                 "correlation_id": correlation_id,
+                "package_snapshot": dumps(
+                    {
+                        "review_id": str(review_id),
+                        "agreement_id": str(agreement_id),
+                        "agreement_version_id": None,
+                        "workflow_id": str(workflow_id),
+                        "policy_version_id": str(policy_version_id),
+                        "state": "rejected",
+                        "revision": 1,
+                        "decisions": [],
+                        "stages": [],
+                        "assignments": [],
+                        "comments": [],
+                        "findings": [],
+                        "audit_event_ids": [],
+                    },
+                    sort_keys=True,
+                ),
             },
         )
     return {

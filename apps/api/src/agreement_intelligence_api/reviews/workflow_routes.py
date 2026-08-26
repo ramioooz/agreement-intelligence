@@ -3,6 +3,12 @@ from json import loads
 from typing import Annotated, NoReturn, cast
 from uuid import UUID
 
+from botocore.exceptions import (
+    ClientError,
+    ConnectionClosedError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
@@ -314,7 +320,23 @@ def _verified_package_document(
     checksum: str,
     content_type: str,
 ) -> StoredDocument:
-    document = storage.read(key)
+    try:
+        document = storage.read(key)
+    except ClientError as error:
+        code = str(error.response.get("Error", {}).get("Code", ""))
+        status_code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+        if code in {
+            "SlowDown",
+            "RequestTimeout",
+            "InternalError",
+            "ServiceUnavailable",
+            "Throttling",
+            "ThrottlingException",
+        } or (isinstance(status_code, int) and status_code >= 500):
+            _package_retryable("final_package_unavailable")
+        raise
+    except (EndpointConnectionError, ConnectionClosedError, ReadTimeoutError):
+        _package_retryable("final_package_unavailable")
     if (
         document is None
         or document.content_type != content_type

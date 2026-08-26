@@ -42,15 +42,17 @@ class FinalPackageStorage(Protocol):
 
 
 class S3FinalPackageStorage:
-    def __init__(self, *, client: Any, bucket: str) -> None:
+    def __init__(
+        self, *, client: Any, bucket: str, production: bool = False, kms_key_id: str | None = None
+    ) -> None:
         self._client = client
         self._bucket = bucket
+        self._production = production
+        self._kms_key_id = kms_key_id
 
-    def put_immutable(
-        self, key: str, content: bytes, *, content_type: str, sha256: str
-    ) -> bool:
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
         try:
-            self._client.put_object(
+            request: dict[str, object] = dict(
                 Bucket=self._bucket,
                 Key=key,
                 Body=content,
@@ -58,6 +60,11 @@ class S3FinalPackageStorage:
                 ChecksumSHA256=b64encode(bytes.fromhex(sha256)).decode("ascii"),
                 IfNoneMatch="*",
             )
+            if self._production:
+                request["ServerSideEncryption"] = "aws:kms"
+                if self._kms_key_id:
+                    request["SSEKMSKeyId"] = self._kms_key_id
+            self._client.put_object(**request)
         except ClientError as error:
             if str(error.response.get("Error", {}).get("Code", "")) in {
                 "PreconditionFailed",
@@ -106,9 +113,10 @@ class TerminalReviewPackageGenerator:
         workflow_id: UUID,
         correlation_id: str,
     ) -> PackageGenerationResult:
-        workflow = connection.execute(
-            text(
-                """
+        workflow = (
+            connection.execute(
+                text(
+                    """
                 SELECT
                     workflow.id AS workflow_id,
                     workflow.organization_id,
@@ -123,10 +131,13 @@ class TerminalReviewPackageGenerator:
                 JOIN review_cases AS review ON review.id = workflow.review_id
                 WHERE workflow.id = :workflow_id
                 """
-                + (" FOR UPDATE OF workflow" if connection.dialect.name == "postgresql" else "")
-            ),
-            {"workflow_id": _database_uuid(connection, workflow_id)},
-        ).mappings().one_or_none()
+                    + (" FOR UPDATE OF workflow" if connection.dialect.name == "postgresql" else "")
+                ),
+                {"workflow_id": _database_uuid(connection, workflow_id)},
+            )
+            .mappings()
+            .one_or_none()
+        )
         if workflow is None or workflow["state"] not in _TERMINAL_STATES:
             raise FinalPackageNotTerminalError(str(workflow_id))
 
@@ -153,10 +164,14 @@ class TerminalReviewPackageGenerator:
         )
         manifest_key = f"{base}/manifest.json"
         pdf_key = f"{base}/report.pdf"
-        existing = connection.execute(
-            text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
-            {"review_id": workflow["review_id"]},
-        ).mappings().one_or_none()
+        existing = (
+            connection.execute(
+                text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
+                {"review_id": workflow["review_id"]},
+            )
+            .mappings()
+            .one_or_none()
+        )
         if existing is not None:
             expected = {
                 "workflow_id": str(workflow_id),
@@ -246,154 +261,21 @@ class TerminalReviewPackageGenerator:
         event_id: UUID,
         correlation_id: str,
     ) -> bytes:
-        workflow_id = workflow["workflow_id"]
-        review_id = workflow["review_id"]
-        decisions = connection.execute(
-            text(
-                """
-                SELECT actor_id, action, workflow_stage_id, occurred_at
-                FROM review_workflow_decisions
-                WHERE workflow_id = :workflow_id
-                ORDER BY occurred_at, id
-                """
-            ),
-            {"workflow_id": workflow_id},
-        ).mappings()
-        stages = connection.execute(
-            text(
-                """
-                SELECT id, ordinal, state, activated_at, completed_at
-                FROM review_workflow_stages
-                WHERE workflow_id = :workflow_id
-                ORDER BY ordinal
-                """
-            ),
-            {"workflow_id": workflow_id},
-        ).mappings()
-        assignments = connection.execute(
-            text(
-                """
-                SELECT id, assignee_id, status, due_at
-                FROM review_assignments
-                WHERE review_id = :review_id
-                ORDER BY created_at, id
-                """
-            ),
-            {"review_id": review_id},
-        ).mappings()
-        comments = connection.execute(
-            text(
-                """
-                SELECT id, author_id, finding_id, created_at
-                FROM review_comments
-                WHERE review_id = :review_id
-                ORDER BY created_at, id
-                """
-            ),
-            {"review_id": review_id},
-        ).mappings()
-        audit_refs = connection.execute(
-            text(
-                """
-                SELECT id FROM audit_events
-                WHERE organization_id = :organization_id
-                  AND workspace_id = :workspace_id
-                  AND resource_id = :review_id
-                ORDER BY occurred_at, id
-                """
-            ),
-            {
-                "organization_id": workflow["organization_id"],
-                "workspace_id": workflow["workspace_id"],
-                "review_id": review_id,
-            },
-        ).scalars()
-        findings = connection.execute(
-            text(
-                """
-                SELECT finding.id, finding.result, finding.severity, finding.citation_ids
-                FROM playbook_findings AS finding
-                JOIN playbook_evaluations AS evaluation ON evaluation.id = finding.evaluation_id
-                WHERE finding.organization_id = :organization_id
-                  AND finding.workspace_id = :workspace_id
-                  AND evaluation.agreement_id = :agreement_id
-                ORDER BY finding.id
-                """
-            ),
-            {
-                "organization_id": workflow["organization_id"],
-                "workspace_id": workflow["workspace_id"],
-                "agreement_id": workflow["agreement_id"],
-            },
-        ).mappings()
-        manifest = {
-            "review_id": str(review_id),
-            "agreement_id": str(workflow["agreement_id"]),
-            "agreement_version_id": (
-                str(workflow["agreement_version_id"])
-                if workflow["agreement_version_id"] is not None
-                else None
-            ),
-            "workflow_id": str(workflow_id),
-            "policy_version_id": str(workflow["policy_version_id"]),
-            "state": workflow["state"],
-            "revision": workflow["revision"],
-            "decisions": [
-                {
-                    "actor_id": str(item["actor_id"]),
-                    "action": item["action"],
-                    "stage_id": str(item["workflow_stage_id"]),
-                    "occurred_at": _timestamp(item["occurred_at"]),
-                }
-                for item in decisions
-            ],
-            "stages": [
-                {
-                    "id": str(item["id"]),
-                    "ordinal": item["ordinal"],
-                    "state": item["state"],
-                    "activated_at": _timestamp(item["activated_at"]),
-                    "completed_at": _timestamp(item["completed_at"]),
-                }
-                for item in stages
-            ],
-            "assignments": [
-                {
-                    "id": str(item["id"]),
-                    "assignee_id": str(item["assignee_id"]),
-                    "status": item["status"],
-                    "due_at": _timestamp(item["due_at"]),
-                }
-                for item in assignments
-            ],
-            "comments": [
-                {
-                    "id": str(item["id"]),
-                    "author_id": str(item["author_id"]),
-                    "finding_id": str(item["finding_id"]) if item["finding_id"] else None,
-                    "created_at": _timestamp(item["created_at"]),
-                }
-                for item in comments
-            ],
-            "findings": [
-                {
-                    "id": str(item["id"]),
-                    "result": item["result"],
-                    "severity": item["severity"],
-                    "citation_ids": _json_value(item["citation_ids"]),
-                }
-                for item in findings
-            ],
-            "audit_event_ids": [str(item) for item in audit_refs],
-            "provenance": {
-                "generator": "review-final-package-worker",
-                "source": "postgresql",
-                "workflow_correlation_id": correlation_id,
-                "workflow_event_id": str(event_id),
-                "workflow_revision": workflow["revision"],
-            },
+        frozen = connection.scalar(
+            text("SELECT package_snapshot FROM review_workflow_outbox WHERE id = :event_id"),
+            {"event_id": _database_uuid(connection, event_id)},
+        )
+        if frozen is None:
+            raise FinalPackageConflictError("terminal package snapshot is missing")
+        snapshot = loads(frozen) if isinstance(frozen, str) else dict(frozen)
+        snapshot["provenance"] = {
+            "generator": "review-final-package-worker",
+            "source": "postgresql-terminal-snapshot",
+            "workflow_correlation_id": correlation_id,
+            "workflow_event_id": str(event_id),
+            "workflow_revision": workflow["revision"],
         }
-        return dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        return dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
 
     @staticmethod
     def _record_audit(
@@ -407,9 +289,7 @@ class TerminalReviewPackageGenerator:
         pdf_checksum: str,
     ) -> None:
         json_cast = (
-            "CAST(:{name} AS JSONB)"
-            if connection.dialect.name == "postgresql"
-            else ":{name}"
+            "CAST(:{name} AS JSONB)" if connection.dialect.name == "postgresql" else ":{name}"
         )
         statement = """
             INSERT INTO audit_events (
@@ -459,22 +339,6 @@ class TerminalReviewPackageGenerator:
 
 def _database_uuid(connection: Connection, value: UUID) -> UUID | str:
     return value if connection.dialect.name == "postgresql" else str(value)
-
-
-def _timestamp(value: object) -> str | None:
-    if value is None:
-        return None
-    isoformat = getattr(value, "isoformat", None)
-    return str(isoformat()) if callable(isoformat) else str(value)
-
-
-def _json_value(value: object) -> object:
-    if not isinstance(value, str):
-        return value
-    try:
-        return loads(value)
-    except ValueError:
-        return value
 
 
 def _deterministic_pdf(lines: list[str]) -> bytes:

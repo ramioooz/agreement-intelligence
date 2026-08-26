@@ -34,10 +34,13 @@ from agreement_intelligence_api.reviews.models import (
     ReviewWorkflowRecord,
 )
 from agreement_intelligence_api.reviews.workflow import (
+    LoggingReviewWorkflowQueuePublisher,
     ReviewWorkflowConflictError,
     ReviewWorkflowCoordinator,
+    ReviewWorkflowQueueDispatcher,
     _workflow_for_decision_update,
 )
+from botocore.exceptions import ClientError, EndpointConnectionError
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.dialects import postgresql
@@ -50,9 +53,7 @@ class _RecordingStorage:
         self.documents = documents or {}
         self.puts: list[str] = []
 
-    def put_immutable(
-        self, key: str, content: bytes, *, content_type: str, sha256: str
-    ) -> bool:
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
         self.puts.append(key)
         self.documents[key] = StoredDocument(content=content, content_type=content_type)
         return True
@@ -144,6 +145,26 @@ def test_terminal_decision_emits_a_correlated_package_generation_event(session: 
     assert event_record is not None
     assert event_record.event_type == "review.workflow.terminal"
     assert event_record.correlation_id == "terminal-package-correlation"
+    assert event_record.package_snapshot is not None
+    assert event_record.package_snapshot["state"] == "rejected"
+
+
+def test_unconfigured_logging_dispatcher_keeps_outbox_pending(session: Session) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="pending-without-queue",
+    )
+    event = session.scalar(select(ReviewWorkflowOutboxRecord))
+    assert event is not None
+
+    delivered = ReviewWorkflowQueueDispatcher(
+        session, LoggingReviewWorkflowQueuePublisher()
+    ).dispatch_pending(organization_id=review.organization_id, workspace_id=review.workspace_id)
+
+    assert delivered == 0
+    assert event.delivered_at is None
 
 
 def test_terminal_package_metadata_get_is_read_only_while_generation_is_pending(
@@ -175,9 +196,7 @@ def test_terminal_package_metadata_get_is_read_only_while_generation_is_pending(
 
     assert response.status_code == 503
     assert response.headers["retry-after"] == "3"
-    assert response.json() == {
-        "detail": {"code": "final_package_pending", "retryable": True}
-    }
+    assert response.json() == {"detail": {"code": "final_package_pending", "retryable": True}}
     assert storage.puts == []
     assert session.scalar(select(func.count()).select_from(ReviewFinalPackageRecord)) == 0
     assert (
@@ -231,9 +250,7 @@ def test_final_package_gets_report_missing_or_corrupt_objects_as_retryable_unava
     metadata = client.get(f"/reviews/{review.id}/final-package", params=params)
     storage.documents.update(
         {
-            package.manifest_key: StoredDocument(
-                content=manifest, content_type="application/json"
-            ),
+            package.manifest_key: StoredDocument(content=manifest, content_type="application/json"),
             package.pdf_key: StoredDocument(
                 content=b"%PDF-1.4\ncorrupt", content_type="application/pdf"
             ),
@@ -248,6 +265,66 @@ def test_final_package_gets_report_missing_or_corrupt_objects_as_retryable_unava
             "detail": {"code": "final_package_unavailable", "retryable": True}
         }
     assert storage.puts == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        EndpointConnectionError(endpoint_url="http://storage.invalid"),
+        ClientError({"Error": {"Code": "SlowDown"}}, "GetObject"),
+        ClientError({"Error": {"Code": "InternalError"}}, "GetObject"),
+    ],
+)
+def test_final_package_get_maps_operational_storage_failures_to_retryable_unavailable(
+    session: Session,
+    client_for_session: Callable[[object], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="storage-failure-start",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.add(
+        ReviewFinalPackageRecord(
+            organization_id=review.organization_id,
+            workspace_id=review.workspace_id,
+            review_id=review.id,
+            workflow_id=workflow.id,
+            state="rejected",
+            manifest_key="manifest.json",
+            pdf_key="report.pdf",
+            manifest_checksum="0" * 64,
+            pdf_checksum="0" * 64,
+        )
+    )
+    session.commit()
+
+    class FailingStorage(_RecordingStorage):
+        def read(self, key: str) -> StoredDocument | None:
+            raise failure
+
+    monkeypatch.setattr(
+        workflow_routes_module, "storage_from_environment", lambda: FailingStorage()
+    )
+    response = client_for_session(review.created_by).get(
+        f"/reviews/{review.id}/final-package",
+        params={
+            "organization_id": str(review.organization_id),
+            "workspace_id": str(review.workspace_id),
+        },
+    )
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "3"
+    assert response.json()["detail"] == {
+        "code": "final_package_unavailable",
+        "retryable": True,
+    }
 
 
 def test_final_package_get_authorization_hides_review_without_touching_storage(
