@@ -714,6 +714,27 @@ def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
                 """
             )
         )
+        connection.execute(
+            text(
+                """
+                UPDATE processing_jobs
+                SET state='failed',claim_token=NULL,claim_lease_expires_at=NULL
+                WHERE id=:job_id
+                """
+            ),
+            {"job_id": job_id},
+        )
+
+    command.downgrade(config, "20260826_0033")
+    with role_engine.begin() as connection:
+        assert connection.scalar(
+            text(
+                """
+                SELECT relforcerowsecurity FROM pg_class
+                WHERE oid='processing_jobs'::regclass
+                """
+            )
+        )
 
 
 def _assert_permanent_failure_cleanup(
@@ -1136,6 +1157,15 @@ def _assert_exhausted_response_loss_cleanup(
         agreement = api_repository.get(agreement_id)
         assert agreement is not None
         deletion = api_repository.accept_deletion(agreement, actor_id=actor_id)
+
+    with pytest.raises(RuntimeError, match="processing job lease is no longer owned"):
+        processing_repository.complete(
+            job_id,
+            artifact,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            claimed_job=claimed,
+        )
 
     with engine.begin() as connection:
         connection.execute(

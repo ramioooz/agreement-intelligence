@@ -832,6 +832,7 @@ class SQLAlchemyProcessingJobRepository:
         claimed_job: ProcessingJob | None = None,
     ) -> bool:
         now = datetime.now(UTC)
+        stale_completion = False
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
             job = (
@@ -861,9 +862,10 @@ class SQLAlchemyProcessingJobRepository:
             if job is not None and not _owns_claim(job, claimed_job):
                 if agreement["deletion_requested_at"] is not None:
                     _inventory_late_artifact(connection, job_context, artifact.key, now=now)
-                    return False
-                raise ProcessingLeaseHeldError("processing job lease is no longer owned")
-            if agreement["deletion_requested_at"] is not None:
+                    stale_completion = True
+                else:
+                    raise ProcessingLeaseHeldError("processing job lease is no longer owned")
+            elif agreement["deletion_requested_at"] is not None:
                 _inventory_late_artifact(connection, job or job_context, artifact.key, now=now)
                 connection.execute(
                     processing_artifact_intents.delete().where(
@@ -871,47 +873,55 @@ class SQLAlchemyProcessingJobRepository:
                     )
                 )
                 return False
-            if job is None:
+            if not stale_completion and job is None:
                 return False
-            existing_artifact = connection.execute(
-                select(processing_artifacts.c.id).where(
-                    processing_artifacts.c.job_id == job_id,
-                    processing_artifacts.c.artifact_key == artifact.key,
-                )
-            ).one_or_none()
-            if existing_artifact is None:
+            if not stale_completion:
+                assert job is not None
+                existing_artifact = connection.execute(
+                    select(processing_artifacts.c.id).where(
+                        processing_artifacts.c.job_id == job_id,
+                        processing_artifacts.c.artifact_key == artifact.key,
+                    )
+                ).one_or_none()
+                if existing_artifact is None:
+                    connection.execute(
+                        processing_artifacts.insert().values(
+                            id=uuid4(),
+                            job_id=job_id,
+                            organization_id=job["organization_id"],
+                            workspace_id=job["workspace_id"],
+                            agreement_id=job["agreement_id"],
+                            artifact_key=artifact.key,
+                            created_at=now,
+                        )
+                    )
                 connection.execute(
-                    processing_artifacts.insert().values(
-                        id=uuid4(),
-                        job_id=job_id,
-                        organization_id=job["organization_id"],
-                        workspace_id=job["workspace_id"],
-                        agreement_id=job["agreement_id"],
-                        artifact_key=artifact.key,
-                        created_at=now,
+                    update(processing_jobs)
+                    .where(processing_jobs.c.id == job_id)
+                    .values(
+                        state="completed",
+                        completed_at=now,
+                        failure_category=None,
+                        failure_message=None,
+                        next_retry_at=None,
+                        claim_token=None,
+                        claim_lease_expires_at=None,
+                        updated_at=now,
                     )
                 )
-            connection.execute(
-                update(processing_jobs)
-                .where(processing_jobs.c.id == job_id)
-                .values(
-                    state="completed",
-                    completed_at=now,
-                    failure_category=None,
-                    failure_message=None,
-                    next_retry_at=None,
-                    claim_token=None,
-                    claim_lease_expires_at=None,
-                    updated_at=now,
+                _update_agreement_processing_state(
+                    connection, job, state="completed", updated_at=now
                 )
-            )
-            _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
-            connection.execute(
-                processing_artifact_intents.delete().where(
-                    processing_artifact_intents.c.job_id == job_id
+                connection.execute(
+                    processing_artifact_intents.delete().where(
+                        processing_artifact_intents.c.job_id == job_id
+                    )
                 )
-            )
-            return True
+        if stale_completion:
+            # The transaction above durably reopened deletion inventory. Do not
+            # discard a deterministic key that may belong to the current owner.
+            raise ProcessingLeaseHeldError("processing job lease is no longer owned")
+        return True
 
     def completed_artifact(
         self,

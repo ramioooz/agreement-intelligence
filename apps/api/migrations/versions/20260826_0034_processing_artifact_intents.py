@@ -118,6 +118,8 @@ def downgrade() -> None:
         )
     ).scalar():
         raise RuntimeError("cannot downgrade while processing job claims are active")
+    if connection.dialect.name == "postgresql":
+        op.execute("ALTER TABLE processing_jobs FORCE ROW LEVEL SECURITY")
     op.drop_table("processing_artifact_intents")
     if connection.dialect.name != "sqlite":
         op.drop_constraint("ck_processing_jobs_claim_lease_pair", "processing_jobs", type_="check")
