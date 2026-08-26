@@ -62,15 +62,23 @@ class ProfileProcessor:
         self._document = document
         self._comparison = comparison
 
-    def process(self, job: ProcessingJob) -> CompletedArtifact:
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
         if job.profile == "version-comparison":
-            return self._comparison.process(job)
+            return self._comparison.expected_artifact(job)
         configuration_id = embedding_reindex_configuration_id(job.profile)
         if configuration_id is not None:
             return CompletedArtifact(
                 job_id=job.id,
                 key=f"embedding-reindex/{configuration_id}.json",
             )
+        return self._document.expected_artifact(job)
+
+    def process(self, job: ProcessingJob) -> CompletedArtifact:
+        if job.profile == "version-comparison":
+            return self._comparison.process(job)
+        configuration_id = embedding_reindex_configuration_id(job.profile)
+        if configuration_id is not None:
+            return self.expected_artifact(job)
         return self._document.process(job)
 
     def discard(self, artifact: CompletedArtifact) -> None:

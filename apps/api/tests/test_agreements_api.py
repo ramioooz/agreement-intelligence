@@ -11,6 +11,7 @@ from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
 from agreement_intelligence_api.processing.models import (
+    ProcessingArtifactIntentRecord,
     ProcessingArtifactRecord,
     ProcessingJobRecord,
 )
@@ -221,7 +222,12 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
         f"tenants/{organization.id}/workspaces/{workspace.id}/agreements/{agreement_id}/"
         f"analysis/{checksum}/document-analysis.v1.json"
     )
+    expected_artifact_key = (
+        f"tenants/{organization.id}/workspaces/{workspace.id}/agreements/{agreement_id}/"
+        f"analysis/{'b' * 64}/document-analysis.v1.json"
+    )
     job_id = uuid4()
+    expected_job_id = uuid4()
     now = datetime.now(UTC)
     session.add(
         ProcessingJobRecord(
@@ -248,6 +254,34 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
             workspace_id=workspace.id,
             agreement_id=agreement_id,
             artifact_key=artifact_key,
+        )
+    )
+    session.add(
+        ProcessingJobRecord(
+            id=expected_job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            idempotency_key="delete-expected-test",
+            profile="baseline",
+            source_storage_key=payload["files"][0]["storage_key"],
+            source_checksum="sha256:def456",
+            source_content_type="application/pdf",
+            state="processing",
+            attempt_count=1,
+            queued_at=now,
+            processing_started_at=now,
+        )
+    )
+    session.add(
+        ProcessingArtifactIntentRecord(
+            job_id=expected_job_id,
+            organization_id=organization.id,
+            workspace_id=workspace.id,
+            agreement_id=agreement_id,
+            profile="baseline",
+            category="analysis",
+            artifact_key=expected_artifact_key,
         )
     )
     session.commit()
@@ -343,6 +377,7 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
     assert {(item.category, item.object_key) for item in inventory} == {
         ("source", payload["files"][0]["storage_key"]),
         ("analysis", artifact_key),
+        ("analysis", expected_artifact_key),
     }
     outbox = session.query(AgreementDeletionOutboxRecord).one()
     assert outbox.deletion_id == request_record.id

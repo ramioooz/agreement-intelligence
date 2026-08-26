@@ -126,6 +126,18 @@ class VersionComparisonProcessor:
         self._storage = storage
         self._gateway = gateway
 
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+        with self._engine.connect() as connection:
+            _set_tenant_context(connection, job)
+            run_id = connection.scalar(
+                select(_runs.c.id).where(_runs.c.processing_job_id == job.id)
+            )
+        if run_id is None:
+            raise PermanentProcessingError("Version comparison run is unavailable")
+        return CompletedArtifact(
+            job_id=job.id, key=f"comparisons/{run_id}/version-comparison.v1.json"
+        )
+
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         try:
             return self._process(job)

@@ -109,6 +109,20 @@ document_object_registry = Table(
     Column("state", String(32), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
+processing_artifact_intents = Table(
+    "processing_artifact_intents",
+    deletion_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("job_id", Uuid(as_uuid=True), nullable=False),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
+    Column("agreement_id", Uuid(as_uuid=True), nullable=False),
+    Column("profile", String(100), nullable=False),
+    Column("category", String(32), nullable=False),
+    Column("artifact_key", String(1024), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
 
 
 @dataclass(frozen=True)
@@ -751,6 +765,24 @@ class SQLAlchemyAgreementDeletionRepository:
             )
             if pending is not None:
                 raise RuntimeError("agreement deletion inventory is not complete")
+            unresolved_intent = connection.scalar(
+                text(
+                    """
+                    SELECT id FROM processing_artifact_intents
+                    WHERE agreement_id=:agreement_id
+                      AND organization_id=:organization_id
+                      AND workspace_id=:workspace_id
+                    LIMIT 1
+                    """
+                ),
+                {
+                    "agreement_id": deletion.agreement_id,
+                    "organization_id": deletion.organization_id,
+                    "workspace_id": deletion.workspace_id,
+                },
+            )
+            if unresolved_intent is not None:
+                raise RuntimeError("processing artifact intent is not reconciled")
             self._purge_owned_rows(connection, deletion)
             connection.execute(
                 update(deletion_requests)
@@ -1034,6 +1066,7 @@ class SQLAlchemyAgreementDeletionRepository:
             """,
             "DELETE FROM processing_outbox WHERE agreement_id=:agreement_id",
             "DELETE FROM processing_artifacts WHERE agreement_id=:agreement_id",
+            "DELETE FROM processing_artifact_intents WHERE agreement_id=:agreement_id",
             "DELETE FROM processing_jobs WHERE agreement_id=:agreement_id",
             "DELETE FROM agreement_versions WHERE agreement_id=:agreement_id",
             "DELETE FROM agreement_deletion_objects WHERE deletion_id=:deletion_id",

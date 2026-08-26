@@ -105,6 +105,10 @@ class DocumentUnderstandingProcessor:
         self._storage = storage
         self._analysis_provider = analysis_provider
 
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+        source = _source_from(job)
+        return CompletedArtifact(job_id=job.id, key=_artifact_key(job, source.checksum))
+
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         source = _source_from(job)
         try:
@@ -133,7 +137,7 @@ class DocumentUnderstandingProcessor:
             raise TransientProcessingError("Document parser temporarily unavailable") from error
         except ValueError as error:
             raise PermanentProcessingError("The source document cannot be parsed") from error
-        artifact_key = _artifact_key(job, source.checksum)
+        artifact_key = self.expected_artifact(job).key
         assert job.organization_id is not None
         assert job.workspace_id is not None
         manifest = _manifest(

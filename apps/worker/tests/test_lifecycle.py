@@ -85,6 +85,10 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
         job: ProcessingJob
         artifact: CompletedArtifact | None = None
 
+        def expect(self, job: ProcessingJob, artifact: CompletedArtifact) -> bool:
+            del job, artifact
+            return True
+
         def claim(
             self,
             job_id: UUID,
@@ -155,8 +159,11 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             raise AssertionError("unexpected retry publish")
 
     class Processor:
-        def process(self, job: ProcessingJob) -> CompletedArtifact:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
             return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/placeholder.json")
+
+        def process(self, job: ProcessingJob) -> CompletedArtifact:
+            return self.expected_artifact(job)
 
     class OneMessageReceiver:
         def __init__(self, job_id: UUID, stop_event: asyncio.Event) -> None:

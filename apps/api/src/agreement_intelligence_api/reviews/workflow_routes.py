@@ -7,7 +7,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from sqlalchemy.sql import Select
 
 from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.audit.models import AuditEventRecord
@@ -18,6 +17,10 @@ from agreement_intelligence_api.identity.authz import Principal, current_princip
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.reviews.export import _render_pdf
+from agreement_intelligence_api.reviews.final_package import (
+    active_final_package_workflow_for_update,
+    reserve_final_package_intent,
+)
 from agreement_intelligence_api.reviews.models import (
     PlaybookEvaluationRecord,
     PlaybookFindingRecord,
@@ -404,26 +407,15 @@ def _create_final_package(
     base = f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/final-package"
     manifest_key = f"{base}/manifest.json"
     pdf_key = f"{base}/report.pdf"
-    package = existing_package
-    if package is None:
-        package = ReviewFinalPackageRecord(
-            organization_id=review.organization_id,
-            workspace_id=review.workspace_id,
-            review_id=review.id,
-            workflow_id=workflow.id,
-            state=workflow.state,
-            manifest_key=manifest_key,
-            pdf_key=pdf_key,
-            manifest_checksum=manifest_checksum,
-            pdf_checksum=pdf_checksum,
-        )
-        session.add(package)
-        # The deterministic keys are committed before S3 so deletion acceptance can
-        # inventory them even if generation or its compensation races and fails.
-        session.commit()
-        _scope_transaction(session, organization_id)
-        if session.scalar(_workflow_for_package_update(review.id)) is None:
-            raise HTTPException(status_code=409, detail="final_package_not_ready")
+    package = reserve_final_package_intent(
+        session,
+        review=review,
+        workflow=workflow,
+        manifest_key=manifest_key,
+        pdf_key=pdf_key,
+        manifest_checksum=manifest_checksum,
+        pdf_checksum=pdf_checksum,
+    )
     created_keys: list[str] = []
     try:
         if _store_verified_immutable(
@@ -493,15 +485,7 @@ def _remove_incomplete_package_objects(
     storage.delete(package.pdf_key)
 
 
-def _workflow_for_package_update(review_id: UUID) -> Select[tuple[ReviewWorkflowRecord]]:
-    return (
-        select(ReviewWorkflowRecord)
-        .join(ReviewCaseRecord, ReviewWorkflowRecord.review_id == ReviewCaseRecord.id)
-        .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
-        .where(ReviewWorkflowRecord.review_id == review_id)
-        .where(AgreementRecord.deletion_requested_at.is_(None))
-        .with_for_update(of=(ReviewWorkflowRecord, AgreementRecord))
-    )
+_workflow_for_package_update = active_final_package_workflow_for_update
 
 
 def _store_verified_immutable(

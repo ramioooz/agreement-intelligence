@@ -1,7 +1,17 @@
 from datetime import datetime
 from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, UniqueConstraint, Uuid, func
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    String,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from agreement_intelligence_api.identity.models import Base
@@ -54,6 +64,46 @@ class ProcessingArtifactRecord(Base):
     agreement_id: Mapped[UUID] = mapped_column(ForeignKey("agreements.id"), index=True)
     artifact_key: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProcessingArtifactIntentRecord(Base):
+    """Durable expected key written before a processor may mutate object storage."""
+
+    __tablename__ = "processing_artifact_intents"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        ForeignKeyConstraint(
+            ["agreement_id", "organization_id", "workspace_id"],
+            ["agreements.id", "agreements.organization_id", "agreements.workspace_id"],
+            name="fk_processing_artifact_intents_agreement_scope",
+        ),
+        CheckConstraint(
+            "category IN ('analysis', 'comparison')",
+            name="ck_processing_artifact_intents_category",
+        ),
+        UniqueConstraint("job_id", name="uq_processing_artifact_intents_job"),
+        UniqueConstraint("job_id", "artifact_key", name="uq_processing_artifact_intent_job_key"),
+        Index(
+            "ix_processing_artifact_intents_scope_agreement",
+            "organization_id",
+            "workspace_id",
+            "agreement_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    profile: Mapped[str] = mapped_column(String(100))
+    category: Mapped[str] = mapped_column(String(32))
+    artifact_key: Mapped[str] = mapped_column(String(1024))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ProcessingOutboxRecord(Base):
