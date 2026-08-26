@@ -5,6 +5,7 @@ import os
 import time
 from collections.abc import Awaitable
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from agreement_intelligence_worker.processing import (
@@ -66,11 +67,29 @@ async def run_worker(
     try:
         while not stop_event.is_set():
             active_heartbeat_path.write_text(str(time.time_ns()))
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(
-                    stop_event.wait(),
-                    timeout=heartbeat_interval_seconds,
-                )
+            stop_task = asyncio.create_task(stop_event.wait())
+            watched_tasks = [
+                task for task in (processing_task, *supplemental_tasks) if task is not None
+            ]
+            waiters: list[asyncio.Future[Any]] = [stop_task, *watched_tasks]
+            done, _ = await asyncio.wait(
+                waiters,
+                timeout=heartbeat_interval_seconds,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stop_task not in done:
+                stop_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stop_task
+            if stop_task in done and stop_event.is_set():
+                for task in watched_tasks:
+                    if task in done:
+                        await task
+                break
+            for task in watched_tasks:
+                if task in done:
+                    await task
+                    raise RuntimeError("worker background task stopped unexpectedly")
     finally:
         if processing_task is not None:
             processing_task.cancel()

@@ -96,6 +96,19 @@ deletion_audit_events = Table(
     Column("metadata_json", JSON, nullable=False),
     Column("occurred_at", DateTime(timezone=True), nullable=False),
 )
+document_object_registry = Table(
+    "document_object_registry",
+    deletion_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("organization_id", Uuid(as_uuid=True), nullable=False),
+    Column("workspace_id", Uuid(as_uuid=True), nullable=False),
+    Column("object_key", String(1024), nullable=False),
+    Column("checksum", String(255), nullable=True),
+    Column("content_type", String(100), nullable=True),
+    Column("byte_size", Integer, nullable=True),
+    Column("state", String(32), nullable=False),
+    Column("updated_at", DateTime(timezone=True), nullable=False),
+)
 
 
 @dataclass(frozen=True)
@@ -140,6 +153,10 @@ class AgreementDeletionRepository(Protocol):
     ) -> None: ...
     def mark_deleted(self, deletion: AgreementDeletion, item: AgreementDeletionObject) -> None: ...
     def complete_and_purge(self, deletion: AgreementDeletion) -> None: ...
+    def retry_database_cleanup(
+        self, deletion: AgreementDeletion, *, message: str, next_retry_at: datetime
+    ) -> None: ...
+    def fail_database_cleanup(self, deletion: AgreementDeletion, *, message: str) -> None: ...
     def retry(
         self, deletion: AgreementDeletion, *, object_id: UUID, message: str, next_retry_at: datetime
     ) -> None: ...
@@ -148,6 +165,7 @@ class AgreementDeletionRepository(Protocol):
 
 class AgreementDeletionOutboxRepository(Protocol):
     def organization_ids(self) -> list[UUID]: ...
+    def recover_stale_deletions(self, organization_id: UUID) -> int: ...
     def claim_due_outbox(self, organization_id: UUID) -> ClaimedDeletionOutbox | None: ...
     def mark_outbox_delivered(self, message: ClaimedDeletionOutbox) -> None: ...
     def release_outbox(
@@ -231,8 +249,20 @@ class AgreementDeletionProcessor:
                     next_retry_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
                 )
                 return
-        # Database failures remain unacknowledged; an expired lease retries the idempotent purge.
-        self._repository.complete_and_purge(deletion)
+        # A persisted retry can be acknowledged; total outages propagate and leave delivery open.
+        try:
+            self._repository.complete_and_purge(deletion)
+        except Exception:
+            message = "Agreement database cleanup failed"
+            if not self._retry_policy.may_retry(deletion.attempt_count):
+                self._repository.fail_database_cleanup(deletion, message=message)
+                return
+            self._repository.retry_database_cleanup(
+                deletion,
+                message=message,
+                next_retry_at=datetime.now(UTC)
+                + timedelta(seconds=self._retry_policy.delay_seconds(deletion.attempt_count)),
+            )
 
     def _delete_object(self, key: str) -> None:
         try:
@@ -256,6 +286,7 @@ class AgreementDeletionOutboxSweeper:
     def sweep_once(self) -> int:
         delivered = 0
         for organization_id in self._repository.organization_ids():
+            self._repository.recover_stale_deletions(organization_id)
             while (message := self._repository.claim_due_outbox(organization_id)) is not None:
                 try:
                     self._queue.enqueue_deletion(
@@ -407,15 +438,68 @@ class SQLAlchemyAgreementDeletionRepository:
                           ON agreement.id = version.agreement_id
                         WHERE version.storage_key = :object_key
                           AND version.agreement_id <> :agreement_id
+                          AND version.organization_id = :organization_id
+                          AND version.workspace_id = :workspace_id
                           AND agreement.deletion_requested_at IS NULL
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM agreements AS agreement
+                        CROSS JOIN LATERAL jsonb_array_elements(
+                            COALESCE(agreement.files::jsonb, '[]'::jsonb)
+                        ) AS file
+                        WHERE file ->> 'storage_key' = :object_key
+                          AND agreement.id <> :agreement_id
+                          AND agreement.organization_id = :organization_id
+                          AND agreement.workspace_id = :workspace_id
+                          AND agreement.deletion_requested_at IS NULL
+                    )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM document_object_registry AS registry
+                        JOIN agreement_deletion_requests AS request
+                          ON request.id = :deletion_id
+                        WHERE registry.organization_id = :organization_id
+                          AND registry.workspace_id = :workspace_id
+                          AND registry.object_key = :object_key
+                          AND registry.state = 'available'
+                          AND registry.updated_at > request.accepted_at
                     )
                     """
                 ),
-                {"object_key": item.object_key, "agreement_id": deletion.agreement_id},
+                {
+                    "object_key": item.object_key,
+                    "agreement_id": deletion.agreement_id,
+                    "deletion_id": deletion.id,
+                    "organization_id": deletion.organization_id,
+                    "workspace_id": deletion.workspace_id,
+                },
             )
             state = "preserved" if shared else "deleted"
             if not shared:
                 delete_object(item.object_key)
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO document_object_registry (
+                            id, organization_id, workspace_id, object_key,
+                            state, created_at, updated_at
+                        ) VALUES (
+                            :id, :organization_id, :workspace_id, :object_key,
+                            'deleted', :now, :now
+                        )
+                        ON CONFLICT (organization_id, workspace_id, object_key)
+                        DO UPDATE SET state = 'deleted', updated_at = EXCLUDED.updated_at
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "organization_id": deletion.organization_id,
+                        "workspace_id": deletion.workspace_id,
+                        "object_key": item.object_key,
+                        "now": now,
+                    },
+                )
             self._finish_object(connection, deletion, item.id, state=state, now=now)
 
     def mark_deleted(self, deletion: AgreementDeletion, item: AgreementDeletionObject) -> None:
@@ -502,12 +586,158 @@ class SQLAlchemyAgreementDeletionRepository:
                     updated_at=now,
                 )
             )
+            connection.execute(
+                update(deletion_outbox)
+                .where(deletion_outbox.c.deletion_id == deletion.id)
+                .values(
+                    delivered_at=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    next_attempt_at=now,
+                    last_error=message,
+                    updated_at=now,
+                )
+            )
             self._insert_terminal_audit(connection, record, event_type="failed", now=now)
+
+    def retry_database_cleanup(
+        self, deletion: AgreementDeletion, *, message: str, next_retry_at: datetime
+    ) -> None:
+        now = datetime.now(UTC)
+        with self._engine.begin() as connection:
+            _set_tenant_context(connection, deletion.organization_id)
+            if not self._claim_is_current(connection, deletion, lock=True):
+                return
+            connection.execute(
+                update(deletion_requests)
+                .where(
+                    deletion_requests.c.id == deletion.id,
+                    deletion_requests.c.claim_token == deletion.claim_token,
+                )
+                .values(
+                    state="retrying",
+                    claim_token=None,
+                    lease_expires_at=None,
+                    next_attempt_at=next_retry_at,
+                    failure_category="database_cleanup",
+                    failure_message=message,
+                    updated_at=now,
+                )
+            )
+            connection.execute(
+                update(deletion_outbox)
+                .where(deletion_outbox.c.deletion_id == deletion.id)
+                .values(
+                    delivered_at=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    next_attempt_at=next_retry_at,
+                    last_error=message,
+                    updated_at=now,
+                )
+            )
+
+    def fail_database_cleanup(self, deletion: AgreementDeletion, *, message: str) -> None:
+        now = datetime.now(UTC)
+        with self._engine.begin() as connection:
+            _set_tenant_context(connection, deletion.organization_id)
+            record = self._locked_claim(connection, deletion)
+            if record is None:
+                return
+            connection.execute(
+                update(deletion_requests)
+                .where(
+                    deletion_requests.c.id == deletion.id,
+                    deletion_requests.c.claim_token == deletion.claim_token,
+                )
+                .values(
+                    state="failed",
+                    claim_token=None,
+                    lease_expires_at=None,
+                    failure_category="database_cleanup",
+                    failure_message=message,
+                    failed_at=now,
+                    updated_at=now,
+                )
+            )
+            connection.execute(
+                update(deletion_outbox)
+                .where(deletion_outbox.c.deletion_id == deletion.id)
+                .values(
+                    delivered_at=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    next_attempt_at=now,
+                    last_error=message,
+                    updated_at=now,
+                )
+            )
+            self._insert_terminal_audit(connection, record, event_type="failed", now=now)
+
+    def recover_stale_deletions(self, organization_id: UUID) -> int:
+        now = datetime.now(UTC)
+        with self._engine.begin() as connection:
+            _set_tenant_context(connection, organization_id)
+            stale_ids = list(
+                connection.scalars(
+                    select(deletion_requests.c.id)
+                    .where(
+                        deletion_requests.c.organization_id == organization_id,
+                        deletion_requests.c.state == "processing",
+                        deletion_requests.c.lease_expires_at <= now,
+                    )
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            if not stale_ids:
+                return 0
+            connection.execute(
+                update(deletion_requests)
+                .where(deletion_requests.c.id.in_(stale_ids))
+                .values(
+                    state="retrying",
+                    claim_token=None,
+                    lease_expires_at=None,
+                    next_attempt_at=now,
+                    failure_category="database_cleanup",
+                    failure_message="Expired deletion lease recovered",
+                    updated_at=now,
+                )
+            )
+            connection.execute(
+                update(deletion_outbox)
+                .where(deletion_outbox.c.deletion_id.in_(stale_ids))
+                .values(
+                    delivered_at=None,
+                    lease_token=None,
+                    lease_expires_at=None,
+                    next_attempt_at=now,
+                    last_error="Expired deletion lease recovered",
+                    updated_at=now,
+                )
+            )
+            return len(stale_ids)
 
     def complete_and_purge(self, deletion: AgreementDeletion) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, deletion.organization_id)
+            connection.execute(
+                text(
+                    """
+                    SELECT id FROM agreements
+                    WHERE id=:agreement_id
+                      AND organization_id=:organization_id
+                      AND workspace_id=:workspace_id
+                    FOR UPDATE
+                    """
+                ),
+                {
+                    "agreement_id": deletion.agreement_id,
+                    "organization_id": deletion.organization_id,
+                    "workspace_id": deletion.workspace_id,
+                },
+            ).one()
             record = self._locked_claim(connection, deletion)
             if record is None:
                 return

@@ -13,6 +13,7 @@ from agreement_intelligence_api.agreements.models import (
     AgreementRecord,
     AgreementVersionAuditEventRecord,
     AgreementVersionRecord,
+    DocumentObjectRegistryRecord,
 )
 from agreement_intelligence_api.agreements.schemas import (
     AgreementDeletionResponse,
@@ -21,8 +22,10 @@ from agreement_intelligence_api.agreements.schemas import (
     AgreementVersionResponse,
 )
 from agreement_intelligence_api.comparisons.models import VersionComparisonRunRecord
+from agreement_intelligence_api.documents.service import UploadedDocument
 from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
+    ProcessingJobRecord,
 )
 from agreement_intelligence_api.reviews.models import ReviewCaseRecord, ReviewFinalPackageRecord
 
@@ -136,6 +139,17 @@ class SQLAlchemyAgreementRepository:
         if agreement is None:
             raise RuntimeError("cannot create a version for a deleted agreement")
         self._lock_object_key(record.storage_key)
+        registry = self._session.scalar(
+            select(DocumentObjectRegistryRecord)
+            .where(
+                DocumentObjectRegistryRecord.organization_id == record.organization_id,
+                DocumentObjectRegistryRecord.workspace_id == record.workspace_id,
+                DocumentObjectRegistryRecord.object_key == record.storage_key,
+            )
+            .with_for_update()
+        )
+        if registry is not None and registry.state != "available":
+            raise RuntimeError("source object is not available; upload it again")
         self._session.add(record)
         self._session.flush()
         self._session.add(
@@ -228,13 +242,18 @@ class SQLAlchemyAgreementRepository:
         )
 
     def deletion_objects(self, agreement: AgreementResponse) -> list[tuple[str, str]]:
-        artifact_keys = list(
-            self._session.scalars(
-                select(ProcessingArtifactRecord.artifact_key).where(
-                    ProcessingArtifactRecord.agreement_id == agreement.id
+        artifact_objects = [
+            (category, artifact_key)
+            for artifact_key, profile in self._session.execute(
+                select(ProcessingArtifactRecord.artifact_key, ProcessingJobRecord.profile)
+                .join(
+                    ProcessingJobRecord,
+                    ProcessingArtifactRecord.job_id == ProcessingJobRecord.id,
                 )
+                .where(ProcessingArtifactRecord.agreement_id == agreement.id)
             )
-        )
+            if (category := _artifact_category(profile)) is not None
+        ]
         version_source_keys = list(
             self._session.scalars(
                 select(AgreementVersionRecord.storage_key)
@@ -265,7 +284,7 @@ class SQLAlchemyAgreementRepository:
         ]
         objects = [
             *(("source", key) for key in source_keys),
-            *(("analysis", key) for key in artifact_keys),
+            *artifact_objects,
             *(("comparison", key) for key in comparison_keys),
             *package_objects,
         ]
@@ -461,6 +480,40 @@ class SQLAlchemyAgreementRepository:
                 return True
         return False
 
+    def lock_source_object(self, object_key: str) -> None:
+        self._lock_object_key(object_key)
+
+    def record_source_upload(self, uploaded: UploadedDocument) -> None:
+        now = datetime.now(UTC)
+        record = self._session.scalar(
+            select(DocumentObjectRegistryRecord)
+            .where(
+                DocumentObjectRegistryRecord.organization_id == uploaded.tenant_id,
+                DocumentObjectRegistryRecord.workspace_id == uploaded.workspace_id,
+                DocumentObjectRegistryRecord.object_key == uploaded.object_key,
+            )
+            .with_for_update()
+        )
+        if record is None:
+            record = DocumentObjectRegistryRecord(
+                organization_id=uploaded.tenant_id,
+                workspace_id=uploaded.workspace_id,
+                object_key=uploaded.object_key,
+                checksum=uploaded.sha256,
+                content_type=uploaded.content_type,
+                byte_size=uploaded.byte_size,
+                state="available",
+                updated_at=now,
+            )
+            self._session.add(record)
+        else:
+            record.checksum = uploaded.sha256
+            record.content_type = uploaded.content_type
+            record.byte_size = uploaded.byte_size
+            record.state = "available"
+            record.updated_at = now
+        self._session.flush()
+
     def _lock_object_key(self, object_key: str) -> None:
         if self._session.get_bind().dialect.name == "postgresql":
             self._session.execute(
@@ -513,6 +566,14 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def _artifact_category(profile: str) -> str | None:
+    if profile == "version-comparison":
+        return "comparison"
+    if profile.startswith("embedding-reindex:"):
+        return None
+    return "analysis"
 
 
 def _as_required_aware_utc(value: datetime) -> datetime:

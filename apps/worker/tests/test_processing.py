@@ -24,7 +24,7 @@ from agreement_intelligence_worker.processing import (
     create_processing_tables,
     run_processing_loop,
 )
-from pytest import LogCaptureFixture, raises
+from pytest import LogCaptureFixture, mark, raises
 from sqlalchemy import create_engine, select
 
 
@@ -397,6 +397,163 @@ def test_completing_a_deleted_job_is_a_safe_no_op(tmp_path: Path) -> None:
         job_id,
         CompletedArtifact(job_id=job_id, key=f"checkpoints/{job_id}/result.json"),
     )
+
+
+@mark.parametrize(("initial_state", "has_outbox"), [("accepted", True), ("completed", False)])
+def test_tombstone_completion_durably_inventories_artifact_for_retryable_cleanup(
+    tmp_path: Path,
+    initial_state: str,
+    has_outbox: bool,
+) -> None:
+    from agreement_intelligence_worker.agreement_deletion import (
+        AgreementDeletionProcessor,
+        SQLAlchemyAgreementDeletionRepository,
+        deletion_metadata,
+        deletion_objects,
+        deletion_outbox,
+        deletion_requests,
+    )
+    from agreement_intelligence_worker.processing import agreements, processing_jobs
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'late-artifact.db'}")
+    create_processing_tables(engine)
+    deletion_metadata.create_all(engine)
+    job_id, comparison_job_id, embedding_job_id, deletion_id = uuid4(), uuid4(), uuid4(), uuid4()
+    agreement_id, organization_id, workspace_id, actor_id = uuid4(), uuid4(), uuid4(), uuid4()
+    now = datetime.now(UTC)
+    artifact_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/{agreement_id}/"
+        f"analysis/{'d' * 64}/document-analysis.v1.json"
+    )
+    comparison_key = f"comparisons/{uuid4()}/version-comparison.v1.json"
+    embedding_key = f"embedding-reindex/{uuid4()}.json"
+    with engine.begin() as connection:
+        connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                current_version_id=None,
+                processing_state="processing",
+                updated_at=now,
+                deletion_requested_at=now,
+            )
+        )
+        for current_job_id, idempotency_key, profile in (
+            (job_id, "late-artifact", "baseline"),
+            (comparison_job_id, "late-comparison", "version-comparison"),
+            (embedding_job_id, "late-embedding", f"embedding-reindex:{uuid4()}"),
+        ):
+            connection.execute(
+                processing_jobs.insert().values(
+                    id=current_job_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agreement_id=agreement_id,
+                    version_id=None,
+                    idempotency_key=idempotency_key,
+                    profile=profile,
+                    state="processing",
+                    attempt_count=1,
+                    queued_at=now,
+                    processing_started_at=now,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        connection.execute(
+            deletion_requests.insert().values(
+                id=deletion_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                actor_id=actor_id,
+                title="Deleting",
+                agreement_type="client",
+                file_checksums=[],
+                state=initial_state,
+                attempt_count=0,
+                retry_cycle=1,
+                next_attempt_at=now,
+                accepted_at=now,
+                completed_at=now if initial_state == "completed" else None,
+                updated_at=now,
+            )
+        )
+        if has_outbox:
+            connection.execute(
+                deletion_outbox.insert().values(
+                    id=uuid4(),
+                    deletion_id=deletion_id,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
+                    agreement_id=agreement_id,
+                    attempt_count=1,
+                    next_attempt_at=now,
+                    delivered_at=now,
+                    updated_at=now,
+                )
+            )
+
+    completed = SQLAlchemyProcessingJobRepository(engine).complete(
+        job_id,
+        CompletedArtifact(job_id=job_id, key=artifact_key),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
+    assert completed is False
+    repository = SQLAlchemyProcessingJobRepository(engine)
+    assert (
+        repository.complete(
+            comparison_job_id,
+            CompletedArtifact(job_id=comparison_job_id, key=comparison_key),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        is False
+    )
+    assert (
+        repository.complete(
+            embedding_job_id,
+            CompletedArtifact(job_id=embedding_job_id, key=embedding_key),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        is False
+    )
+    with engine.connect() as connection:
+        inventory = connection.execute(select(deletion_objects)).mappings().all()
+        request_state = connection.execute(select(deletion_requests)).mappings().one()
+        outbox_state = connection.execute(select(deletion_outbox)).mappings().one()
+    assert {(item["category"], item["object_key"], item["state"]) for item in inventory} == {
+        ("analysis", artifact_key, "pending"),
+        ("comparison", comparison_key, "pending"),
+    }
+    assert request_state["state"] == "retrying"
+    assert request_state["retry_cycle"] == (2 if initial_state == "completed" else 1)
+    assert outbox_state["delivered_at"] is None
+
+    class FlakyStorage:
+        def __init__(self) -> None:
+            self.objects = {artifact_key, comparison_key}
+            self.calls = 0
+
+        def delete(self, key: str) -> None:
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("discard failed")
+            self.objects.discard(key)
+
+    storage = FlakyStorage()
+    with raises(RuntimeError, match="discard failed"):
+        storage.delete(artifact_key)
+    AgreementDeletionProcessor(SQLAlchemyAgreementDeletionRepository(engine), storage).handle(
+        deletion_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
+    assert storage.objects == set()
 
 
 def test_processing_loop_consumes_and_acknowledges_fake_messages() -> None:

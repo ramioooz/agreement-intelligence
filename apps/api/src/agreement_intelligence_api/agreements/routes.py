@@ -254,11 +254,15 @@ async def upload_agreement_version(
     )
     try:
         content = await file.read(document_service._max_bytes + 1)
-        uploaded = document_service.upload(
-            UploadScope(tenant_id=organization_id, workspace_id=workspace_id),
+        document = document_service.prepare(
             filename=file.filename,
             content=content,
             declared_content_type=file.content_type,
+        )
+        uploaded = service.upload_source(
+            document_service,
+            UploadScope(tenant_id=organization_id, workspace_id=workspace_id),
+            document,
         )
     except DocumentValidationError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error

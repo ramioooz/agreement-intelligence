@@ -1,5 +1,6 @@
 from collections.abc import Generator, Mapping, MutableMapping
 from io import BytesIO
+from types import SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -69,9 +70,25 @@ class FakeIdentityService:
 
 
 class EmptyDeletionSession:
+    def get_bind(self) -> object:
+        return SimpleNamespace(dialect=SimpleNamespace(name="sqlite"))
+
+    def scalar(self, statement: object) -> None:
+        del statement
+        return None
+
     def scalars(self, statement: object) -> list[object]:
         del statement
         return []
+
+    def add(self, record: object) -> None:
+        del record
+
+    def flush(self) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
 
 
 @fixture(autouse=True)

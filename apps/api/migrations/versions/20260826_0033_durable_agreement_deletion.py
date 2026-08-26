@@ -59,6 +59,50 @@ def upgrade() -> None:
         unique=True,
     )
     op.create_table(
+        "document_object_registry",
+        sa.Column("id", sa.Uuid(), nullable=False),
+        sa.Column("organization_id", sa.Uuid(), nullable=False),
+        sa.Column("workspace_id", sa.Uuid(), nullable=False),
+        sa.Column("object_key", sa.String(length=1024), nullable=False),
+        sa.Column("checksum", sa.String(length=255), nullable=True),
+        sa.Column("content_type", sa.String(length=100), nullable=True),
+        sa.Column("byte_size", sa.Integer(), nullable=True),
+        sa.Column("state", sa.String(length=32), server_default="available", nullable=False),
+        sa.Column(
+            "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.Column(
+            "updated_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
+        ),
+        sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"]),
+        sa.ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "object_key",
+            name="uq_document_object_registry_key",
+        ),
+        sa.CheckConstraint(
+            "state IN ('available', 'deleting', 'deleted')",
+            name="ck_document_object_registry_state",
+        ),
+    )
+    for column_name in ("organization_id", "workspace_id"):
+        op.create_index(
+            f"ix_document_object_registry_{column_name}",
+            "document_object_registry",
+            [column_name],
+        )
+    op.create_index(
+        "ix_document_object_registry_scope_state",
+        "document_object_registry",
+        ["organization_id", "workspace_id", "state"],
+    )
+    op.create_table(
         "agreement_deletion_requests",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("organization_id", sa.Uuid(), nullable=False),
@@ -260,6 +304,7 @@ def upgrade() -> None:
     )
     if op.get_bind().dialect.name == "postgresql":
         for table_name in (
+            "document_object_registry",
             "agreement_deletion_requests",
             "agreement_deletion_objects",
             "agreement_deletion_outbox",
@@ -314,6 +359,7 @@ def downgrade() -> None:
         raise RuntimeError(
             "cannot downgrade durable agreement deletion after a deletion was accepted"
         )
+    op.drop_table("document_object_registry")
     op.drop_table("agreement_deletion_outbox")
     op.drop_table("agreement_deletion_objects")
     op.drop_table("agreement_deletion_requests")

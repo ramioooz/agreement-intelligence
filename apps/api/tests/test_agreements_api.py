@@ -360,6 +360,11 @@ def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sourc
         AgreementVersionRecord,
     )
     from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
+    from agreement_intelligence_api.comparisons.models import VersionComparisonRunRecord
+    from agreement_intelligence_api.processing.models import (
+        ProcessingArtifactRecord,
+        ProcessingJobRecord,
+    )
 
     owner_id, organization, workspace = _create_business_user_scope(session)
     client = client_for_session(owner_id)
@@ -438,6 +443,72 @@ def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sourc
     record = session.get(AgreementRecord, target_id)
     assert record is not None
     record.files = [{**record.files[0], "storage_key": current_alias}]
+    comparison_id = uuid4()
+    comparison_key = f"comparisons/{comparison_id}/version-comparison.v1.json"
+    comparison_job = ProcessingJobRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=target_id,
+        version_id=version_one.id,
+        idempotency_key="comparison-inventory",
+        profile="version-comparison",
+        state="completed",
+        attempt_count=1,
+        queued_at=now,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    embedding_job = ProcessingJobRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        agreement_id=target_id,
+        version_id=None,
+        idempotency_key="embedding-inventory",
+        profile=f"embedding-reindex:{uuid4()}",
+        state="completed",
+        attempt_count=1,
+        queued_at=now,
+        completed_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add_all([comparison_job, embedding_job])
+    session.flush()
+    session.add_all(
+        [
+            ProcessingArtifactRecord(
+                job_id=comparison_job.id,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                agreement_id=target_id,
+                artifact_key=comparison_key,
+            ),
+            ProcessingArtifactRecord(
+                job_id=embedding_job.id,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                agreement_id=target_id,
+                artifact_key=f"embedding-reindex/{uuid4()}.json",
+            ),
+            VersionComparisonRunRecord(
+                id=comparison_id,
+                organization_id=organization.id,
+                workspace_id=workspace.id,
+                agreement_id=target_id,
+                baseline_version_id=version_one.id,
+                target_version_id=version_one.id,
+                processing_job_id=comparison_job.id,
+                idempotency_key="comparison-inventory",
+                analysis_version="v1",
+                state="completed",
+                analysis_provenance={},
+                created_at=now,
+                updated_at=now,
+                completed_at=now,
+            ),
+        ]
+    )
     session.commit()
 
     admin_id = _create_platform_admin(session, organization, workspace)
@@ -446,10 +517,16 @@ def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sourc
     assert accepted.status_code == 202
     deletion = session.query(AgreementDeletionRequestRecord).one()
     assert deletion.state == "accepted"
-    inventory = {item.object_key for item in session.query(AgreementDeletionObjectRecord).all()}
-    assert shared_key in inventory
-    assert historical_key in inventory
-    assert current_alias in inventory
+    inventory = {
+        (item.category, item.object_key)
+        for item in session.query(AgreementDeletionObjectRecord).all()
+    }
+    assert ("source", shared_key) in inventory
+    assert ("source", historical_key) in inventory
+    assert ("source", current_alias) in inventory
+    assert ("comparison", comparison_key) in inventory
+    assert ("analysis", comparison_key) not in inventory
+    assert not any(key.startswith("embedding-reindex/") for _, key in inventory)
     repository = SQLAlchemyAgreementRepository(session)
     assert not repository.is_object_pending_deletion(
         shared_key,
@@ -854,6 +931,7 @@ def test_agreement_migration_creates_repository_tables(tmp_path: Path) -> None:
         create_engine(f"sqlite+pysqlite:///{database_path}")
     ).get_table_names()
     assert "agreements" in table_names
+    assert "document_object_registry" in table_names
 
 
 def test_retrieval_index_build_migration_rejects_an_agreement_from_another_scope(

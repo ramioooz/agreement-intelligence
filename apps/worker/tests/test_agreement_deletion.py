@@ -22,7 +22,9 @@ class InMemoryRepository:
     failed: bool = False
     shared_keys: frozenset[str] = frozenset()
     completion_error: Exception | None = None
+    database_retry_error: Exception | None = None
     next_retry_at: datetime | None = None
+    failure_category: str | None = None
 
     def claim(
         self, deletion_id: UUID, *, organization_id: UUID, workspace_id: UUID
@@ -86,6 +88,24 @@ class InMemoryRepository:
         assert all(item.state in {"deleted", "preserved"} for item in self.objects)
         self.completed = True
         self.state = "completed"
+
+    def retry_database_cleanup(
+        self, deletion: AgreementDeletion, *, message: str, next_retry_at: datetime
+    ) -> None:
+        assert deletion == self.deletion
+        assert message == "Agreement database cleanup failed"
+        if self.database_retry_error is not None:
+            raise self.database_retry_error
+        self.state = "retrying"
+        self.failure_category = "database_cleanup"
+        self.next_retry_at = next_retry_at
+
+    def fail_database_cleanup(self, deletion: AgreementDeletion, *, message: str) -> None:
+        assert deletion == self.deletion
+        assert message == "Agreement database cleanup failed"
+        self.state = "failed"
+        self.failed = True
+        self.failure_category = "database_cleanup"
 
     def _set_object_state(self, item: AgreementDeletionObject, state: str) -> None:
         self.objects = [
@@ -199,7 +219,7 @@ def test_partial_s3_failure_persists_due_retry_then_completes_idempotently() -> 
     assert storage.calls.count(objects[1].object_key) == 2
 
 
-def test_database_completion_failure_is_retryable_and_never_marked_failed() -> None:
+def test_database_completion_failure_persists_retry_and_reopens_delivery() -> None:
     deletion, objects = _deletion()
     repository = InMemoryRepository(
         deletion,
@@ -209,19 +229,39 @@ def test_database_completion_failure_is_retryable_and_never_marked_failed() -> N
     processor = AgreementDeletionProcessor(
         repository,
         RecordingStorage(),
-        retry_policy=DeletionRetryPolicy(max_attempts=1),
+        retry_policy=DeletionRetryPolicy(max_attempts=2),
     )
 
-    with raises(RuntimeError, match="database unavailable"):
-        processor.handle(
+    processor.handle(
+        deletion.id,
+        organization_id=deletion.organization_id,
+        workspace_id=deletion.workspace_id,
+    )
+
+    assert repository.state == "retrying"
+    assert repository.failure_category == "database_cleanup"
+    assert repository.next_retry_at is not None
+    assert not repository.failed
+    assert not repository.completed
+
+
+def test_total_database_outage_keeps_delivery_unacknowledged() -> None:
+    deletion, objects = _deletion()
+    repository = InMemoryRepository(
+        deletion,
+        objects,
+        completion_error=RuntimeError("database unavailable"),
+        database_retry_error=RuntimeError("retry persistence unavailable"),
+    )
+
+    with raises(RuntimeError, match="retry persistence unavailable"):
+        AgreementDeletionProcessor(repository, RecordingStorage()).handle(
             deletion.id,
             organization_id=deletion.organization_id,
             workspace_id=deletion.workspace_id,
         )
 
     assert repository.state == "processing"
-    assert not repository.failed
-    assert not repository.completed
 
 
 def test_duplicate_delivery_does_not_claim_an_active_lease() -> None:
@@ -265,9 +305,14 @@ def test_autonomous_outbox_sweeper_traverses_tenants_and_releases_failures() -> 
             self.messages = {first.organization_id: first, second.organization_id: second}
             self.delivered: list[UUID] = []
             self.released: list[UUID] = []
+            self.recovered: list[UUID] = []
 
         def organization_ids(self) -> list[UUID]:
             return list(self.messages)
+
+        def recover_stale_deletions(self, organization_id: UUID) -> int:
+            self.recovered.append(organization_id)
+            return 0
 
         def claim_due_outbox(self, organization_id: UUID) -> ClaimedDeletionOutbox | None:
             return self.messages.pop(organization_id, None)
@@ -296,5 +341,6 @@ def test_autonomous_outbox_sweeper_traverses_tenants_and_releases_failures() -> 
     delivered = AgreementDeletionOutboxSweeper(repository, queue).sweep_once()
 
     assert delivered == 1
+    assert set(repository.recovered) == {first.organization_id, second.organization_id}
     assert repository.delivered == [first.id]
     assert repository.released == [second.id]

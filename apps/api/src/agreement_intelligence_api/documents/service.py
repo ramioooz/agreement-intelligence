@@ -48,13 +48,32 @@ class DocumentService:
         content: bytes,
         declared_content_type: str | None,
     ) -> UploadedDocument:
-        document = validate_document(
+        document = self.prepare(
+            filename=filename,
+            content=content,
+            declared_content_type=declared_content_type,
+        )
+        return self.upload_validated(scope, document)
+
+    def prepare(
+        self,
+        *,
+        filename: str | None,
+        content: bytes,
+        declared_content_type: str | None,
+    ) -> ValidatedDocument:
+        return validate_document(
             filename=filename,
             content=content,
             declared_content_type=declared_content_type,
             max_bytes=self._max_bytes,
         )
-        key = self._key(scope, document)
+
+    def object_key(self, scope: UploadScope, document: ValidatedDocument) -> str:
+        return self._key(scope, document)
+
+    def upload_validated(self, scope: UploadScope, document: ValidatedDocument) -> UploadedDocument:
+        key = self.object_key(scope, document)
         created = self._storage.put_immutable(
             key,
             document.content,

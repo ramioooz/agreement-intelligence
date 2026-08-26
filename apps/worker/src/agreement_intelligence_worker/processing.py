@@ -35,6 +35,12 @@ from sqlalchemy import (
     update,
 )
 
+from agreement_intelligence_worker.agreement_deletion import (
+    deletion_objects,
+    deletion_outbox,
+    deletion_requests,
+)
+
 logger = logging.getLogger("agreement_intelligence.worker")
 
 JobState = Literal["queued", "processing", "completed", "failed"]
@@ -645,7 +651,11 @@ class SQLAlchemyProcessingJobRepository:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
-            job = _job_for_update(connection, job_id)
+            job = (
+                connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+                .mappings()
+                .one_or_none()
+            )
             if job is None:
                 return False
             if not _matches_tenant_scope(job, organization_id, workspace_id):
@@ -662,7 +672,13 @@ class SQLAlchemyProcessingJobRepository:
                 .mappings()
                 .one_or_none()
             )
-            if agreement is None or agreement["deletion_requested_at"] is not None:
+            job = _job_for_update(connection, job_id)
+            if job is None:
+                return False
+            if agreement is None:
+                return False
+            if agreement["deletion_requested_at"] is not None:
+                _inventory_late_artifact(connection, job, artifact.key, now=now)
                 return False
             existing_artifact = connection.execute(
                 select(processing_artifacts.c.id).where(
@@ -834,6 +850,110 @@ def _job_for_update(connection: Any, job_id: UUID) -> Any | None:
         .mappings()
         .one_or_none()
     )
+
+
+def _inventory_late_artifact(
+    connection: Any, job: Mapping[str, Any], key: str, *, now: datetime
+) -> None:
+    request = (
+        connection.execute(
+            select(deletion_requests)
+            .where(
+                deletion_requests.c.agreement_id == job["agreement_id"],
+                deletion_requests.c.organization_id == job["organization_id"],
+                deletion_requests.c.workspace_id == job["workspace_id"],
+            )
+            .with_for_update()
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if request is None:
+        raise RuntimeError("tombstoned agreement has no active deletion request")
+
+    category = _late_artifact_category(cast(str, job["profile"]), key)
+    if category is None:
+        return
+    existing = connection.scalar(
+        select(deletion_objects.c.id).where(
+            deletion_objects.c.deletion_id == request["id"],
+            deletion_objects.c.category == category,
+            deletion_objects.c.object_key == key,
+        )
+    )
+    if existing is None:
+        connection.execute(
+            deletion_objects.insert().values(
+                id=uuid4(),
+                deletion_id=request["id"],
+                organization_id=job["organization_id"],
+                workspace_id=job["workspace_id"],
+                agreement_id=job["agreement_id"],
+                category=category,
+                object_key=key,
+                state="pending",
+                last_error=None,
+                updated_at=now,
+            )
+        )
+
+    terminal_state = request["state"] in {"completed", "failed"}
+    retry_cycle = int(request["retry_cycle"]) + (1 if terminal_state else 0)
+    connection.execute(
+        update(deletion_requests)
+        .where(deletion_requests.c.id == request["id"])
+        .values(
+            state="retrying",
+            attempt_count=0 if terminal_state else request["attempt_count"],
+            retry_cycle=retry_cycle,
+            claim_token=None,
+            lease_expires_at=None,
+            next_attempt_at=now,
+            failure_category="artifact_race",
+            failure_message="Processing completed after deletion was accepted",
+            completed_at=None,
+            failed_at=None,
+            updated_at=now,
+        )
+    )
+    result = connection.execute(
+        update(deletion_outbox)
+        .where(deletion_outbox.c.deletion_id == request["id"])
+        .values(
+            attempt_count=0,
+            next_attempt_at=now,
+            lease_token=None,
+            lease_expires_at=None,
+            last_error=None,
+            delivered_at=None,
+            updated_at=now,
+        )
+    )
+    if result.rowcount == 0:
+        connection.execute(
+            deletion_outbox.insert().values(
+                id=uuid4(),
+                deletion_id=request["id"],
+                organization_id=job["organization_id"],
+                workspace_id=job["workspace_id"],
+                agreement_id=job["agreement_id"],
+                attempt_count=0,
+                next_attempt_at=now,
+                lease_token=None,
+                lease_expires_at=None,
+                last_error=None,
+                delivered_at=None,
+                updated_at=now,
+            )
+        )
+
+
+def _late_artifact_category(profile: str, key: str) -> str | None:
+    if profile.startswith("embedding-reindex:") or key.startswith("embedding-reindex/"):
+        return None
+    if profile == "version-comparison":
+        return "comparison"
+    return "analysis"
 
 
 def _required_tenant_scope(value: UUID | None, field_name: str) -> UUID:

@@ -106,6 +106,40 @@ class AgreementVersionRecord(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255))
 
 
+class DocumentObjectRegistryRecord(Base):
+    __tablename__ = "document_object_registry"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "object_key", name="uq_document_object_registry_key"
+        ),
+        CheckConstraint(
+            "state IN ('available', 'deleting', 'deleted')",
+            name="ck_document_object_registry_state",
+        ),
+        Index(
+            "ix_document_object_registry_scope_state",
+            "organization_id",
+            "workspace_id",
+            "state",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(ForeignKey("organizations.id"), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    object_key: Mapped[str] = mapped_column(String(1024))
+    checksum: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    content_type: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    byte_size: Mapped[int | None] = mapped_column(nullable=True)
+    state: Mapped[str] = mapped_column(String(32), default="available")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AgreementVersionAuditEventRecord(Base):
     __tablename__ = "agreement_version_audit_events"
     __table_args__ = (

@@ -1,6 +1,6 @@
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -60,6 +60,15 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
     source_key = (
         f"tenants/{organization_id}/workspaces/{workspace_id}/documents/{'a' * 64}/original.pdf"
     )
+    alias_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/documents/{'c' * 64}/original.pdf"
+    )
+    upload_wins_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/documents/{'d' * 64}/original.pdf"
+    )
+    worker_wins_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/documents/{'e' * 64}/original.pdf"
+    )
     analysis_key = (
         f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/{agreement_id}/"
         f"analysis/{'b' * 64}/document-analysis.v1.json"
@@ -116,6 +125,10 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
                     "agreement_id": agreement_id,
                 },
             )
+        connection.execute(
+            text("UPDATE agreements SET files=CAST(:files AS json) WHERE id=:id"),
+            {"id": keeper_id, "files": json.dumps([{"storage_key": alias_key}])},
+        )
         versions = (
             (version_one_id, agreement_id, 1, None, source_key, "a" * 64, "target-v1"),
             (version_two_id, agreement_id, 2, version_one_id, source_key, "b" * 64, "target-v2"),
@@ -262,7 +275,7 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
                 ) VALUES (
                     :id,:organization_id,:workspace_id,:agreement_id,:actor_id,
                     'Sensitive agreement','client',CAST(:checksums AS json),'accepted',
-                    0,1,now(),now(),now()
+                    0,1,now(),now() - interval '1 minute',now()
                 )
                 """
             ),
@@ -277,6 +290,9 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
         )
         for category, key in (
             ("source", source_key),
+            ("source", alias_key),
+            ("source", upload_wins_key),
+            ("source", worker_wins_key),
             ("analysis", analysis_key),
             ("comparison", comparison_key),
             ("review_manifest", review_key),
@@ -301,6 +317,29 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
                     "agreement_id": agreement_id,
                     "category": category,
                     "object_key": key,
+                },
+            )
+        registry_now = datetime.now(UTC)
+        for key, updated_at in (
+            (upload_wins_key, registry_now),
+            (worker_wins_key, registry_now - timedelta(minutes=2)),
+        ):
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO document_object_registry (
+                        id,organization_id,workspace_id,object_key,state,updated_at
+                    ) VALUES (
+                        :id,:organization_id,:workspace_id,:object_key,'available',:updated_at
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "organization_id": organization_id,
+                    "workspace_id": workspace_id,
+                    "object_key": key,
+                    "updated_at": updated_at,
                 },
             )
         connection.execute(
@@ -412,7 +451,7 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
         workspace_id=workspace_id,
     )
 
-    assert set(storage.deleted) == {analysis_key, comparison_key, review_key}
+    assert set(storage.deleted) == {worker_wins_key, analysis_key, comparison_key, review_key}
     with engine.begin() as connection:
         connection.execute(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -470,6 +509,25 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
             )
             == 1
         )
+        registry_states = {
+            row.object_key: row.state
+            for row in connection.execute(
+                text(
+                    """
+                    SELECT object_key,state FROM document_object_registry
+                    WHERE object_key IN (:upload_wins_key,:worker_wins_key)
+                    """
+                ),
+                {
+                    "upload_wins_key": upload_wins_key,
+                    "worker_wins_key": worker_wins_key,
+                },
+            )
+        }
+        assert registry_states == {
+            upload_wins_key: "available",
+            worker_wins_key: "deleted",
+        }
         assert (
             connection.scalar(
                 text(

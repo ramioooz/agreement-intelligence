@@ -116,15 +116,21 @@ async def upload_document(
     file: Annotated[UploadFile, File()],
     scope: Annotated[UploadScope, Depends(get_upload_scope)],
     service: Annotated[DocumentService, Depends(get_document_service)],
+    session: SessionDependency,
 ) -> UploadResponse:
     try:
         content = await file.read(service._max_bytes + 1)
-        uploaded = service.upload(
-            scope,
+        document = service.prepare(
             filename=file.filename,
             content=content,
             declared_content_type=file.content_type,
         )
+        repository = SQLAlchemyAgreementRepository(session)
+        object_key = service.object_key(scope, document)
+        repository.lock_source_object(object_key)
+        uploaded = service.upload_validated(scope, document)
+        repository.record_source_upload(uploaded)
+        session.commit()
     except DocumentValidationError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     finally:
