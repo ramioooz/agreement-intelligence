@@ -207,8 +207,9 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
 ) -> None:
     user_id, organization, workspace = _create_business_user_scope(session)
     payload = _agreement_payload("Disposable agreement")
+    checksum = "a" * 64
     payload["files"][0]["storage_key"] = (
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/abc/original.pdf"
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{checksum}/original.pdf"
     )
     agreement = client_for_session(user_id).post(
         "/agreements",
@@ -218,7 +219,7 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
     agreement_id = UUID(agreement.json()["id"])
     artifact_key = (
         f"tenants/{organization.id}/workspaces/{workspace.id}/agreements/{agreement_id}/"
-        "analysis/abc/analysis.json"
+        f"analysis/{checksum}/document-analysis.v1.json"
     )
     job_id = uuid4()
     now = datetime.now(UTC)
@@ -291,6 +292,22 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
         json={"profile": "baseline"},
     )
     assert blocked_processing.status_code == 404
+    blocked_comparison = client.post(
+        f"/agreements/{agreement_id}/version-comparisons",
+        params=_scope_query(organization, workspace),
+        headers={"Idempotency-Key": "blocked-comparison-after-delete"},
+        json={},
+    )
+    assert blocked_comparison.status_code == 404
+    blocked_review = client.post(
+        "/reviews",
+        params=_scope_query(organization, workspace),
+        json={
+            "agreement_id": str(agreement_id),
+            "idempotency_key": "blocked-review-after-delete",
+        },
+    )
+    assert blocked_review.status_code == 404
     blocked_source = client.get(
         "/documents/download",
         params={
@@ -310,6 +327,7 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
     assert audit.event_type == "requested"
 
     from agreement_intelligence_api.agreements.models import (
+        AgreementDeletionObjectRecord,
         AgreementDeletionOutboxRecord,
         AgreementDeletionRequestRecord,
     )
@@ -317,10 +335,15 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
     request_record = session.query(AgreementDeletionRequestRecord).one()
     assert request_record.id == UUID(deletion["id"])
     assert request_record.state == "accepted"
-    assert request_record.object_keys == [
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/abc/original.pdf",
-        artifact_key,
-    ]
+    inventory = (
+        session.query(AgreementDeletionObjectRecord)
+        .order_by(AgreementDeletionObjectRecord.category.desc())
+        .all()
+    )
+    assert {(item.category, item.object_key) for item in inventory} == {
+        ("source", payload["files"][0]["storage_key"]),
+        ("analysis", artifact_key),
+    }
     outbox = session.query(AgreementDeletionOutboxRecord).one()
     assert outbox.deletion_id == request_record.id
     del app.state.document_storage
@@ -331,16 +354,18 @@ def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sourc
     client_for_session: Callable[[UUID], TestClient],
 ) -> None:
     from agreement_intelligence_api.agreements.models import (
+        AgreementDeletionObjectRecord,
         AgreementDeletionRequestRecord,
         AgreementRecord,
         AgreementVersionRecord,
     )
+    from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 
     owner_id, organization, workspace = _create_business_user_scope(session)
     client = client_for_session(owner_id)
     scope = _scope_query(organization, workspace)
     shared_key = (
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/shared/original.pdf"
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{'a' * 64}/original.pdf"
     )
     target_payload = _agreement_payload("Target")
     target_payload["files"][0]["storage_key"] = shared_key
@@ -348,30 +373,48 @@ def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sourc
 
     target_id = UUID(target["id"])
     historical_key = (
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/history/original.pdf"
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{'b' * 64}/original.pdf"
     )
     current_alias = (
-        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/current/original.pdf"
+        f"tenants/{organization.id}/workspaces/{workspace.id}/documents/{'c' * 64}/original.pdf"
     )
     now = datetime.now(UTC)
     version_one = session.scalar(
         select(AgreementVersionRecord).where(AgreementVersionRecord.agreement_id == target_id)
     )
     assert version_one is not None
+    keeper = AgreementRecord(
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+        title="Keeper",
+        agreement_type="client",
+        status="draft",
+        parties=[],
+        files=[{**target_payload["files"][0], "storage_key": shared_key}],
+        processing_state="pending",
+        audit_metadata={},
+        audit_events=[],
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(keeper)
+    session.flush()
     session.add(
-        AgreementRecord(
+        AgreementVersionRecord(
+            agreement_id=keeper.id,
             organization_id=organization.id,
             workspace_id=workspace.id,
-            title="Keeper",
-            agreement_type="client",
-            status="draft",
-            parties=[],
-            files=[{**target_payload["files"][0], "storage_key": shared_key}],
-            processing_state="pending",
-            audit_metadata={},
-            audit_events=[],
-            created_at=now,
-            updated_at=now,
+            version_number=1,
+            predecessor_version_id=None,
+            file_name="shared.pdf",
+            content_type="application/pdf",
+            storage_key=shared_key,
+            checksum="a" * 64,
+            byte_size=10,
+            uploaded_by=owner_id,
+            uploaded_at=now,
+            processing_state="completed",
+            idempotency_key="keeper-v1",
         )
     )
     session.add(
@@ -402,9 +445,22 @@ def test_deletion_inventory_covers_immutable_versions_and_preserves_shared_sourc
 
     assert accepted.status_code == 202
     deletion = session.query(AgreementDeletionRequestRecord).one()
-    assert shared_key not in deletion.object_keys
-    assert historical_key in deletion.object_keys
-    assert current_alias in deletion.object_keys
+    assert deletion.state == "accepted"
+    inventory = {item.object_key for item in session.query(AgreementDeletionObjectRecord).all()}
+    assert shared_key in inventory
+    assert historical_key in inventory
+    assert current_alias in inventory
+    repository = SQLAlchemyAgreementRepository(session)
+    assert not repository.is_object_pending_deletion(
+        shared_key,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+    )
+    assert repository.is_object_pending_deletion(
+        historical_key,
+        organization_id=organization.id,
+        workspace_id=workspace.id,
+    )
 
 
 def test_cross_tenant_deletion_is_denied_without_creating_an_intent(
@@ -435,7 +491,7 @@ def test_cross_tenant_deletion_is_denied_without_creating_an_intent(
     assert session.query(AgreementDeletionRequestRecord).count() == 0
 
 
-def test_deletion_outbox_survives_publish_failure_and_replays(
+def test_deletion_acceptance_persists_outbox_without_calling_external_queue(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],
 ) -> None:
@@ -453,44 +509,14 @@ def test_deletion_outbox_survives_publish_failure_and_replays(
     )
     admin_id = _create_platform_admin(session, organization, workspace)
 
-    class Publisher:
-        def __init__(self) -> None:
-            self.fail = True
-            self.deletion_ids: list[UUID] = []
-
-        def publish(self, deletion: object) -> None:
-            if self.fail:
-                raise RuntimeError("queue unavailable")
-            self.deletion_ids.append(deletion.id)  # type: ignore[attr-defined]
-
-    publisher = Publisher()
-    app.state.agreement_deletion_queue_publisher = publisher
-    try:
-        accepted = client_for_session(admin_id).delete(
-            f"/agreements/{agreement['id']}",
-            params=_scope_query(organization, workspace),
-        )
-        assert accepted.status_code == 202
-        outbox = session.query(AgreementDeletionOutboxRecord).one()
-        assert outbox.delivered_at is None
-
-        publisher.fail = False
-        from agreement_intelligence_api.agreements.deletion import (
-            AgreementDeletionOutboxDispatcher,
-        )
-
-        delivered = AgreementDeletionOutboxDispatcher(
-            session=session, publisher=publisher
-        ).dispatch_pending(
-            organization_id=organization.id,
-            workspace_id=workspace.id,
-        )
-
-        assert delivered == 1
-        assert publisher.deletion_ids == [UUID(accepted.json()["id"])]
-        assert outbox.delivered_at is not None
-    finally:
-        del app.state.agreement_deletion_queue_publisher
+    accepted = client_for_session(admin_id).delete(
+        f"/agreements/{agreement['id']}",
+        params=_scope_query(organization, workspace),
+    )
+    assert accepted.status_code == 202
+    outbox = session.query(AgreementDeletionOutboxRecord).one()
+    assert outbox.delivered_at is None
+    assert outbox.next_attempt_at is not None
 
 
 def test_database_failure_does_not_publish_or_mutate_external_storage(
@@ -510,16 +536,6 @@ def test_database_failure_does_not_publish_or_mutate_external_storage(
     )
     admin_id = _create_platform_admin(session, organization, workspace)
 
-    class Publisher:
-        def __init__(self) -> None:
-            self.called = False
-
-        def publish(self, deletion: object) -> None:
-            del deletion
-            self.called = True
-
-    publisher = Publisher()
-    app.state.agreement_deletion_queue_publisher = publisher
     deleted_keys: list[str] = []
 
     class Storage:
@@ -538,11 +554,9 @@ def test_database_failure_does_not_publish_or_mutate_external_storage(
                 f"/agreements/{agreement['id']}",
                 params=_scope_query(organization, workspace),
             )
-        assert not publisher.called
         assert deleted_keys == []
     finally:
         session.rollback()
-        del app.state.agreement_deletion_queue_publisher
         del app.state.document_storage
 
 

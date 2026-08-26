@@ -9,7 +9,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
 from agreement_intelligence_api.identity.permissions import PermissionKey
 from agreement_intelligence_api.identity.service import IdentityService
@@ -178,10 +178,12 @@ class PlaybookService:
             principal, organization_id=organization_id, workspace_id=workspace_id
         )
         agreement = self._session.scalar(
-            select(AgreementRecord)
-            .where(AgreementRecord.id == request.agreement_id)
-            .where(AgreementRecord.organization_id == organization_id)
-            .where(AgreementRecord.workspace_id == workspace_id)
+            active_agreement_statement(
+                request.agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                for_update=True,
+            )
         )
         if agreement is None:
             hide_resource()
@@ -224,10 +226,12 @@ class PlaybookService:
             principal, organization_id=organization_id, workspace_id=workspace_id
         )
         agreement = self._session.scalar(
-            select(AgreementRecord)
-            .where(AgreementRecord.id == agreement_id)
-            .where(AgreementRecord.organization_id == organization_id)
-            .where(AgreementRecord.workspace_id == workspace_id)
+            active_agreement_statement(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                for_update=True,
+            )
         )
         if agreement is None:
             hide_resource()

@@ -364,6 +364,7 @@ class AIConfigurationService:
                 RetrievalIndexBuildRecord.workspace_id == record.workspace_id,
                 RetrievalIndexBuildRecord.state == "active",
                 AgreementRecord.archived_at.is_(None),
+                AgreementRecord.deletion_requested_at.is_(None),
             )
         ).all()
         created = 0

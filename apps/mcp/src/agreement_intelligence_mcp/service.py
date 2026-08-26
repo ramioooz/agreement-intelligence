@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol
 from uuid import UUID
 
+from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.documents.storage import StoredDocument
 from agreement_intelligence_api.identity.authz import Principal
@@ -94,6 +95,7 @@ class McpReadService:
                     .where(AgreementRecord.organization_id == organization_id)
                     .where(AgreementRecord.workspace_id == workspace_id)
                     .where(AgreementRecord.archived_at.is_(None))
+                    .where(AgreementRecord.deletion_requested_at.is_(None))
                     .where(AgreementRecord.title.ilike(f"%{query.strip()}%"))
                     .order_by(AgreementRecord.created_at, AgreementRecord.id)
                     .limit(limit)
@@ -298,10 +300,11 @@ class McpReadService:
         self, agreement_id: UUID, organization_id: UUID, workspace_id: UUID
     ) -> AgreementRecord:
         agreement = self._session.scalar(
-            select(AgreementRecord)
-            .where(AgreementRecord.id == agreement_id)
-            .where(AgreementRecord.organization_id == organization_id)
-            .where(AgreementRecord.workspace_id == workspace_id)
+            active_agreement_statement(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
         )
         if agreement is None:
             raise ResourceNotFoundError

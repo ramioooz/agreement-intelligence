@@ -655,6 +655,51 @@ def test_persisted_thread_reloads_its_cited_turns() -> None:
     assert reloaded.turns[0].answer.claims[0].citations[0].anchor_id == "source:page:1:block:1"
 
 
+def test_deletion_tombstone_blocks_new_and_existing_bound_question_threads() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    session: Session = sessionmaker(bind=engine)()
+    repository = SQLAlchemyQuestionRepository(session)
+    search = _Search()
+    organization_id, workspace_id = uuid4(), uuid4()
+    agreement = AgreementRecord(
+        id=search.agreement_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        title="Master agreement",
+        agreement_type="client_agreement",
+        status="active",
+        processing_state="completed",
+        archived_at=None,
+    )
+    session.add(agreement)
+    session.commit()
+    service = GroundedQuestionService(
+        search=search,
+        identity=_Identity(),
+        repository=repository,
+        answerer=lambda _: AnswerCandidate(claims=()),
+    )
+    principal = Principal(user_id=uuid4())
+    thread = service.create_thread(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_ids=(search.agreement_id,),
+    )
+    agreement.deletion_requested_at = datetime.now(UTC)
+    session.commit()
+
+    assert service.read_thread(principal, thread=thread) is None
+    with pytest.raises(PermissionError, match="not available"):
+        service.create_thread(
+            principal,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agreement_ids=(search.agreement_id,),
+        )
+
+
 def test_persisted_question_operations_commit_and_create_immutable_audit_events() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     Base.metadata.create_all(engine)

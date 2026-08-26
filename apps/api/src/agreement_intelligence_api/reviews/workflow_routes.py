@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Select
 
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.db import get_session
@@ -548,10 +549,13 @@ def _review_for_permission(
     ):
         hide_resource()
     review = session.scalar(
-        select(ReviewCaseRecord).where(
+        select(ReviewCaseRecord)
+        .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
+        .where(
             ReviewCaseRecord.id == review_id,
             ReviewCaseRecord.organization_id == organization_id,
             ReviewCaseRecord.workspace_id == workspace_id,
+            AgreementRecord.deletion_requested_at.is_(None),
         )
     )
     if review is None:
@@ -580,10 +584,13 @@ def _review_for_any_permission(
     ):
         hide_resource()
     review = session.scalar(
-        select(ReviewCaseRecord).where(
+        select(ReviewCaseRecord)
+        .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
+        .where(
             ReviewCaseRecord.id == review_id,
             ReviewCaseRecord.organization_id == organization_id,
             ReviewCaseRecord.workspace_id == workspace_id,
+            AgreementRecord.deletion_requested_at.is_(None),
         )
     )
     if review is None:

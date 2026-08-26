@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
@@ -7,6 +8,8 @@ from agreement_intelligence_worker.review_workflow import (
     PostgresWorkflowCheckpointStore,
     SQLAlchemyWorkflowEventProcessor,
     _workflow_event_for_update,
+    agreements,
+    reviews,
     workflow_events,
     workflow_metadata,
     workflows,
@@ -121,14 +124,28 @@ class RecordingCheckpointStore:
 def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() -> None:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     workflow_metadata.create_all(engine)
+    agreement_id, review_id = uuid4(), uuid4()
     workflow_id, event_id, checkpoint_id = uuid4(), uuid4(), uuid4()
     organization_id, workspace_id = uuid4(), uuid4()
     with engine.begin() as connection:
+        connection.execute(
+            insert(agreements).values(
+                id=agreement_id,
+                deletion_requested_at=None,
+            )
+        )
+        connection.execute(
+            insert(reviews).values(
+                id=review_id,
+                agreement_id=agreement_id,
+            )
+        )
         connection.execute(
             insert(workflows).values(
                 id=workflow_id,
                 organization_id=organization_id,
                 workspace_id=workspace_id,
+                review_id=review_id,
                 checkpoint_id=checkpoint_id,
             )
         )
@@ -161,4 +178,49 @@ def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() ->
             )
             is not None
         )
+    engine.dispose()
+
+
+def test_workflow_event_for_deleted_agreement_is_not_processed() -> None:
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    workflow_metadata.create_all(engine)
+    agreement_id, review_id = uuid4(), uuid4()
+    workflow_id, event_id, checkpoint_id = uuid4(), uuid4(), uuid4()
+    organization_id, workspace_id = uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            insert(agreements).values(
+                id=agreement_id,
+                deletion_requested_at=datetime(2026, 8, 26, tzinfo=UTC),
+            )
+        )
+        connection.execute(insert(reviews).values(id=review_id, agreement_id=agreement_id))
+        connection.execute(
+            insert(workflows).values(
+                id=workflow_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                review_id=review_id,
+                checkpoint_id=checkpoint_id,
+            )
+        )
+        connection.execute(
+            insert(workflow_events).values(
+                id=event_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                workflow_id=workflow_id,
+                event_type="review.workflow.resume",
+                processed_at=None,
+            )
+        )
+
+    checkpoints = RecordingCheckpointStore()
+    processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints)
+
+    assert (
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+        is False
+    )
+    assert checkpoints.calls == []
     engine.dispose()

@@ -1,11 +1,13 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, select, text
 from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.agreements.models import (
     AgreementDeletionAuditEventRecord,
+    AgreementDeletionObjectRecord,
     AgreementDeletionOutboxRecord,
     AgreementDeletionRequestRecord,
     AgreementRecord,
@@ -18,6 +20,7 @@ from agreement_intelligence_api.agreements.schemas import (
     AgreementResponse,
     AgreementVersionResponse,
 )
+from agreement_intelligence_api.comparisons.models import VersionComparisonRunRecord
 from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
 )
@@ -52,8 +55,13 @@ class SQLAlchemyAgreementRepository:
         return self._to_response(record)
 
     def get(self, agreement_id: UUID) -> AgreementResponse | None:
-        record = self._session.get(AgreementRecord, agreement_id)
-        if record is None or record.deletion_requested_at is not None:
+        record = self._session.scalar(
+            select(AgreementRecord).where(
+                AgreementRecord.id == agreement_id,
+                AgreementRecord.deletion_requested_at.is_(None),
+            )
+        )
+        if record is None:
             return None
         return self._to_response(record)
 
@@ -85,7 +93,14 @@ class SQLAlchemyAgreementRepository:
         return [self._to_response(record) for record in self._session.scalars(statement)]
 
     def replace(self, agreement: AgreementResponse) -> AgreementResponse:
-        record = self._session.get(AgreementRecord, agreement.id)
+        record = self._session.scalar(
+            active_agreement_statement(
+                agreement.id,
+                organization_id=agreement.organization_id,
+                workspace_id=agreement.workspace_id,
+                for_update=True,
+            )
+        )
         if record is None:
             raise RuntimeError("cannot replace a missing agreement")
         record.title = agreement.title
@@ -110,6 +125,17 @@ class SQLAlchemyAgreementRepository:
         actor_id: UUID,
         action: str,
     ) -> AgreementVersionResponse:
+        agreement = self._session.scalar(
+            active_agreement_statement(
+                record.agreement_id,
+                organization_id=record.organization_id,
+                workspace_id=record.workspace_id,
+                for_update=True,
+            )
+        )
+        if agreement is None:
+            raise RuntimeError("cannot create a version for a deleted agreement")
+        self._lock_object_key(record.storage_key)
         self._session.add(record)
         self._session.flush()
         self._session.add(
@@ -130,13 +156,20 @@ class SQLAlchemyAgreementRepository:
         return self.version_response(record)
 
     def get_version(self, version_id: UUID) -> AgreementVersionRecord | None:
-        return self._session.get(AgreementVersionRecord, version_id)
+        return self._session.scalar(
+            select(AgreementVersionRecord)
+            .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
+            .where(AgreementVersionRecord.id == version_id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
+        )
 
     def list_versions(self, agreement_id: UUID) -> list[AgreementVersionRecord]:
         return list(
             self._session.scalars(
                 select(AgreementVersionRecord)
+                .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
                 .where(AgreementVersionRecord.agreement_id == agreement_id)
+                .where(AgreementRecord.deletion_requested_at.is_(None))
                 .order_by(AgreementVersionRecord.version_number)
             )
         )
@@ -145,20 +178,26 @@ class SQLAlchemyAgreementRepository:
         self, agreement_id: UUID, idempotency_key: str
     ) -> AgreementVersionRecord | None:
         return self._session.scalar(
-            select(AgreementVersionRecord).where(
+            select(AgreementVersionRecord)
+            .where(
                 AgreementVersionRecord.agreement_id == agreement_id,
                 AgreementVersionRecord.idempotency_key == idempotency_key,
             )
+            .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         )
 
     def version_by_checksum(
         self, agreement_id: UUID, checksum: str
     ) -> AgreementVersionRecord | None:
         return self._session.scalar(
-            select(AgreementVersionRecord).where(
+            select(AgreementVersionRecord)
+            .where(
                 AgreementVersionRecord.agreement_id == agreement_id,
                 AgreementVersionRecord.checksum == checksum,
             )
+            .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         )
 
     @staticmethod
@@ -188,7 +227,7 @@ class SQLAlchemyAgreementRepository:
             analysis_provenance=record.analysis_provenance,
         )
 
-    def deletion_object_keys(self, agreement: AgreementResponse) -> list[str]:
+    def deletion_objects(self, agreement: AgreementResponse) -> list[tuple[str, str]]:
         artifact_keys = list(
             self._session.scalars(
                 select(ProcessingArtifactRecord.artifact_key).where(
@@ -203,49 +242,49 @@ class SQLAlchemyAgreementRepository:
                 .order_by(AgreementVersionRecord.version_number)
             )
         )
-        referenced_alias_keys = {
-            source_file.get("storage_key")
-            for record in self._session.scalars(
-                select(AgreementRecord.files)
-                .where(AgreementRecord.organization_id == agreement.organization_id)
-                .where(AgreementRecord.workspace_id == agreement.workspace_id)
-                .where(AgreementRecord.id != agreement.id)
-                .where(AgreementRecord.deletion_requested_at.is_(None))
+        source_keys = [*version_source_keys, *(file.storage_key for file in agreement.files)]
+        comparison_keys = [
+            f"comparisons/{run_id}/version-comparison.v1.json"
+            for run_id in self._session.scalars(
+                select(VersionComparisonRunRecord.id).where(
+                    VersionComparisonRunRecord.agreement_id == agreement.id
+                )
             )
-            for source_file in record
-            if isinstance(source_file, dict) and isinstance(source_file.get("storage_key"), str)
-        }
-        referenced_version_keys = set(
-            self._session.scalars(
-                select(AgreementVersionRecord.storage_key)
-                .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
-                .where(AgreementVersionRecord.organization_id == agreement.organization_id)
-                .where(AgreementVersionRecord.workspace_id == agreement.workspace_id)
-                .where(AgreementVersionRecord.agreement_id != agreement.id)
-                .where(AgreementRecord.deletion_requested_at.is_(None))
-            )
-        )
-        referenced_source_keys = referenced_alias_keys | referenced_version_keys
-        source_keys = [
-            key
-            for key in [*version_source_keys, *(file.storage_key for file in agreement.files)]
-            if key not in referenced_source_keys
         ]
-        package_keys = [
-            key
+        package_objects = [
+            (category, key)
             for manifest_key, pdf_key in self._session.execute(
                 select(ReviewFinalPackageRecord.manifest_key, ReviewFinalPackageRecord.pdf_key)
                 .join(ReviewCaseRecord, ReviewFinalPackageRecord.review_id == ReviewCaseRecord.id)
                 .where(ReviewCaseRecord.agreement_id == agreement.id)
             )
-            for key in (manifest_key, pdf_key)
+            for category, key in (
+                ("review_manifest", manifest_key),
+                ("review_pdf", pdf_key),
+            )
         ]
-        return list(dict.fromkeys([*source_keys, *artifact_keys, *package_keys]))
+        objects = [
+            *(("source", key) for key in source_keys),
+            *(("analysis", key) for key in artifact_keys),
+            *(("comparison", key) for key in comparison_keys),
+            *package_objects,
+        ]
+        return list(dict.fromkeys(objects))
 
     def accept_deletion(
         self, agreement: AgreementResponse, *, actor_id: UUID
     ) -> AgreementDeletionResponse:
         now = datetime.now(UTC)
+        agreement_record = self._session.scalar(
+            select(AgreementRecord)
+            .where(AgreementRecord.id == agreement.id)
+            .where(AgreementRecord.organization_id == agreement.organization_id)
+            .where(AgreementRecord.workspace_id == agreement.workspace_id)
+            .with_for_update()
+        )
+        if agreement_record is None or agreement_record.deletion_requested_at is not None:
+            raise RuntimeError("agreement deletion cannot be accepted twice")
+        objects = self.deletion_objects(agreement)
         deletion_record = AgreementDeletionRequestRecord(
             organization_id=agreement.organization_id,
             workspace_id=agreement.workspace_id,
@@ -255,13 +294,30 @@ class SQLAlchemyAgreementRepository:
             agreement_type=agreement.agreement_type,
             file_checksums=[file.checksum for file in agreement.files],
             state="accepted",
-            object_keys=self.deletion_object_keys(agreement),
             attempt_count=0,
+            retry_cycle=1,
+            next_attempt_at=now,
             accepted_at=now,
             updated_at=now,
         )
         self._session.add(deletion_record)
         self._session.flush()
+        self._session.add_all(
+            [
+                AgreementDeletionObjectRecord(
+                    deletion_id=deletion_record.id,
+                    organization_id=agreement.organization_id,
+                    workspace_id=agreement.workspace_id,
+                    agreement_id=agreement.id,
+                    category=category,
+                    object_key=object_key,
+                    state="pending",
+                    created_at=now,
+                    updated_at=now,
+                )
+                for category, object_key in objects
+            ]
+        )
         self._session.add(
             AgreementDeletionAuditEventRecord(
                 organization_id=agreement.organization_id,
@@ -273,7 +329,8 @@ class SQLAlchemyAgreementRepository:
                 actor_id=actor_id,
                 deletion_id=deletion_record.id,
                 event_type="requested",
-                metadata_json={"object_count": len(deletion_record.object_keys)},
+                retry_cycle=1,
+                metadata_json={"object_count": len(objects)},
             )
         )
         self._session.add(
@@ -282,12 +339,12 @@ class SQLAlchemyAgreementRepository:
                 organization_id=agreement.organization_id,
                 workspace_id=agreement.workspace_id,
                 agreement_id=agreement.id,
+                attempt_count=0,
+                next_attempt_at=now,
                 created_at=now,
                 updated_at=now,
             )
         )
-        agreement_record = self._session.get(AgreementRecord, agreement.id)
-        assert agreement_record is not None
         agreement_record.deletion_requested_at = now
         agreement_record.updated_at = now
         self._session.flush()
@@ -311,6 +368,58 @@ class SQLAlchemyAgreementRepository:
     def get_deletion(self, deletion_id: UUID) -> AgreementDeletionRequestRecord | None:
         return self._session.get(AgreementDeletionRequestRecord, deletion_id)
 
+    def redrive_deletion(
+        self, record: AgreementDeletionRequestRecord, *, actor_id: UUID
+    ) -> AgreementDeletionResponse:
+        locked = self._session.scalar(
+            select(AgreementDeletionRequestRecord)
+            .where(AgreementDeletionRequestRecord.id == record.id)
+            .with_for_update()
+        )
+        if locked is None or locked.state != "failed":
+            return self.deletion_response(locked or record)
+        now = datetime.now(UTC)
+        locked.state = "accepted"
+        locked.retry_cycle += 1
+        locked.attempt_count = 0
+        locked.claim_token = None
+        locked.lease_expires_at = None
+        locked.next_attempt_at = now
+        locked.failure_category = None
+        locked.failure_message = None
+        locked.failed_at = None
+        locked.updated_at = now
+        outbox = self._session.scalar(
+            select(AgreementDeletionOutboxRecord).where(
+                AgreementDeletionOutboxRecord.deletion_id == locked.id
+            )
+        )
+        if outbox is not None:
+            outbox.delivered_at = None
+            outbox.lease_token = None
+            outbox.lease_expires_at = None
+            outbox.next_attempt_at = now
+            outbox.last_error = None
+            outbox.updated_at = now
+        self._session.add(
+            AgreementDeletionAuditEventRecord(
+                organization_id=locked.organization_id,
+                workspace_id=locked.workspace_id,
+                agreement_id=locked.agreement_id,
+                title=locked.title,
+                agreement_type=locked.agreement_type,
+                file_checksums=locked.file_checksums,
+                actor_id=actor_id,
+                deletion_id=locked.id,
+                event_type="redriven",
+                retry_cycle=locked.retry_cycle,
+                metadata_json={},
+                occurred_at=now,
+            )
+        )
+        self._session.flush()
+        return self.deletion_response(locked)
+
     def is_object_pending_deletion(
         self,
         object_key: str,
@@ -318,13 +427,49 @@ class SQLAlchemyAgreementRepository:
         organization_id: UUID,
         workspace_id: UUID,
     ) -> bool:
-        inventories = self._session.scalars(
-            select(AgreementDeletionRequestRecord.object_keys).where(
-                AgreementDeletionRequestRecord.organization_id == organization_id,
-                AgreementDeletionRequestRecord.workspace_id == workspace_id,
+        matches = self._session.execute(
+            select(
+                AgreementDeletionObjectRecord.category,
+                AgreementDeletionObjectRecord.agreement_id,
             )
-        )
-        return any(object_key in inventory for inventory in inventories)
+            .join(
+                AgreementDeletionRequestRecord,
+                AgreementDeletionObjectRecord.deletion_id == AgreementDeletionRequestRecord.id,
+            )
+            .where(
+                AgreementDeletionObjectRecord.organization_id == organization_id,
+                AgreementDeletionObjectRecord.workspace_id == workspace_id,
+                AgreementDeletionObjectRecord.object_key == object_key,
+                AgreementDeletionRequestRecord.state.in_(
+                    ("accepted", "processing", "retrying", "failed")
+                ),
+            )
+        ).all()
+        for category, deleting_agreement_id in matches:
+            if category != "source":
+                return True
+            active_reference = self._session.scalar(
+                select(AgreementVersionRecord.id)
+                .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
+                .where(
+                    AgreementVersionRecord.storage_key == object_key,
+                    AgreementVersionRecord.agreement_id != deleting_agreement_id,
+                    AgreementVersionRecord.organization_id == organization_id,
+                    AgreementVersionRecord.workspace_id == workspace_id,
+                    AgreementRecord.deletion_requested_at.is_(None),
+                )
+                .limit(1)
+            )
+            if active_reference is None:
+                return True
+        return False
+
+    def _lock_object_key(self, object_key: str) -> None:
+        if self._session.get_bind().dialect.name == "postgresql":
+            self._session.execute(
+                text("SELECT pg_advisory_xact_lock(hashtextextended(:object_key, 0))"),
+                {"object_key": object_key},
+            )
 
     @staticmethod
     def deletion_response(record: AgreementDeletionRequestRecord) -> AgreementDeletionResponse:

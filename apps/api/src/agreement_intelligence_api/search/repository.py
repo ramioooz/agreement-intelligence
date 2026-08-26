@@ -49,6 +49,7 @@ class SQLAlchemySearchRepository:
             .where(RetrievalChunkRecord.workspace_id == workspace_id)
             .where(RetrievalIndexBuildRecord.state == "active")
             .where(AgreementRecord.archived_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         )
         statement = _apply_filters(statement, filters)
         if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
@@ -133,6 +134,7 @@ class SQLAlchemySearchRepository:
             .where(RetrievalChunkRecord.workspace_id == workspace_id)
             .where(RetrievalIndexBuildRecord.state == "active")
             .where(AgreementRecord.archived_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
             .where(RetrievalChunkEmbeddingRecord.organization_id == organization_id)
             .where(RetrievalChunkEmbeddingRecord.workspace_id == workspace_id)
             .where(RetrievalChunkEmbeddingRecord.index_version == index_version)
@@ -221,6 +223,7 @@ class SQLAlchemySearchRepository:
             .where(RetrievalChunkEmbeddingRecord.embedding.is_not(None))
             .where(RetrievalIndexBuildRecord.state == "active")
             .where(AgreementRecord.archived_at.is_(None))
+            .where(AgreementRecord.deletion_requested_at.is_(None))
         )
         rows = self._session.execute(
             _apply_filters(statement, filters)

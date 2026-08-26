@@ -16,6 +16,7 @@ from pymupdf_fonts import fontbuffers  # type: ignore[import-untyped]
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session, selectinload
 
+from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.identity.authz import Principal, hide_resource
@@ -108,10 +109,11 @@ class ReviewReportService:
         self, agreement_id: UUID, organization_id: UUID, workspace_id: UUID
     ) -> AgreementRecord:
         agreement = self._session.scalar(
-            select(AgreementRecord)
-            .where(AgreementRecord.id == agreement_id)
-            .where(AgreementRecord.organization_id == organization_id)
-            .where(AgreementRecord.workspace_id == workspace_id)
+            active_agreement_statement(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
         )
         if agreement is None:
             hide_resource()

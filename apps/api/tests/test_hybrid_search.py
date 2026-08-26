@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from _pytest.monkeypatch import MonkeyPatch
+from agreement_intelligence_api.agreements.models import AgreementRecord
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 from agreement_intelligence_api.agreements.schemas import CreateAgreementRequest, Party
 from agreement_intelligence_api.agreements.service import AgreementService
@@ -165,6 +166,21 @@ def test_search_filters_results_and_never_returns_cross_tenant_evidence() -> Non
         assert response.status_code == 200
         assert response.json()["items"][0]["citation"]["anchor_ids"] == ["source:page:2:block:1"]
         assert response.json()["items"][0]["semantic_rank"] is None
+
+        deleted = session.get(AgreementRecord, agreement.id)
+        assert deleted is not None
+        deleted.deletion_requested_at = datetime.now(UTC)
+        session.commit()
+        blocked = client.get(
+            "/search",
+            params={
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
+                "query": "termination",
+            },
+        )
+        assert blocked.status_code == 200
+        assert blocked.json()["items"] == []
 
         app.dependency_overrides[current_principal] = lambda: Principal(user_id=outsider_id)
         denied = client.get(

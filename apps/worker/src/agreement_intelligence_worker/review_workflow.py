@@ -45,7 +45,20 @@ workflows = Table(
     Column("id", Uuid(as_uuid=True), primary_key=True),
     Column("organization_id", Uuid(as_uuid=True), nullable=False),
     Column("workspace_id", Uuid(as_uuid=True), nullable=False),
+    Column("review_id", Uuid(as_uuid=True), nullable=False),
     Column("checkpoint_id", Uuid(as_uuid=True), nullable=False),
+)
+reviews = Table(
+    "review_cases",
+    workflow_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("agreement_id", Uuid(as_uuid=True), nullable=False),
+)
+agreements = Table(
+    "agreements",
+    workflow_metadata,
+    Column("id", Uuid(as_uuid=True), primary_key=True),
+    Column("deletion_requested_at", DateTime(timezone=True), nullable=True),
 )
 
 
@@ -233,7 +246,10 @@ def _workflow_event_for_update(event_id: UUID) -> Select[Any]:
     return (
         select(workflow_events, workflows.c.checkpoint_id)
         .join(workflows, workflows.c.id == workflow_events.c.workflow_id)
+        .join(reviews, reviews.c.id == workflows.c.review_id)
+        .join(agreements, agreements.c.id == reviews.c.agreement_id)
         .where(workflow_events.c.id == event_id)
+        .where(agreements.c.deletion_requested_at.is_(None))
         .with_for_update(of=workflow_events)
     )
 

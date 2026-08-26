@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -132,6 +133,14 @@ class AgreementVersionAuditEventRecord(Base):
 
 class AgreementDeletionAuditEventRecord(Base):
     __tablename__ = "agreement_deletion_audit_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "deletion_id",
+            "event_type",
+            "retry_cycle",
+            name="uq_agreement_deletion_audit_terminal_cycle",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
     organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
@@ -143,6 +152,7 @@ class AgreementDeletionAuditEventRecord(Base):
     actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     deletion_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
     event_type: Mapped[str] = mapped_column(String(32), default="requested")
+    retry_cycle: Mapped[int] = mapped_column(default=1)
     metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -152,12 +162,46 @@ class AgreementDeletionAuditEventRecord(Base):
 class AgreementDeletionRequestRecord(Base):
     __tablename__ = "agreement_deletion_requests"
     __table_args__ = (
+        ForeignKeyConstraint(
+            ["agreement_id", "organization_id", "workspace_id"],
+            ["agreements.id", "agreements.organization_id", "agreements.workspace_id"],
+            name="fk_agreement_deletion_requests_agreement_scope",
+        ),
         UniqueConstraint("agreement_id", name="uq_agreement_deletion_requests_agreement"),
+        UniqueConstraint(
+            "id",
+            "organization_id",
+            "workspace_id",
+            "agreement_id",
+            name="uq_agreement_deletion_requests_scope",
+        ),
         Index(
             "ix_agreement_deletion_requests_scope_state",
             "organization_id",
             "workspace_id",
             "state",
+        ),
+        CheckConstraint(
+            "state IN ('accepted', 'processing', 'retrying', 'completed', 'failed')",
+            name="ck_agreement_deletion_requests_state",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_agreement_deletion_requests_attempts"),
+        CheckConstraint("retry_cycle >= 1", name="ck_agreement_deletion_requests_retry_cycle"),
+        CheckConstraint(
+            "(claim_token IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_agreement_deletion_requests_lease_pair",
+        ),
+        CheckConstraint(
+            "(state = 'processing') = (claim_token IS NOT NULL)",
+            name="ck_agreement_deletion_requests_processing_lease",
+        ),
+        CheckConstraint(
+            "(state = 'completed') = (completed_at IS NOT NULL)",
+            name="ck_agreement_deletion_requests_completed_at",
+        ),
+        CheckConstraint(
+            "(state = 'failed') = (failed_at IS NOT NULL)",
+            name="ck_agreement_deletion_requests_failed_at",
         ),
     )
 
@@ -170,8 +214,15 @@ class AgreementDeletionRequestRecord(Base):
     agreement_type: Mapped[str] = mapped_column(String(100))
     file_checksums: Mapped[list[str]] = mapped_column(JSON, default=list)
     state: Mapped[str] = mapped_column(String(32), default="accepted", index=True)
-    object_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
     attempt_count: Mapped[int] = mapped_column(default=0)
+    retry_cycle: Mapped[int] = mapped_column(default=1)
+    claim_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
     failure_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     accepted_at: Mapped[datetime] = mapped_column(
@@ -185,20 +236,91 @@ class AgreementDeletionRequestRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class AgreementDeletionOutboxRecord(Base):
-    __tablename__ = "agreement_deletion_outbox"
+class AgreementDeletionObjectRecord(Base):
+    __tablename__ = "agreement_deletion_objects"
     __table_args__ = (
-        UniqueConstraint("deletion_id", name="uq_agreement_deletion_outbox_deletion"),
-        Index("ix_agreement_deletion_outbox_pending", "delivered_at", "created_at"),
+        ForeignKeyConstraint(
+            ["deletion_id", "organization_id", "workspace_id", "agreement_id"],
+            [
+                "agreement_deletion_requests.id",
+                "agreement_deletion_requests.organization_id",
+                "agreement_deletion_requests.workspace_id",
+                "agreement_deletion_requests.agreement_id",
+            ],
+            name="fk_agreement_deletion_objects_request_scope",
+        ),
+        UniqueConstraint(
+            "deletion_id", "category", "object_key", name="uq_agreement_deletion_objects_key"
+        ),
+        Index(
+            "ix_agreement_deletion_objects_scope_state",
+            "organization_id",
+            "workspace_id",
+            "state",
+        ),
+        CheckConstraint(
+            "category IN ('source', 'analysis', 'comparison', 'review_manifest', 'review_pdf')",
+            name="ck_agreement_deletion_objects_category",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'deleted', 'preserved')",
+            name="ck_agreement_deletion_objects_state",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
-    deletion_id: Mapped[UUID] = mapped_column(
-        ForeignKey("agreement_deletion_requests.id"), index=True
-    )
+    deletion_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
     agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    category: Mapped[str] = mapped_column(String(32))
+    object_key: Mapped[str] = mapped_column(String(1024))
+    state: Mapped[str] = mapped_column(String(32), default="pending")
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgreementDeletionOutboxRecord(Base):
+    __tablename__ = "agreement_deletion_outbox"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["deletion_id", "organization_id", "workspace_id", "agreement_id"],
+            [
+                "agreement_deletion_requests.id",
+                "agreement_deletion_requests.organization_id",
+                "agreement_deletion_requests.workspace_id",
+                "agreement_deletion_requests.agreement_id",
+            ],
+            name="fk_agreement_deletion_outbox_request_scope",
+        ),
+        UniqueConstraint("deletion_id", name="uq_agreement_deletion_outbox_deletion"),
+        Index("ix_agreement_deletion_outbox_pending", "delivered_at", "next_attempt_at"),
+        CheckConstraint("attempt_count >= 0", name="ck_agreement_deletion_outbox_attempts"),
+        CheckConstraint(
+            "(lease_token IS NULL) = (lease_expires_at IS NULL)",
+            name="ck_agreement_deletion_outbox_lease_pair",
+        ),
+        CheckConstraint(
+            "delivered_at IS NULL OR lease_token IS NULL",
+            name="ck_agreement_deletion_outbox_delivered_unleased",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    deletion_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    lease_token: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

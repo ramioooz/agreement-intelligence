@@ -168,7 +168,7 @@ class JobRepository(Protocol):
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None: ...
+    ) -> bool | None: ...
 
     def requeue(
         self,
@@ -299,7 +299,11 @@ class JobProcessor:
         except Exception:
             self._handle_transient_failure(job, "Unexpected processing dependency failure")
         else:
-            self._complete(job, artifact)
+            if not self._complete(job, artifact):
+                discard = getattr(self._processor, "discard", None)
+                if callable(discard):
+                    discard(artifact)
+                return
             if self._completion_handler is not None:
                 self._completion_handler.completed(job, artifact)
 
@@ -352,13 +356,14 @@ class JobProcessor:
             delay_seconds=delay_seconds,
         )
 
-    def _complete(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
-        self._repository.complete(
+    def _complete(self, job: ProcessingJob, artifact: CompletedArtifact) -> bool:
+        completed = self._repository.complete(
             job.id,
             artifact,
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
         )
+        return completed is not False
 
     def _requeue(self, job: ProcessingJob, *, message: str, next_retry_at: datetime) -> None:
         self._repository.requeue(
@@ -450,6 +455,7 @@ class SQSProcessingQueue:
             "DelaySeconds": delay_seconds,
         }
         if _is_fifo_queue(self._queue_url):
+            request.pop("DelaySeconds")
             request["MessageGroupId"] = str(agreement_id)
             request["MessageDeduplicationId"] = (
                 f"{deletion_id}:retry:{delay_seconds}:{datetime.now(UTC).isoformat()}"
@@ -635,19 +641,29 @@ class SQLAlchemyProcessingJobRepository:
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None:
+    ) -> bool:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
-            job = (
-                connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+            job = _job_for_update(connection, job_id)
+            if job is None:
+                return False
+            if not _matches_tenant_scope(job, organization_id, workspace_id):
+                return False
+            agreement = (
+                connection.execute(
+                    select(agreements)
+                    .where(
+                        agreements.c.id == job["agreement_id"],
+                        agreements.c.organization_id == job["organization_id"],
+                    )
+                    .with_for_update()
+                )
                 .mappings()
                 .one_or_none()
             )
-            if job is None:
-                return
-            if not _matches_tenant_scope(job, organization_id, workspace_id):
-                return
+            if agreement is None or agreement["deletion_requested_at"] is not None:
+                return False
             existing_artifact = connection.execute(
                 select(processing_artifacts.c.id).where(
                     processing_artifacts.c.job_id == job_id,
@@ -679,6 +695,7 @@ class SQLAlchemyProcessingJobRepository:
                 )
             )
             _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
+            return True
 
     def completed_artifact(
         self,
@@ -811,7 +828,9 @@ def _is_fifo_queue(queue_url: str) -> bool:
 
 def _job_for_update(connection: Any, job_id: UUID) -> Any | None:
     return (
-        connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+        connection.execute(
+            select(processing_jobs).where(processing_jobs.c.id == job_id).with_for_update()
+        )
         .mappings()
         .one_or_none()
     )

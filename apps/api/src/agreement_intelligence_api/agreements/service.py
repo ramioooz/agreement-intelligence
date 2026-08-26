@@ -250,6 +250,10 @@ class AgreementService:
             workspace_id=workspace_id,
         )
         if existing is not None:
+            if existing.state == "failed":
+                redriven = self._repository.redrive_deletion(existing, actor_id=principal.user_id)
+                self._identity.session.commit()
+                return redriven
             return self._repository.deletion_response(existing)
         agreement = self.get(
             principal,

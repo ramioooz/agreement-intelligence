@@ -50,6 +50,9 @@ class InMemoryObjectStorage:
         self.objects[key] = content
         return True
 
+    def delete(self, key: str) -> None:
+        self.objects.pop(key, None)
+
 
 class FakeProvider:
     def analyze(self, blocks: list[tuple[str, str]]) -> ProviderAnalysis:

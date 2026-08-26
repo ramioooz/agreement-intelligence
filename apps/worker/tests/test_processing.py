@@ -58,14 +58,15 @@ class InMemoryRepository:
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None:
+    ) -> bool | None:
         del organization_id, workspace_id
         if self.job.id != job_id:
             raise LookupError(job_id)
         if self.job.state == "completed":
-            return
+            return None
         self.artifacts.append(artifact)
         self.job = replace(self.job, state="completed", completed_at=datetime.now(UTC))
+        return True
 
     def completed_artifact(
         self,
@@ -244,6 +245,42 @@ def test_completion_failure_does_not_run_evaluation_handler() -> None:
     with raises(RuntimeError, match="database completion failed"):
         worker.handle(repository.job.id)
 
+    assert observed == []
+
+
+def test_completion_rejected_by_deletion_fence_discards_artifact_and_skips_handlers() -> None:
+    class FencedRepository(InMemoryRepository):
+        def complete(self, *_: object, **__: object) -> bool:
+            return False
+
+    class DiscardingProcessor(PlaceholderProcessor):
+        def __init__(self) -> None:
+            self.discarded: list[CompletedArtifact] = []
+
+        def discard(self, artifact: CompletedArtifact) -> None:
+            self.discarded.append(artifact)
+
+    repository = FencedRepository(job=_job(), artifacts=[])
+    processor = DiscardingProcessor()
+    observed: list[CompletedArtifact] = []
+
+    class Handler:
+        def completed(self, _job: ProcessingJob, artifact: CompletedArtifact) -> None:
+            observed.append(artifact)
+
+    JobProcessor(
+        repository,
+        InMemoryQueue(retries=[]),
+        processor,
+        completion_handler=Handler(),
+    ).handle(repository.job.id)
+
+    assert processor.discarded == [
+        CompletedArtifact(
+            job_id=repository.job.id,
+            key=f"checkpoints/{repository.job.id}/placeholder.json",
+        )
+    ]
     assert observed == []
 
 
@@ -590,7 +627,10 @@ def test_processing_loop_recovers_unacked_evaluation_without_duplicate_findings(
 
 
 def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path: Path) -> None:
-    from agreement_intelligence_worker.processing import processing_artifacts, processing_jobs
+    from agreement_intelligence_worker.processing import (
+        processing_artifacts,
+        processing_jobs,
+    )
 
     class OneMessageReceiver:
         def __init__(self, job_id: UUID) -> None:
@@ -684,19 +724,35 @@ def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path
 
 
 def test_redelivery_reprocesses_processing_job_without_artifact(tmp_path: Path) -> None:
-    from agreement_intelligence_worker.processing import processing_artifacts, processing_jobs
+    from agreement_intelligence_worker.processing import (
+        agreements,
+        processing_artifacts,
+        processing_jobs,
+    )
 
     engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'processing.db'}")
     create_processing_tables(engine)
     job_id = uuid4()
     agreement_id = uuid4()
+    organization_id = uuid4()
+    workspace_id = uuid4()
     now = datetime.now(UTC)
     with engine.begin() as connection:
         connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                current_version_id=None,
+                processing_state="processing",
+                updated_at=now,
+                deletion_requested_at=None,
+            )
+        )
+        connection.execute(
             processing_jobs.insert().values(
                 id=job_id,
-                organization_id=uuid4(),
-                workspace_id=uuid4(),
+                organization_id=organization_id,
+                workspace_id=workspace_id,
                 agreement_id=agreement_id,
                 idempotency_key="processing-v1",
                 profile="baseline",

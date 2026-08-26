@@ -150,6 +150,9 @@ class DocumentUnderstandingProcessor:
         )
         return CompletedArtifact(job_id=job.id, key=artifact_key)
 
+    def discard(self, artifact: CompletedArtifact) -> None:
+        self._storage.delete(artifact.key)
+
 
 class _SourceDocument:
     def __init__(self, storage_key: str, checksum: str, content_type: str) -> None:

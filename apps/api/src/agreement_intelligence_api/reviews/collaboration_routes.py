@@ -3,10 +3,9 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.approval_policies.schemas import (
     ApprovalPolicyRouteRequest,
     SupportedAgreementFamily,
@@ -71,10 +70,10 @@ def start_review(
         identity = IdentityService(session)
         identity.scope_organization(organization_id)
         agreement = session.scalar(
-            select(AgreementRecord).where(
-                AgreementRecord.id == review.agreement_id,
-                AgreementRecord.organization_id == organization_id,
-                AgreementRecord.workspace_id == workspace_id,
+            active_agreement_statement(
+                review.agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
             )
         )
         selected_policy_id = request.policy_version_id

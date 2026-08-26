@@ -17,10 +17,6 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
-from agreement_intelligence_api.agreements.deletion import (
-    AgreementDeletionOutboxDispatcher,
-    deletion_publisher_from_environment,
-)
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 from agreement_intelligence_api.agreements.schemas import (
     AgreementDeletionResponse,
@@ -332,30 +328,15 @@ def delete_agreement(
     agreement_id: UUID,
     principal: PrincipalDependency,
     service: AgreementServiceDependency,
-    session: SessionDependency,
-    request: Request,
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
 ) -> AgreementDeletionResponse:
-    deletion = service.accept_deletion(
+    return service.accept_deletion(
         principal,
         organization_id=organization_id,
         workspace_id=workspace_id,
         agreement_id=agreement_id,
     )
-    publisher = (
-        getattr(
-            request.app.state,
-            "agreement_deletion_queue_publisher",
-            None,
-        )
-        or deletion_publisher_from_environment()
-    )
-    AgreementDeletionOutboxDispatcher(
-        session=session,
-        publisher=publisher,
-    ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
-    return deletion
 
 
 @router.post(

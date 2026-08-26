@@ -62,6 +62,38 @@ def client_for_session(session: Session) -> Generator[Callable[[UUID], TestClien
         app.dependency_overrides.clear()
 
 
+def test_deletion_tombstone_blocks_existing_review_reads_and_mutations(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    started = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "review-before-deletion",
+        },
+    )
+    assert started.status_code == 201
+    agreement = session.get(AgreementRecord, seeded.agreement_id)
+    assert agreement is not None
+    agreement.deletion_requested_at = datetime.now(UTC)
+    session.commit()
+
+    blocked_read = client.get(f"/reviews/{started.json()['id']}", params=seeded.scope)
+    blocked_comment = client.post(
+        f"/reviews/{started.json()['id']}/comments",
+        params=seeded.scope,
+        json={"body": "must not persist", "idempotency_key": "after-delete"},
+    )
+
+    assert blocked_read.status_code == 404
+    assert blocked_comment.status_code == 404
+    assert session.query(ReviewCommentRecord).count() == 0
+
+
 def test_review_assignment_reassignment_and_comment_are_workspace_scoped_and_idempotent(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],
