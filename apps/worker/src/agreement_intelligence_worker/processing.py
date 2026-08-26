@@ -750,6 +750,15 @@ class SQLAlchemyProcessingJobRepository:
             if agreement["deletion_requested_at"] is not None:
                 _reconcile_artifact_intent(connection, intent, now=now)
                 return False
+            if intent["state"] == "settled":
+                connection.execute(
+                    update(processing_artifact_intents)
+                    .where(
+                        processing_artifact_intents.c.job_id == job.id,
+                        processing_artifact_intents.c.state == "settled",
+                    )
+                    .values(state="expected", updated_at=now)
+                )
             return True
 
     def complete(

@@ -9,6 +9,12 @@ import pytest
 from agreement_intelligence_api.agreements.repository import (
     SQLAlchemyAgreementRepository as APIAgreementRepository,
 )
+from agreement_intelligence_api.identity.authz import Principal
+from agreement_intelligence_api.processing.repository import (
+    SQLAlchemyProcessingJobRepository as APIProcessingJobRepository,
+)
+from agreement_intelligence_api.processing.schemas import ProcessingJobResponse
+from agreement_intelligence_api.processing.service import ProcessingJobService
 from agreement_intelligence_worker.agreement_deletion import (
     AgreementDeletionProcessor,
     SQLAlchemyAgreementDeletionRepository,
@@ -985,6 +991,71 @@ def _assert_exhausted_response_loss_cleanup(
         ).one() == ("settled", expected_key)
     assert objects == {expected_key}
 
+    class PermissiveIdentity:
+        def __init__(self, session: Session) -> None:
+            self.session = session
+
+        def can_access_workspace(self, *_: object, **__: object) -> bool:
+            return True
+
+    class RetryPublisher:
+        def __init__(self) -> None:
+            self.jobs: list[UUID] = []
+
+        def publish(
+            self,
+            job: ProcessingJobResponse,
+            *,
+            idempotency_key: str,
+            profile: str,
+        ) -> None:
+            del idempotency_key, profile
+            self.jobs.append(job.id)
+
+    publisher = RetryPublisher()
+    with Session(engine) as session:
+        session.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        identity = PermissiveIdentity(session)
+        retried = ProcessingJobService(
+            APIProcessingJobRepository(session),
+            APIAgreementRepository(session),
+            identity,  # type: ignore[arg-type]
+            publisher,
+        ).retry(
+            Principal(user_id=actor_id),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            agreement_id=agreement_id,
+            job_id=job_id,
+        )
+    assert retried.state == "queued"
+    assert publisher.jobs == [job_id]
+
+    processing_repository = SQLAlchemyProcessingJobRepository(engine)
+    claimed = processing_repository.claim(
+        job_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    assert claimed is not None
+    artifact = CompletedArtifact(job_id=job_id, key=expected_key)
+    assert processing_repository.expect(claimed, artifact)
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT state FROM processing_artifact_intents WHERE job_id=:job_id"),
+                {"job_id": job_id},
+            )
+            == "expected"
+        )
+
     with Session(engine) as session, session.begin():
         session.execute(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -1022,6 +1093,41 @@ def _assert_exhausted_response_loss_cleanup(
     )
 
     assert objects == set()
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert connection.execute(
+            text(
+                """
+                SELECT request.state,intent.state,object.state
+                FROM agreement_deletion_requests AS request
+                JOIN processing_artifact_intents AS intent
+                  ON intent.agreement_id=request.agreement_id
+                JOIN agreement_deletion_objects AS object
+                  ON object.deletion_id=request.id
+                 AND object.category=intent.category
+                 AND object.object_key=intent.artifact_key
+                WHERE request.id=:id
+                """
+            ),
+            {"id": deletion.id},
+        ).one() == ("retrying", "expected", "deleted")
+
+    processing_repository.fail(
+        job_id,
+        category="transient_exhausted",
+        message="retry remained ambiguous",
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    AgreementDeletionProcessor(deletion_repository, ObjectStorage()).handle(
+        deletion.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
     with engine.begin() as connection:
         connection.execute(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
