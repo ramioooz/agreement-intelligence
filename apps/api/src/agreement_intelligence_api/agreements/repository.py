@@ -70,6 +70,23 @@ class SQLAlchemyAgreementRepository:
             return None
         return self._to_response(record)
 
+    def get_for_update(
+        self,
+        agreement_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+    ) -> AgreementResponse | None:
+        record = self._session.scalar(
+            active_agreement_statement(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                for_update=True,
+            )
+        )
+        return None if record is None else self._to_response(record)
+
     def list_for_scope(
         self,
         organization_id: UUID,

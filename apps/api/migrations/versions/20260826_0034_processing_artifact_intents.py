@@ -102,10 +102,22 @@ def downgrade() -> None:
         # bypass FORCE RLS for this global safety check; a refusal rolls the DDL
         # back in the same transaction and restores FORCE automatically.
         op.execute("ALTER TABLE processing_artifact_intents NO FORCE ROW LEVEL SECURITY")
+        op.execute("ALTER TABLE processing_jobs NO FORCE ROW LEVEL SECURITY")
     if connection.execute(
         sa.text("SELECT EXISTS (SELECT 1 FROM processing_artifact_intents)")
     ).scalar():
         raise RuntimeError("cannot downgrade while processing artifact intents are pending")
+    if connection.execute(
+        sa.text(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM processing_jobs
+                WHERE state='processing' AND claim_token IS NOT NULL
+            )
+            """
+        )
+    ).scalar():
+        raise RuntimeError("cannot downgrade while processing job claims are active")
     op.drop_table("processing_artifact_intents")
     if connection.dialect.name != "sqlite":
         op.drop_constraint("ck_processing_jobs_claim_lease_pair", "processing_jobs", type_="check")

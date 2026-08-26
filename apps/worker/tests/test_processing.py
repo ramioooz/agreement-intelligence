@@ -95,8 +95,9 @@ class InMemoryRepository:
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
         claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> bool:
-        del organization_id, workspace_id, claimed_job
+        del organization_id, workspace_id, claimed_job, expected_artifact
         assert self.job.id == job_id
         self.job = replace(
             self.job,
@@ -116,8 +117,9 @@ class InMemoryRepository:
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
         claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> None:
-        del organization_id, workspace_id, claimed_job
+        del organization_id, workspace_id, claimed_job, expected_artifact
         assert self.job.id == job_id
         self.job = replace(
             self.job, state="failed", failure_category=category, failure_message=message

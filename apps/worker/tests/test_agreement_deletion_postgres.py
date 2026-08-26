@@ -597,7 +597,7 @@ def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
     config = Config(str(Path(__file__).parents[2] / "api" / "alembic.ini"))
     config.set_main_option("sqlalchemy.url", role_url.replace("%", "%%"))
     command.upgrade(config, "head")
-    organization_id, workspace_id, agreement_id = uuid4(), uuid4(), uuid4()
+    organization_id, workspace_id, agreement_id, job_id = uuid4(), uuid4(), uuid4(), uuid4()
     with role_engine.begin() as connection:
         connection.execute(
             text("INSERT INTO organizations (id,name,slug) VALUES (:id,'Intent test',:slug)"),
@@ -638,6 +638,26 @@ def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
         connection.execute(
             text(
                 """
+                INSERT INTO processing_jobs (
+                    id,organization_id,workspace_id,agreement_id,idempotency_key,
+                    profile,state,attempt_count,claim_token,claim_lease_expires_at,queued_at
+                ) VALUES (
+                    :job_id,:organization_id,:workspace_id,:agreement_id,'live-claim',
+                    'baseline','processing',1,:claim_token,now() + interval '5 minutes',now()
+                )
+                """
+            ),
+            {
+                "job_id": job_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "agreement_id": agreement_id,
+                "claim_token": uuid4(),
+            },
+        )
+        connection.execute(
+            text(
+                """
                 INSERT INTO processing_artifact_intents (
                     id,job_id,organization_id,workspace_id,agreement_id,
                     profile,category,artifact_key
@@ -649,7 +669,7 @@ def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
             ),
             {
                 "id": uuid4(),
-                "job_id": uuid4(),
+                "job_id": job_id,
                 "organization_id": organization_id,
                 "workspace_id": workspace_id,
                 "agreement_id": agreement_id,
@@ -668,7 +688,24 @@ def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
             {"organization_id": str(organization_id)},
         )
-        assert connection.scalar(text("SELECT count(*) FROM processing_artifact_intents")) == 1
+        connection.execute(
+            text("DELETE FROM processing_artifact_intents WHERE job_id=:job_id"),
+            {"job_id": job_id},
+        )
+
+    with pytest.raises(RuntimeError, match="processing job claims are active"):
+        command.downgrade(config, "20260826_0033")
+
+    with role_engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert connection.scalar(text("SELECT count(*) FROM processing_artifact_intents")) == 0
+        assert connection.scalar(
+            text("SELECT claim_token IS NOT NULL FROM processing_jobs WHERE id=:job_id"),
+            {"job_id": job_id},
+        )
         assert connection.scalar(
             text(
                 """
@@ -1081,6 +1118,14 @@ def _assert_exhausted_response_loss_cleanup(
     assert recovered_claim.claim_token != claimed.claim_token
     assert recovered_claim.attempt_count == claimed.attempt_count + 1
     assert processing_repository.expect(recovered_claim, artifact)
+    with pytest.raises(RuntimeError, match="processing job lease is no longer owned"):
+        processing_repository.complete(
+            job_id,
+            artifact,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            claimed_job=claimed,
+        )
 
     with Session(engine) as session, session.begin():
         session.execute(
@@ -1182,4 +1227,50 @@ def _assert_exhausted_response_loss_cleanup(
                 {"job_id": job_id},
             )
             == 0
+        )
+
+    objects.add(expected_key)
+    processing_repository.fail(
+        job_id,
+        category="transient_exhausted",
+        message="stale worker lost the storage response after purge",
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        claimed_job=claimed,
+        expected_artifact=artifact,
+    )
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert connection.execute(
+            text(
+                """
+                SELECT request.state,object.state
+                FROM agreement_deletion_requests AS request
+                JOIN agreement_deletion_objects AS object ON object.deletion_id=request.id
+                WHERE request.id=:deletion_id AND object.object_key=:object_key
+                """
+            ),
+            {"deletion_id": deletion.id, "object_key": expected_key},
+        ).one() == ("retrying", "pending")
+
+    AgreementDeletionProcessor(deletion_repository, ObjectStorage()).handle(
+        deletion.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    assert objects == set()
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT state FROM agreement_deletion_requests WHERE id=:deletion_id"),
+                {"deletion_id": deletion.id},
+            )
+            == "completed"
         )

@@ -45,7 +45,7 @@ from agreement_intelligence_worker.agreement_deletion import (
 logger = logging.getLogger("agreement_intelligence.worker")
 
 JobState = Literal["queued", "processing", "completed", "failed"]
-_PROCESSING_CLAIM_LEASE = timedelta(minutes=15)
+_PROCESSING_CLAIM_LEASE = timedelta(minutes=14)
 _SENSITIVE_MESSAGE_PATTERN = re.compile(
     r"\b(agreement|bearer|credential|password|secret|token)\b",
     re.IGNORECASE,
@@ -224,6 +224,7 @@ class JobRepository(Protocol):
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
         claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> bool | None: ...
 
     def fail(
@@ -235,6 +236,7 @@ class JobRepository(Protocol):
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
         claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> None: ...
 
 
@@ -338,17 +340,27 @@ class JobProcessor:
                 workspace_id=workspace_id,
             )
             return
+        expected_artifact: CompletedArtifact | None = None
         try:
             expected_artifact = self._processor.expected_artifact(job)
             if not self._repository.expect(job, expected_artifact):
                 return
             artifact = self._processor.process(job)
         except TransientProcessingError as error:
-            self._handle_transient_failure(job, str(error))
+            self._handle_transient_failure(job, str(error), expected_artifact=expected_artifact)
         except PermanentProcessingError as error:
-            self._fail(job, category=error.category, message=_safe_summary(str(error)))
+            self._fail(
+                job,
+                category=error.category,
+                message=_safe_summary(str(error)),
+                expected_artifact=expected_artifact,
+            )
         except Exception:
-            self._handle_transient_failure(job, "Unexpected processing dependency failure")
+            self._handle_transient_failure(
+                job,
+                "Unexpected processing dependency failure",
+                expected_artifact=expected_artifact,
+            )
         else:
             if artifact != expected_artifact:
                 raise RuntimeError("processor returned an artifact outside its durable intent")
@@ -385,10 +397,21 @@ class JobProcessor:
         job, artifact = recovered
         self._completion_handler.completed(job, artifact)
 
-    def _handle_transient_failure(self, job: ProcessingJob, message: str) -> None:
+    def _handle_transient_failure(
+        self,
+        job: ProcessingJob,
+        message: str,
+        *,
+        expected_artifact: CompletedArtifact | None,
+    ) -> None:
         safe_message = _safe_summary(message)
         if not self._retry_policy.may_retry(job.attempt_count):
-            self._fail(job, category="transient_exhausted", message=safe_message)
+            self._fail(
+                job,
+                category="transient_exhausted",
+                message=safe_message,
+                expected_artifact=expected_artifact,
+            )
             return
         delay_seconds = self._retry_policy.delay_seconds(job.attempt_count)
         record_metric(
@@ -401,6 +424,7 @@ class JobProcessor:
             job,
             message=safe_message,
             next_retry_at=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+            expected_artifact=expected_artifact,
         ):
             return
         self._queue.enqueue(
@@ -420,7 +444,14 @@ class JobProcessor:
         )
         return completed is not False
 
-    def _requeue(self, job: ProcessingJob, *, message: str, next_retry_at: datetime) -> bool:
+    def _requeue(
+        self,
+        job: ProcessingJob,
+        *,
+        message: str,
+        next_retry_at: datetime,
+        expected_artifact: CompletedArtifact | None,
+    ) -> bool:
         requeued = self._repository.requeue(
             job.id,
             category="transient",
@@ -429,10 +460,18 @@ class JobProcessor:
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
             claimed_job=job,
+            expected_artifact=expected_artifact,
         )
         return requeued is not False
 
-    def _fail(self, job: ProcessingJob, *, category: str, message: str) -> None:
+    def _fail(
+        self,
+        job: ProcessingJob,
+        *,
+        category: str,
+        message: str,
+        expected_artifact: CompletedArtifact | None,
+    ) -> None:
         self._repository.fail(
             job.id,
             category=category,
@@ -440,6 +479,7 @@ class JobProcessor:
             organization_id=_required_tenant_scope(job.organization_id, "organization_id"),
             workspace_id=_required_tenant_scope(job.workspace_id, "workspace_id"),
             claimed_job=job,
+            expected_artifact=expected_artifact,
         )
 
 
@@ -819,7 +859,10 @@ class SQLAlchemyProcessingJobRepository:
             if agreement is None:
                 return False
             if job is not None and not _owns_claim(job, claimed_job):
-                return False
+                if agreement["deletion_requested_at"] is not None:
+                    _inventory_late_artifact(connection, job_context, artifact.key, now=now)
+                    return False
+                raise ProcessingLeaseHeldError("processing job lease is no longer owned")
             if agreement["deletion_requested_at"] is not None:
                 _inventory_late_artifact(connection, job or job_context, artifact.key, now=now)
                 connection.execute(
@@ -935,14 +978,49 @@ class SQLAlchemyProcessingJobRepository:
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
         claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> bool:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
             _set_tenant_context(connection, organization_id, workspace_id)
+            job_context = (
+                connection.execute(select(processing_jobs).where(processing_jobs.c.id == job_id))
+                .mappings()
+                .one_or_none()
+            )
+            if job_context is None:
+                _inventory_failed_artifact_after_purge(
+                    connection, claimed_job, expected_artifact, now=now
+                )
+                return False
+            if not _matches_tenant_scope(job_context, organization_id, workspace_id):
+                return False
+            agreement = _agreement_for_update(connection, cast(Mapping[str, Any], job_context))
+            if agreement is None:
+                return False
             job = _job_for_update(connection, job_id)
             if job is None:
                 return False
             if not _matches_tenant_scope(job, organization_id, workspace_id):
+                return False
+            if agreement["deletion_requested_at"] is not None:
+                if expected_artifact is not None:
+                    _inventory_late_artifact(
+                        connection,
+                        cast(Mapping[str, Any], job_context),
+                        expected_artifact.key,
+                        now=now,
+                    )
+                if _owns_claim(job, claimed_job):
+                    intent = _artifact_intent(
+                        connection,
+                        job_id,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        lock=True,
+                    )
+                    if intent is not None:
+                        _reconcile_artifact_intent(connection, intent, now=now)
                 return False
             if not _owns_claim(job, claimed_job):
                 return False
@@ -971,6 +1049,7 @@ class SQLAlchemyProcessingJobRepository:
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
         claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> None:
         now = datetime.now(UTC)
         with self._engine.begin() as connection:
@@ -980,9 +1059,12 @@ class SQLAlchemyProcessingJobRepository:
                 .mappings()
                 .one_or_none()
             )
-            if job_context is None or not _matches_tenant_scope(
-                job_context, organization_id, workspace_id
-            ):
+            if job_context is None:
+                _inventory_failed_artifact_after_purge(
+                    connection, claimed_job, expected_artifact, now=now
+                )
+                return
+            if not _matches_tenant_scope(job_context, organization_id, workspace_id):
                 return
             agreement = _agreement_for_update(connection, cast(Mapping[str, Any], job_context))
             if agreement is None:
@@ -993,6 +1075,13 @@ class SQLAlchemyProcessingJobRepository:
             if not _matches_tenant_scope(job, organization_id, workspace_id):
                 return
             if not _owns_claim(job, claimed_job):
+                if agreement["deletion_requested_at"] is not None and expected_artifact is not None:
+                    _inventory_late_artifact(
+                        connection,
+                        cast(Mapping[str, Any], job_context),
+                        expected_artifact.key,
+                        now=now,
+                    )
                 return
             intent = _artifact_intent(
                 connection,
@@ -1066,6 +1155,27 @@ def _owns_claim(job: Mapping[str, Any], claimed_job: ProcessingJob | None) -> bo
         and job["state"] == "processing"
         and job["claim_token"] == claimed_job.claim_token
     )
+
+
+def _inventory_failed_artifact_after_purge(
+    connection: Any,
+    claimed_job: ProcessingJob | None,
+    expected_artifact: CompletedArtifact | None,
+    *,
+    now: datetime,
+) -> None:
+    if claimed_job is None or expected_artifact is None:
+        return
+    context: Mapping[str, Any] = {
+        "id": claimed_job.id,
+        "agreement_id": claimed_job.agreement_id,
+        "organization_id": claimed_job.organization_id,
+        "workspace_id": claimed_job.workspace_id,
+        "profile": claimed_job.profile,
+    }
+    agreement = _agreement_for_update(connection, context)
+    if agreement is not None and agreement["deletion_requested_at"] is not None:
+        _inventory_late_artifact(connection, context, expected_artifact.key, now=now)
 
 
 def _artifact_intent(

@@ -62,8 +62,9 @@ resource "aws_sqs_queue" "processing_dlq" {
 }
 
 resource "aws_sqs_queue" "processing" {
-  name                    = local.processing_queue_name
-  sqs_managed_sse_enabled = true
+  name                       = local.processing_queue_name
+  sqs_managed_sse_enabled    = true
+  visibility_timeout_seconds = 900
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.processing_dlq.arn
