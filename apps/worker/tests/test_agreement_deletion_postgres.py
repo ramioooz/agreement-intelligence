@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -8,15 +9,41 @@ from agreement_intelligence_worker.agreement_deletion import (
     AgreementDeletionProcessor,
     SQLAlchemyAgreementDeletionRepository,
 )
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 
-def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows() -> None:
+def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
+    request: pytest.FixtureRequest,
+) -> None:
     database_url = os.environ.get("AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL")
     if not database_url:
         pytest.skip("disposable PostgreSQL URL is required")
-    engine = create_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
+    schema_name = f"agreement_deletion_{uuid4().hex}"
+    scoped_url = (
+        make_url(database_url)
+        .set(query={"options": f"-csearch_path={schema_name},public"})
+        .render_as_string(hide_password=False)
+    )
+    base_engine = create_engine(database_url.replace("postgresql://", "postgresql+psycopg://", 1))
+    engine = create_engine(scoped_url.replace("postgresql://", "postgresql+psycopg://", 1))
+    with base_engine.begin() as connection:
+        connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        connection.execute(text(f'CREATE SCHEMA "{schema_name}"'))
+    config = Config(str(Path(__file__).parents[2] / "api" / "alembic.ini"))
+    config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
+    command.upgrade(config, "head")
+
+    def cleanup() -> None:
+        engine.dispose()
+        with base_engine.begin() as connection:
+            connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+        base_engine.dispose()
+
+    request.addfinalizer(cleanup)
     organization_id = uuid4()
     workspace_id = uuid4()
     agreement_id = uuid4()

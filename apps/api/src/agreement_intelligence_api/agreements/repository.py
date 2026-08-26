@@ -427,11 +427,8 @@ class SQLAlchemyAgreementRepository:
         organization_id: UUID,
         workspace_id: UUID,
     ) -> bool:
-        matches = self._session.execute(
-            select(
-                AgreementDeletionObjectRecord.category,
-                AgreementDeletionObjectRecord.agreement_id,
-            )
+        matches = self._session.scalars(
+            select(AgreementDeletionObjectRecord)
             .join(
                 AgreementDeletionRequestRecord,
                 AgreementDeletionObjectRecord.deletion_id == AgreementDeletionRequestRecord.id,
@@ -444,16 +441,16 @@ class SQLAlchemyAgreementRepository:
                     ("accepted", "processing", "retrying", "failed")
                 ),
             )
-        ).all()
-        for category, deleting_agreement_id in matches:
-            if category != "source":
+        )
+        for item in matches:
+            if item.category != "source":
                 return True
             active_reference = self._session.scalar(
                 select(AgreementVersionRecord.id)
                 .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
                 .where(
                     AgreementVersionRecord.storage_key == object_key,
-                    AgreementVersionRecord.agreement_id != deleting_agreement_id,
+                    AgreementVersionRecord.agreement_id != item.agreement_id,
                     AgreementVersionRecord.organization_id == organization_id,
                     AgreementVersionRecord.workspace_id == workspace_id,
                     AgreementRecord.deletion_requested_at.is_(None),
