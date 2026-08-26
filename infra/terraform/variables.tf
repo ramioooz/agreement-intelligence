@@ -22,8 +22,8 @@ variable "name_prefix" {
   default     = "agreement-intelligence"
 
   validation {
-    condition     = can(regex("^[a-z0-9-]+$", var.name_prefix))
-    error_message = "name_prefix must contain only lowercase letters, digits, and hyphens."
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.name_prefix))
+    error_message = "name_prefix must start and end with a lowercase letter or digit and otherwise contain only lowercase letters, digits, and hyphens."
   }
 }
 
@@ -33,7 +33,7 @@ variable "environment_name" {
   default     = "local"
 
   validation {
-    condition     = can(regex("^[a-z0-9-]+$", var.environment_name))
-    error_message = "environment_name must contain only lowercase letters, digits, and hyphens."
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])?$", var.environment_name))
+    error_message = "environment_name must start and end with a lowercase letter or digit and otherwise contain only lowercase letters, digits, and hyphens."
   }
 }

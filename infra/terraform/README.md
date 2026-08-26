@@ -17,11 +17,20 @@ make terraform-provision-local
 
 `make terraform-check` fails if Terraform, `tflocal`, Checkov, or a required
 policy check is unavailable; no verification step is silently skipped.
+The checked-in Checkov configuration intentionally excludes eight checks:
+bucket access logging, cross-region replication, customer-managed KMS keys,
+bucket lifecycle and event notifications, and Secrets Manager rotation. These
+controls require the deferred real-AWS logging, key, lifecycle, and rotation
+design. Checkov reports configured exclusions separately from its skipped-check
+counter, so `Skipped checks: 0` does not mean that no policies are excluded.
 `make terraform-provision-local` requires the normal LocalStack service to be
 healthy, creates isolated emulated resources, inspects their protection and
-redrive settings through the AWS CLI, and destroys them on completion. Copy
-`local.auto.tfvars.example` only for local experimentation; do not commit state
-or credentials.
+redrive settings through the AWS CLI, and destroys them on completion. It stages
+only an explicit allowlist of checked-in Terraform files, replaces ambient AWS
+credential and profile configuration with non-secret LocalStack values, and
+forces the loopback endpoint and `use_localstack=true` on every mutating command.
+Copy `local.auto.tfvars.example` only for local experimentation; do not commit
+state or credentials.
 
 The LocalStack endpoint defaults to `http://localhost:4566`. Test credentials
 are intentionally non-secret and cannot authorize a real AWS account. LocalStack
