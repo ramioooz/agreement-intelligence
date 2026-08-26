@@ -17,8 +17,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from agreement_intelligence_api.agreements.deletion import (
+    AgreementDeletionOutboxDispatcher,
+    deletion_publisher_from_environment,
+)
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 from agreement_intelligence_api.agreements.schemas import (
+    AgreementDeletionResponse,
     AgreementListResponse,
     AgreementResponse,
     AgreementVersionListResponse,
@@ -103,6 +108,26 @@ async def version_conflict_handler(request: Request, error: Exception) -> JSONRe
         correlation_id=request.state.correlation_id,
     )
     return JSONResponse(status_code=409, content=payload.model_dump())
+
+
+@router.get(
+    "/deletions/{deletion_id}",
+    response_model=AgreementDeletionResponse,
+    responses={404: {"model": ErrorResponse}},
+)
+def get_agreement_deletion(
+    deletion_id: UUID,
+    principal: PrincipalDependency,
+    service: AgreementServiceDependency,
+    organization_id: OrganizationScope,
+    workspace_id: WorkspaceScope,
+) -> AgreementDeletionResponse:
+    return service.deletion_status(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        deletion_id=deletion_id,
+    )
 
 
 @router.post("", response_model=AgreementResponse, status_code=201)
@@ -297,32 +322,40 @@ def get_document_analysis(
     return analysis
 
 
-@router.delete("/{agreement_id}", status_code=204, responses={404: {"model": ErrorResponse}})
+@router.delete(
+    "/{agreement_id}",
+    status_code=202,
+    response_model=AgreementDeletionResponse,
+    responses={404: {"model": ErrorResponse}},
+)
 def delete_agreement(
     agreement_id: UUID,
     principal: PrincipalDependency,
     service: AgreementServiceDependency,
+    session: SessionDependency,
     request: Request,
     organization_id: OrganizationScope,
     workspace_id: WorkspaceScope,
-) -> Response:
-    agreement, object_keys = service.deletion_object_keys(
+) -> AgreementDeletionResponse:
+    deletion = service.accept_deletion(
         principal,
         organization_id=organization_id,
         workspace_id=workspace_id,
         agreement_id=agreement_id,
     )
-    get_document_service(request).delete(
-        UploadScope(tenant_id=agreement.organization_id, workspace_id=agreement.workspace_id),
-        object_keys=object_keys,
+    publisher = (
+        getattr(
+            request.app.state,
+            "agreement_deletion_queue_publisher",
+            None,
+        )
+        or deletion_publisher_from_environment()
     )
-    service.permanently_delete(
-        principal,
-        organization_id=organization_id,
-        workspace_id=workspace_id,
-        agreement_id=agreement_id,
-    )
-    return Response(status_code=204)
+    AgreementDeletionOutboxDispatcher(
+        session=session,
+        publisher=publisher,
+    ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
+    return deletion
 
 
 @router.post(

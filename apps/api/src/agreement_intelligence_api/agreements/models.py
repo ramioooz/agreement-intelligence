@@ -13,7 +13,7 @@ from sqlalchemy import (
     Uuid,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from agreement_intelligence_api.identity.models import Base
 
@@ -54,6 +54,9 @@ class AgreementRecord(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+    )
+    deletion_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
     )
 
 
@@ -138,6 +141,65 @@ class AgreementDeletionAuditEventRecord(Base):
     agreement_type: Mapped[str] = mapped_column(String(100))
     file_checksums: Mapped[list[str]] = mapped_column(JSON, default=list)
     actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    deletion_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
+    event_type: Mapped[str] = mapped_column(String(32), default="requested")
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     occurred_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class AgreementDeletionRequestRecord(Base):
+    __tablename__ = "agreement_deletion_requests"
+    __table_args__ = (
+        UniqueConstraint("agreement_id", name="uq_agreement_deletion_requests_agreement"),
+        Index(
+            "ix_agreement_deletion_requests_scope_state",
+            "organization_id",
+            "workspace_id",
+            "state",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    agreement_type: Mapped[str] = mapped_column(String(100))
+    file_checksums: Mapped[list[str]] = mapped_column(JSON, default=list)
+    state: Mapped[str] = mapped_column(String(32), default="accepted", index=True)
+    object_keys: Mapped[list[str]] = mapped_column(JSON, default=list)
+    attempt_count: Mapped[int] = mapped_column(default=0)
+    failure_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    failure_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    accepted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    processing_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class AgreementDeletionOutboxRecord(Base):
+    __tablename__ = "agreement_deletion_outbox"
+    __table_args__ = (
+        UniqueConstraint("deletion_id", name="uq_agreement_deletion_outbox_deletion"),
+        Index("ix_agreement_deletion_outbox_pending", "delivered_at", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid4)
+    deletion_id: Mapped[UUID] = mapped_column(
+        ForeignKey("agreement_deletion_requests.id"), index=True
+    )
+    organization_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    agreement_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), index=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    deletion: Mapped[AgreementDeletionRequestRecord] = relationship()

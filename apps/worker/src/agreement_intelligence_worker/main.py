@@ -6,6 +6,10 @@ from dataclasses import dataclass
 import boto3
 from agreement_intelligence_platform.telemetry import configure_telemetry
 
+from agreement_intelligence_worker.agreement_deletion import (
+    AgreementDeletionProcessor,
+    SQLAlchemyAgreementDeletionRepository,
+)
 from agreement_intelligence_worker.analysis_provider import (
     fallback_comparator_from_environment,
     provider_from_environment,
@@ -72,6 +76,7 @@ class ProfileProcessor:
 class ProcessingRuntime:
     receiver: SQSProcessingMessageReceiver
     processor: JobProcessor
+    deletion_processor: AgreementDeletionProcessor
 
 
 @dataclass(frozen=True)
@@ -107,12 +112,14 @@ async def serve() -> None:
             stop_event,
             message_receiver=runtime.receiver,
             job_processor=runtime.processor,
+            deletion_processor=getattr(runtime, "deletion_processor", None),
         )
     else:
         await run_worker(
             stop_event,
             message_receiver=runtime.receiver,
             job_processor=runtime.processor,
+            deletion_processor=getattr(runtime, "deletion_processor", None),
             background_tasks=(
                 run_workflow_loop(
                     stop_event, workflow_runtime.receiver, workflow_runtime.processor
@@ -179,7 +186,15 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         ),
     )
     receiver = SQSProcessingMessageReceiver(client=client, queue_url=queue_url)
-    return ProcessingRuntime(receiver=receiver, processor=processor)
+    return ProcessingRuntime(
+        receiver=receiver,
+        processor=processor,
+        deletion_processor=AgreementDeletionProcessor(
+            SQLAlchemyAgreementDeletionRepository(engine),
+            storage,
+            queue,
+        ),
+    )
 
 
 def workflow_runtime_from_environment() -> WorkflowRuntime | None:

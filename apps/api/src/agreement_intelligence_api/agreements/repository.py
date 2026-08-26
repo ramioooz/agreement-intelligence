@@ -1,25 +1,27 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import Select, delete, func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from agreement_intelligence_api.agreements.models import (
     AgreementDeletionAuditEventRecord,
+    AgreementDeletionOutboxRecord,
+    AgreementDeletionRequestRecord,
     AgreementRecord,
     AgreementVersionAuditEventRecord,
     AgreementVersionRecord,
 )
 from agreement_intelligence_api.agreements.schemas import (
+    AgreementDeletionResponse,
     AgreementFile,
     AgreementResponse,
     AgreementVersionResponse,
 )
 from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
-    ProcessingJobRecord,
-    ProcessingOutboxRecord,
 )
+from agreement_intelligence_api.reviews.models import ReviewCaseRecord, ReviewFinalPackageRecord
 
 
 class SQLAlchemyAgreementRepository:
@@ -51,7 +53,7 @@ class SQLAlchemyAgreementRepository:
 
     def get(self, agreement_id: UUID) -> AgreementResponse | None:
         record = self._session.get(AgreementRecord, agreement_id)
-        if record is None:
+        if record is None or record.deletion_requested_at is not None:
             return None
         return self._to_response(record)
 
@@ -67,6 +69,7 @@ class SQLAlchemyAgreementRepository:
     ) -> list[AgreementResponse]:
         statement: Select[tuple[AgreementRecord]] = (
             select(AgreementRecord)
+            .where(AgreementRecord.deletion_requested_at.is_(None))
             .where(AgreementRecord.organization_id == organization_id)
             .where(AgreementRecord.workspace_id == workspace_id)
             .order_by(AgreementRecord.created_at.desc(), AgreementRecord.id.desc())
@@ -193,25 +196,72 @@ class SQLAlchemyAgreementRepository:
                 )
             )
         )
-        referenced_source_keys = {
+        version_source_keys = list(
+            self._session.scalars(
+                select(AgreementVersionRecord.storage_key)
+                .where(AgreementVersionRecord.agreement_id == agreement.id)
+                .order_by(AgreementVersionRecord.version_number)
+            )
+        )
+        referenced_alias_keys = {
             source_file.get("storage_key")
             for record in self._session.scalars(
                 select(AgreementRecord.files)
                 .where(AgreementRecord.organization_id == agreement.organization_id)
                 .where(AgreementRecord.workspace_id == agreement.workspace_id)
                 .where(AgreementRecord.id != agreement.id)
+                .where(AgreementRecord.deletion_requested_at.is_(None))
             )
             for source_file in record
             if isinstance(source_file, dict) and isinstance(source_file.get("storage_key"), str)
         }
+        referenced_version_keys = set(
+            self._session.scalars(
+                select(AgreementVersionRecord.storage_key)
+                .join(AgreementRecord, AgreementVersionRecord.agreement_id == AgreementRecord.id)
+                .where(AgreementVersionRecord.organization_id == agreement.organization_id)
+                .where(AgreementVersionRecord.workspace_id == agreement.workspace_id)
+                .where(AgreementVersionRecord.agreement_id != agreement.id)
+                .where(AgreementRecord.deletion_requested_at.is_(None))
+            )
+        )
+        referenced_source_keys = referenced_alias_keys | referenced_version_keys
         source_keys = [
-            file.storage_key
-            for file in agreement.files
-            if file.storage_key not in referenced_source_keys
+            key
+            for key in [*version_source_keys, *(file.storage_key for file in agreement.files)]
+            if key not in referenced_source_keys
         ]
-        return [*source_keys, *artifact_keys]
+        package_keys = [
+            key
+            for manifest_key, pdf_key in self._session.execute(
+                select(ReviewFinalPackageRecord.manifest_key, ReviewFinalPackageRecord.pdf_key)
+                .join(ReviewCaseRecord, ReviewFinalPackageRecord.review_id == ReviewCaseRecord.id)
+                .where(ReviewCaseRecord.agreement_id == agreement.id)
+            )
+            for key in (manifest_key, pdf_key)
+        ]
+        return list(dict.fromkeys([*source_keys, *artifact_keys, *package_keys]))
 
-    def permanently_delete(self, agreement: AgreementResponse, *, actor_id: UUID) -> None:
+    def accept_deletion(
+        self, agreement: AgreementResponse, *, actor_id: UUID
+    ) -> AgreementDeletionResponse:
+        now = datetime.now(UTC)
+        deletion_record = AgreementDeletionRequestRecord(
+            organization_id=agreement.organization_id,
+            workspace_id=agreement.workspace_id,
+            agreement_id=agreement.id,
+            actor_id=actor_id,
+            title=agreement.title,
+            agreement_type=agreement.agreement_type,
+            file_checksums=[file.checksum for file in agreement.files],
+            state="accepted",
+            object_keys=self.deletion_object_keys(agreement),
+            attempt_count=0,
+            accepted_at=now,
+            updated_at=now,
+        )
+        self._session.add(deletion_record)
+        self._session.flush()
         self._session.add(
             AgreementDeletionAuditEventRecord(
                 organization_id=agreement.organization_id,
@@ -221,23 +271,62 @@ class SQLAlchemyAgreementRepository:
                 agreement_type=agreement.agreement_type,
                 file_checksums=[file.checksum for file in agreement.files],
                 actor_id=actor_id,
+                deletion_id=deletion_record.id,
+                event_type="requested",
+                metadata_json={"object_count": len(deletion_record.object_keys)},
             )
         )
-        self._session.execute(
-            delete(ProcessingOutboxRecord).where(
-                ProcessingOutboxRecord.agreement_id == agreement.id
+        self._session.add(
+            AgreementDeletionOutboxRecord(
+                deletion_id=deletion_record.id,
+                organization_id=agreement.organization_id,
+                workspace_id=agreement.workspace_id,
+                agreement_id=agreement.id,
+                created_at=now,
+                updated_at=now,
             )
         )
-        self._session.execute(
-            delete(ProcessingArtifactRecord).where(
-                ProcessingArtifactRecord.agreement_id == agreement.id
-            )
-        )
-        self._session.execute(
-            delete(ProcessingJobRecord).where(ProcessingJobRecord.agreement_id == agreement.id)
-        )
-        self._session.execute(delete(AgreementRecord).where(AgreementRecord.id == agreement.id))
+        agreement_record = self._session.get(AgreementRecord, agreement.id)
+        assert agreement_record is not None
+        agreement_record.deletion_requested_at = now
+        agreement_record.updated_at = now
         self._session.flush()
+        return self.deletion_response(deletion_record)
+
+    def deletion_by_agreement(
+        self,
+        agreement_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+    ) -> AgreementDeletionRequestRecord | None:
+        return self._session.scalar(
+            select(AgreementDeletionRequestRecord).where(
+                AgreementDeletionRequestRecord.agreement_id == agreement_id,
+                AgreementDeletionRequestRecord.organization_id == organization_id,
+                AgreementDeletionRequestRecord.workspace_id == workspace_id,
+            )
+        )
+
+    def get_deletion(self, deletion_id: UUID) -> AgreementDeletionRequestRecord | None:
+        return self._session.get(AgreementDeletionRequestRecord, deletion_id)
+
+    @staticmethod
+    def deletion_response(record: AgreementDeletionRequestRecord) -> AgreementDeletionResponse:
+        return AgreementDeletionResponse(
+            id=record.id,
+            agreement_id=record.agreement_id,
+            organization_id=record.organization_id,
+            workspace_id=record.workspace_id,
+            state=record.state,
+            attempt_count=record.attempt_count,
+            failure_category=record.failure_category,
+            failure_message=record.failure_message,
+            accepted_at=_as_required_aware_utc(record.accepted_at),
+            processing_started_at=_as_aware_utc(record.processing_started_at),
+            completed_at=_as_aware_utc(record.completed_at),
+            failed_at=_as_aware_utc(record.failed_at),
+        )
 
     @staticmethod
     def _to_response(record: AgreementRecord) -> AgreementResponse:
@@ -267,3 +356,9 @@ def _as_aware_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def _as_required_aware_utc(value: datetime) -> datetime:
+    converted = _as_aware_utc(value)
+    assert converted is not None
+    return converted

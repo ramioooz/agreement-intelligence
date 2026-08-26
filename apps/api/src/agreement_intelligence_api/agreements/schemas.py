@@ -79,6 +79,21 @@ class ErrorResponse(BaseModel):
     correlation_id: str
 
 
+class AgreementDeletionResponse(BaseModel):
+    id: UUID
+    agreement_id: UUID
+    organization_id: UUID
+    workspace_id: UUID
+    state: str
+    attempt_count: int
+    failure_category: str | None
+    failure_message: str | None
+    accepted_at: datetime
+    processing_started_at: datetime | None
+    completed_at: datetime | None
+    failed_at: datetime | None
+
+
 class AgreementVersionResponse(BaseModel):
     id: UUID
     agreement_id: UUID

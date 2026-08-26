@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from agreement_intelligence_api.agreements.models import AgreementVersionRecord
 from agreement_intelligence_api.agreements.repository import SQLAlchemyAgreementRepository
 from agreement_intelligence_api.agreements.schemas import (
+    AgreementDeletionResponse,
     AgreementListResponse,
     AgreementPage,
     AgreementResponse,
@@ -230,51 +230,59 @@ class AgreementService:
         self._identity.session.commit()
         return replaced
 
-    def permanently_delete(
+    def accept_deletion(
         self,
         principal: Principal,
         *,
         organization_id: UUID,
         workspace_id: UUID,
         agreement_id: UUID,
-    ) -> AgreementResponse:
+    ) -> AgreementDeletionResponse:
         self._authorize(
             principal,
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.AGREEMENTS_DELETE,
         )
+        existing = self._repository.deletion_by_agreement(
+            agreement_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+        if existing is not None:
+            return self._repository.deletion_response(existing)
         agreement = self.get(
             principal,
             organization_id=organization_id,
             workspace_id=workspace_id,
             agreement_id=agreement_id,
         )
-        self._repository.permanently_delete(agreement, actor_id=principal.user_id)
+        deletion = self._repository.accept_deletion(agreement, actor_id=principal.user_id)
         self._identity.session.commit()
-        return agreement
+        return deletion
 
-    def deletion_object_keys(
+    def deletion_status(
         self,
         principal: Principal,
         *,
         organization_id: UUID,
         workspace_id: UUID,
-        agreement_id: UUID,
-    ) -> tuple[AgreementResponse, Sequence[str]]:
+        deletion_id: UUID,
+    ) -> AgreementDeletionResponse:
         self._authorize(
             principal,
             organization_id=organization_id,
             workspace_id=workspace_id,
             permission=PermissionKey.AGREEMENTS_DELETE,
         )
-        agreement = self.get(
-            principal,
-            organization_id=organization_id,
-            workspace_id=workspace_id,
-            agreement_id=agreement_id,
-        )
-        return agreement, self._repository.deletion_object_keys(agreement)
+        deletion = self._repository.get_deletion(deletion_id)
+        if (
+            deletion is None
+            or deletion.organization_id != organization_id
+            or deletion.workspace_id != workspace_id
+        ):
+            raise AgreementNotFoundError
+        return self._repository.deletion_response(deletion)
 
     def _authorize(
         self,

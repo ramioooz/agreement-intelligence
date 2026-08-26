@@ -51,6 +51,7 @@ agreements = Table(
     Column("current_version_id", Uuid(as_uuid=True), nullable=True),
     Column("processing_state", String(32), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
+    Column("deletion_requested_at", DateTime(timezone=True), nullable=True),
 )
 agreement_versions = Table(
     "agreement_versions",
@@ -147,6 +148,8 @@ class ProcessingMessage:
     workspace_id: UUID | None = None
     trace_headers: Mapping[str, str] = field(default_factory=dict)
     queue_age_ms: int | None = None
+    message_type: str = "processing"
+    deletion_id: UUID | None = None
 
 
 class JobRepository(Protocol):
@@ -204,6 +207,10 @@ class ProcessingMessageReceiver(Protocol):
     async def receive(self) -> ProcessingMessage | None: ...
 
     async def ack(self, message: ProcessingMessage) -> None: ...
+
+
+class DeletionMessageProcessor(Protocol):
+    def handle(self, deletion_id: UUID, *, organization_id: UUID, workspace_id: UUID) -> None: ...
 
 
 class AgreementProcessor(Protocol):
@@ -418,6 +425,37 @@ class SQSProcessingQueue:
             )
         self._client.send_message(**request)
 
+    def enqueue_deletion(
+        self,
+        deletion_id: UUID,
+        *,
+        agreement_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        delay_seconds: int,
+    ) -> None:
+        body = json.dumps(
+            {
+                "message_type": "agreement_deletion",
+                "deletion_id": str(deletion_id),
+                "organization_id": str(organization_id),
+                "workspace_id": str(workspace_id),
+                "agreement_id": str(agreement_id),
+            },
+            sort_keys=True,
+        )
+        request: dict[str, object] = {
+            "QueueUrl": self._queue_url,
+            "MessageBody": body,
+            "DelaySeconds": delay_seconds,
+        }
+        if _is_fifo_queue(self._queue_url):
+            request["MessageGroupId"] = str(agreement_id)
+            request["MessageDeduplicationId"] = (
+                f"{deletion_id}:retry:{delay_seconds}:{datetime.now(UTC).isoformat()}"
+            )
+        self._client.send_message(**request)
+
 
 class SQSProcessingMessageReceiver:
     def __init__(
@@ -454,13 +492,19 @@ class SQSProcessingMessageReceiver:
             if key in {"traceparent", "tracestate"}
             and isinstance(value := attribute.get("StringValue"), str)
         }
+        message_type = str(body.get("message_type", "processing"))
+        deletion_id = (
+            UUID(str(body["deletion_id"])) if message_type == "agreement_deletion" else None
+        )
         return ProcessingMessage(
-            job_id=UUID(str(body["job_id"])),
+            job_id=UUID(str(body.get("job_id", deletion_id))),
             organization_id=UUID(str(body["organization_id"])),
             workspace_id=UUID(str(body["workspace_id"])),
             receipt_handle=str(message["ReceiptHandle"]),
             trace_headers=trace_headers,
             queue_age_ms=_queue_age_ms(message),
+            message_type=message_type,
+            deletion_id=deletion_id,
         )
 
     async def ack(self, message: ProcessingMessage) -> None:
@@ -501,6 +545,14 @@ class SQLAlchemyProcessingJobRepository:
             if organization_id is not None and job["organization_id"] != organization_id:
                 return None
             if workspace_id is not None and job["workspace_id"] != workspace_id:
+                return None
+            deletion_requested_at = connection.scalar(
+                select(agreements.c.deletion_requested_at).where(
+                    agreements.c.id == job["agreement_id"],
+                    agreements.c.organization_id == job["organization_id"],
+                )
+            )
+            if deletion_requested_at is not None:
                 return None
             artifact_exists = (
                 connection.execute(
@@ -645,6 +697,14 @@ class SQLAlchemyProcessingJobRepository:
             if job is None or job["state"] != "completed":
                 return None
             if not _matches_tenant_scope(job, organization_id, workspace_id):
+                return None
+            deletion_requested_at = connection.scalar(
+                select(agreements.c.deletion_requested_at).where(
+                    agreements.c.id == job["agreement_id"],
+                    agreements.c.organization_id == job["organization_id"],
+                )
+            )
+            if deletion_requested_at is not None:
                 return None
             artifact = (
                 connection.execute(
@@ -827,6 +887,7 @@ async def run_processing_loop(
     *,
     receiver: ProcessingMessageReceiver,
     processor: JobProcessor,
+    deletion_processor: DeletionMessageProcessor | None = None,
     idle_sleep_seconds: float = 1.0,
 ) -> None:
     while not stop_event.is_set():
@@ -863,11 +924,24 @@ async def run_processing_loop(
                     "worker.processing",
                     safe_span_attributes({"operation": "worker.processing", "outcome": "success"}),
                 ):
-                    processor.handle(
-                        message.job_id,
-                        organization_id=message.organization_id,
-                        workspace_id=message.workspace_id,
-                    )
+                    if message.message_type == "agreement_deletion":
+                        if deletion_processor is None or message.deletion_id is None:
+                            raise ValueError("agreement deletion processor is not configured")
+                        organization_id = _required_tenant_scope(
+                            message.organization_id, "organization_id"
+                        )
+                        workspace_id = _required_tenant_scope(message.workspace_id, "workspace_id")
+                        deletion_processor.handle(
+                            message.deletion_id,
+                            organization_id=organization_id,
+                            workspace_id=workspace_id,
+                        )
+                    else:
+                        processor.handle(
+                            message.job_id,
+                            organization_id=message.organization_id,
+                            workspace_id=message.workspace_id,
+                        )
             finally:
                 detach(context_token)
         except Exception:

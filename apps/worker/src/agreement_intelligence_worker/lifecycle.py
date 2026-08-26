@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from agreement_intelligence_worker.processing import (
+    DeletionMessageProcessor,
     JobProcessor,
     ProcessingMessageReceiver,
     run_processing_loop,
@@ -27,6 +28,7 @@ async def run_worker(
     heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     message_receiver: ProcessingMessageReceiver | None = None,
     job_processor: JobProcessor | None = None,
+    deletion_processor: DeletionMessageProcessor | None = None,
     background_tasks: tuple[Awaitable[None], ...] = (),
 ) -> None:
     lifecycle_correlation_id = correlation_id or os.environ.get(
@@ -53,6 +55,7 @@ async def run_worker(
                 stop_event,
                 receiver=message_receiver,
                 processor=job_processor,
+                deletion_processor=deletion_processor,
                 idle_sleep_seconds=heartbeat_interval_seconds,
             )
         )

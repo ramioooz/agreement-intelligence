@@ -51,6 +51,8 @@ class ObjectStorage(Protocol):
 
     def put_immutable(self, key: str, content: bytes, *, content_type: str) -> bool: ...
 
+    def delete(self, key: str) -> None: ...
+
 
 class S3ObjectStorage:
     def __init__(self, *, client: Any, bucket: str) -> None:
@@ -88,6 +90,9 @@ class S3ObjectStorage:
                 return False
             raise
         return True
+
+    def delete(self, key: str) -> None:
+        self._client.delete_object(Bucket=self._bucket, Key=key)
 
 
 class DocumentUnderstandingProcessor:
