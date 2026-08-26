@@ -67,7 +67,7 @@ services:
       LANGFUSE_REDIS_PASSWORD: ${LANGFUSE_REDIS_PASSWORD:?required}
 
   langfuse-clickhouse:
-    image: clickhouse/clickhouse-server:25.12.3.16-alpine
+    image: clickhouse/clickhouse-server:26.7.5.10-alpine
     profiles: ["observability"]
     environment:
       CLICKHOUSE_DB: default
