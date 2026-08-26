@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.engine import Engine
 
 
 def _final_package_module() -> ModuleType:
@@ -207,7 +208,7 @@ def test_worker_rejects_an_existing_object_with_a_different_checksum() -> None:
 
 def _seed_terminal_workflow(
     *, correlation_id: str = "terminal-correlation-id"
-) -> tuple[object, dict[str, UUID]]:
+) -> tuple[Engine, dict[str, UUID]]:
     engine = create_engine("sqlite+pysqlite:///:memory:")
     review_id = uuid4()
     workflow_id = uuid4()

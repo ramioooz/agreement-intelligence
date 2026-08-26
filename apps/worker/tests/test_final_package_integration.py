@@ -6,6 +6,7 @@ from hashlib import sha256
 from json import dumps, loads
 from pathlib import Path
 from threading import Barrier, Lock
+from typing import Any, TypedDict
 from uuid import UUID, uuid4
 
 import boto3
@@ -13,6 +14,7 @@ import pytest
 from agreement_intelligence_worker.final_package import (
     FINAL_PACKAGE_WORKER_ACTOR_ID,
     S3FinalPackageStorage,
+    StoredPackageObject,
     TerminalReviewPackageGenerator,
 )
 from agreement_intelligence_worker.review_workflow import SQLAlchemyWorkflowEventProcessor
@@ -40,6 +42,15 @@ class _ConcurrentCheckpointStore:
             self.calls.append(event_id)
 
 
+class _SeededTerminalEvent(TypedDict):
+    organization_id: UUID
+    workspace_id: UUID
+    review_id: UUID
+    workflow_id: UUID
+    event_id: UUID
+    correlation_id: str
+
+
 class _CompetingRelayPublisher:
     def __init__(self, already_published: UUID) -> None:
         self._barrier = Barrier(2)
@@ -50,6 +61,21 @@ class _CompetingRelayPublisher:
         with self._lock:
             self.published.append(UUID(str(event["id"])))
         self._barrier.wait(timeout=10)
+
+
+class _FailOncePackageStorage:
+    def __init__(self, delegate: S3FinalPackageStorage) -> None:
+        self._delegate = delegate
+        self.failed = False
+
+    def read(self, key: str) -> StoredPackageObject | None:
+        return self._delegate.read(key)
+
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        if key.endswith("report.pdf") and not self.failed:
+            self.failed = True
+            raise RuntimeError("simulated partial package write")
+        return self._delegate.put_immutable(key, content, content_type=content_type, sha256=sha256)
 
 
 def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_package() -> None:
@@ -70,6 +96,10 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
     base_engine = create_engine(postgres_url.replace("postgresql://", "postgresql+psycopg://", 1))
     engine = create_engine(scoped_url.replace("postgresql://", "postgresql+psycopg://", 1))
     bucket = f"terminal-packages-{uuid4().hex}"
+    migration_role = f"migration_{uuid4().hex}"
+    migration_password = uuid4().hex
+    migration_engine: Engine | None = None
+    migration_role_created = False
     s3 = boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -84,40 +114,95 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         config.set_main_option("sqlalchemy.url", scoped_url.replace("%", "%%"))
         command.upgrade(config, "20260825_0032")
         seeded = _seed_terminal_event(engine, include_terminal_event=False)
-        command.upgrade(config, "head")
-        with engine.connect() as connection:
+        second_seeded = _seed_terminal_event(engine, include_terminal_event=False)
+        with base_engine.begin() as connection:
             connection.execute(
-                text("SELECT set_config('app.organization_id', :organization_id, true)"),
-                {"organization_id": str(seeded["organization_id"])},
-            )
-            backfilled = (
-                connection.execute(
-                    text(
-                        "SELECT id, correlation_id, package_snapshot, delivered_at, processed_at "
-                        "FROM review_workflow_outbox "
-                        "WHERE idempotency_key = :idempotency_key"
-                    ),
-                    {
-                        "idempotency_key": (
-                            f"workflow:{seeded['workflow_id']}:terminal-package-backfill:0034"
-                        )
-                    },
+                text(
+                    f'CREATE ROLE "{migration_role}" NOBYPASSRLS '
+                    f"LOGIN PASSWORD '{migration_password}'"
                 )
-                .mappings()
-                .one()
             )
+        migration_role_created = True
+        _transfer_schema_ownership(engine, schema_name, migration_role)
+        migration_url = make_url(scoped_url).set(
+            username=migration_role, password=migration_password
+        )
+        migration_engine = create_engine(
+            migration_url.render_as_string(hide_password=False).replace(
+                "postgresql://", "postgresql+psycopg://", 1
+            )
+        )
+        migration_config = Config(str(Path(__file__).parents[2] / "api" / "alembic.ini"))
+        migration_config.set_main_option(
+            "sqlalchemy.url",
+            migration_url.render_as_string(hide_password=False).replace("%", "%%"),
+        )
+        with base_engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT rolbypassrls FROM pg_roles WHERE rolname = :role"),
+                    {"role": migration_role},
+                )
+                is False
+            )
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT relrowsecurity AND relforcerowsecurity "
+                        "FROM pg_class WHERE oid = CAST(:table_name AS regclass)"
+                    ),
+                    {"table_name": f'"{schema_name}".review_workflow_outbox'},
+                )
+                is True
+            )
+        command.upgrade(migration_config, "head")
+        backfilled = _backfilled_event(migration_engine, seeded)
         assert backfilled["delivered_at"] is None
         assert backfilled["processed_at"] is None
         assert backfilled["correlation_id"] == seeded["correlation_id"]
         assert backfilled["package_snapshot"]["state"] == "rejected"
+        assert backfilled["package_snapshot"]["organization_id"] == str(seeded["organization_id"])
         assert backfilled["package_snapshot"]["provenance"]["workflow_event_id"] == str(
             backfilled["id"]
         )
         seeded["event_id"] = backfilled["id"]
         seeded["correlation_id"] = backfilled["correlation_id"]
+        second_backfilled = _backfilled_event(migration_engine, second_seeded)
+        assert second_backfilled["package_snapshot"]["organization_id"] == str(
+            second_seeded["organization_id"]
+        )
+        assert _tenant_backfill_count(migration_engine, seeded) == 1
+        assert _tenant_backfill_count(migration_engine, second_seeded) == 1
+        second_seeded["event_id"] = second_backfilled["id"]
+        second_seeded["correlation_id"] = second_backfilled["correlation_id"]
         s3.create_bucket(Bucket=bucket)
         checkpoints = _ConcurrentCheckpointStore()
-        packages = TerminalReviewPackageGenerator(S3FinalPackageStorage(client=s3, bucket=bucket))
+        object_storage = S3FinalPackageStorage(client=s3, bucket=bucket)
+        partial_storage = _FailOncePackageStorage(object_storage)
+        partial_processor = SQLAlchemyWorkflowEventProcessor(
+            engine,
+            checkpoints,
+            TerminalReviewPackageGenerator(partial_storage),
+        )
+        with pytest.raises(RuntimeError, match="simulated partial package write"):
+            partial_processor.process(
+                seeded["event_id"],
+                organization_id=seeded["organization_id"],
+                workspace_id=seeded["workspace_id"],
+            )
+        object_base = (
+            f"reviews/{seeded['organization_id']}/{seeded['workspace_id']}/"
+            f"{seeded['review_id']}/final-package"
+        )
+        frozen_manifest = s3.get_object(Bucket=bucket, Key=f"{object_base}/manifest.json")[
+            "Body"
+        ].read()
+        frozen_provenance = loads(frozen_manifest)["provenance"]
+        with pytest.raises(RuntimeError, match="lack committed final-package metadata"):
+            command.downgrade(migration_config, "20260825_0032")
+        assert _backfilled_event(migration_engine, seeded)["id"] == seeded["event_id"]
+
+        packages = TerminalReviewPackageGenerator(object_storage)
 
         def process() -> bool:
             return SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
@@ -162,20 +247,91 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         assert loads(manifest)["provenance"]["workflow_correlation_id"] == seeded["correlation_id"]
         assert audit["actor_id"] == FINAL_PACKAGE_WORKER_ACTOR_ID
         assert audit["correlation_id"] == seeded["correlation_id"]
+        assert manifest == frozen_manifest
+        assert loads(manifest)["provenance"] == frozen_provenance
 
-        second_seeded = _seed_terminal_event(engine)
-        relay_role = f"relay_{uuid4().hex}"
-        relay_password = uuid4().hex
-        with base_engine.begin() as connection:
-            connection.execute(
-                text(f"CREATE ROLE \"{relay_role}\" LOGIN PASSWORD '{relay_password}'")
+        second_processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages)
+        assert (
+            second_processor.process(
+                second_seeded["event_id"],
+                organization_id=second_seeded["organization_id"],
+                workspace_id=second_seeded["workspace_id"],
             )
+            is True
+        )
+        command.downgrade(migration_config, "20260825_0032")
+        command.upgrade(migration_config, "head")
+        with engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM review_final_packages")) == 2
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM audit_events "
+                        "WHERE action = 'review_final_package_generated'"
+                    )
+                )
+                == 2
+            )
+            retained = (
+                connection.execute(
+                    text(
+                        "SELECT id, correlation_id FROM review_workflow_outbox "
+                        "WHERE id IN (:first, :second) ORDER BY id"
+                    ),
+                    {"first": seeded["event_id"], "second": second_seeded["event_id"]},
+                )
+                .mappings()
+                .all()
+            )
+            retained_audit = (
+                connection.execute(
+                    text(
+                        "SELECT id, correlation_id, metadata_json FROM audit_events "
+                        "WHERE action = 'review_final_package_generated' "
+                        "ORDER BY occurred_at, id"
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM review_workflow_outbox "
+                        "WHERE idempotency_key LIKE :pattern"
+                    ),
+                    {"pattern": "workflow:%:terminal-package-backfill:0034"},
+                )
+                == 2
+            )
+        assert {item["id"] for item in retained} == {
+            seeded["event_id"],
+            second_seeded["event_id"],
+        }
+        assert {item["correlation_id"] for item in retained} == {
+            seeded["correlation_id"],
+            second_seeded["correlation_id"],
+        }
+        assert audit["id"] in {item["id"] for item in retained_audit}
+        assert any(
+            item["metadata_json"]["event_id"] == str(seeded["event_id"])
+            and item["correlation_id"] == seeded["correlation_id"]
+            for item in retained_audit
+        )
+        assert (
+            s3.get_object(Bucket=bucket, Key=package["manifest_key"])["Body"].read()
+            == frozen_manifest
+        )
+        assert (
+            SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+                seeded["event_id"],
+                organization_id=seeded["organization_id"],
+                workspace_id=seeded["workspace_id"],
+            )
+            is False
+        )
+
         with engine.begin() as connection:
-            connection.execute(text(f'GRANT USAGE ON SCHEMA "{schema_name}" TO "{relay_role}"'))
-            connection.execute(text(f'GRANT SELECT ON organizations TO "{relay_role}"'))
-            connection.execute(
-                text(f'GRANT SELECT, UPDATE ON review_workflow_outbox TO "{relay_role}"')
-            )
             for event in (seeded, second_seeded):
                 connection.execute(
                     text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -193,16 +349,10 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                         "event_id": event["event_id"],
                     },
                 )
-        relay_url = make_url(scoped_url).set(username=relay_role, password=relay_password)
-        relay_engine = create_engine(
-            relay_url.render_as_string(hide_password=False).replace(
-                "postgresql://", "postgresql+psycopg://", 1
-            )
-        )
-        publisher = _CompetingRelayPublisher(seeded["event_id"])  # type: ignore[arg-type]
+        publisher = _CompetingRelayPublisher(seeded["event_id"])
         relays = (
-            WorkflowOutboxRelay(relay_engine, publisher, owner="relay-a"),
-            WorkflowOutboxRelay(relay_engine, publisher, owner="relay-b"),
+            WorkflowOutboxRelay(migration_engine, publisher, owner="relay-a"),
+            WorkflowOutboxRelay(migration_engine, publisher, owner="relay-b"),
         )
         with ThreadPoolExecutor(max_workers=2) as executor:
             relay_results = [executor.submit(relay.relay_once) for relay in relays]
@@ -216,10 +366,6 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                 )
                 == 0
             )
-        relay_engine.dispose()
-        with base_engine.begin() as connection:
-            connection.execute(text(f'DROP OWNED BY "{relay_role}"'))
-            connection.execute(text(f'DROP ROLE "{relay_role}"'))
     finally:
         try:
             listed = s3.list_objects_v2(Bucket=bucket).get("Contents", [])
@@ -228,15 +374,91 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
             s3.delete_bucket(Bucket=bucket)
         except Exception:
             pass
+        if migration_engine is not None:
+            migration_engine.dispose()
         engine.dispose()
         with base_engine.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema_name}" CASCADE'))
+            if migration_role_created:
+                connection.execute(text(f'DROP OWNED BY "{migration_role}"'))
+                connection.execute(text(f'DROP ROLE "{migration_role}"'))
         base_engine.dispose()
+
+
+def _transfer_schema_ownership(engine: Engine, schema_name: str, role: str) -> None:
+    with engine.begin() as connection:
+        tables = connection.execute(
+            text("SELECT tablename FROM pg_tables WHERE schemaname = :schema_name"),
+            {"schema_name": schema_name},
+        ).scalars()
+        sequences = connection.execute(
+            text("SELECT sequencename FROM pg_sequences WHERE schemaname = :schema_name"),
+            {"schema_name": schema_name},
+        ).scalars()
+        for table_name in tables:
+            connection.execute(
+                text(f'ALTER TABLE "{schema_name}"."{table_name}" OWNER TO "{role}"')
+            )
+        for sequence_name in sequences:
+            connection.execute(
+                text(f'ALTER SEQUENCE "{schema_name}"."{sequence_name}" OWNER TO "{role}"')
+            )
+        connection.execute(text(f'ALTER SCHEMA "{schema_name}" OWNER TO "{role}"'))
+
+
+def _backfilled_event(engine: Engine, seeded: _SeededTerminalEvent) -> dict[str, Any]:
+    with engine.connect() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(seeded["organization_id"])},
+        )
+        return dict(
+            connection.execute(
+                text(
+                    "SELECT id, correlation_id, package_snapshot, delivered_at, processed_at "
+                    "FROM review_workflow_outbox "
+                    "WHERE organization_id = :organization_id "
+                    "AND workspace_id = :workspace_id "
+                    "AND idempotency_key = :idempotency_key"
+                ),
+                {
+                    "organization_id": seeded["organization_id"],
+                    "workspace_id": seeded["workspace_id"],
+                    "idempotency_key": (
+                        f"workflow:{seeded['workflow_id']}:terminal-package-backfill:0034"
+                    ),
+                },
+            )
+            .mappings()
+            .one()
+        )
+
+
+def _tenant_backfill_count(engine: Engine, seeded: _SeededTerminalEvent) -> int:
+    with engine.connect() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(seeded["organization_id"])},
+        )
+        return int(
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM review_workflow_outbox "
+                    "WHERE organization_id = :organization_id "
+                    "AND idempotency_key LIKE :pattern"
+                ),
+                {
+                    "organization_id": seeded["organization_id"],
+                    "pattern": "workflow:%:terminal-package-backfill:0034",
+                },
+            )
+            or 0
+        )
 
 
 def _seed_terminal_event(
     engine: Engine, *, include_terminal_event: bool = True
-) -> dict[str, UUID | str]:
+) -> _SeededTerminalEvent:
     organization_id = uuid4()
     workspace_id = uuid4()
     agreement_id = uuid4()

@@ -101,6 +101,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
+        _assert_backfill_events_are_complete()
         op.execute(
             "DROP TRIGGER IF EXISTS review_workflow_terminal_snapshot_immutable "
             "ON review_workflow_outbox"
@@ -110,7 +111,6 @@ def downgrade() -> None:
             "DROP TRIGGER IF EXISTS review_final_packages_immutable ON review_final_packages"
         )
         op.execute("DROP FUNCTION IF EXISTS prevent_review_final_package_mutation")
-        _delete_backfill_events()
     for column in (
         "last_error",
         "lease_expires_at",
@@ -141,22 +141,29 @@ def _backfill_terminal_package_events() -> None:
                        workflow.policy_version_id, workflow.state, workflow.revision,
                        review.agreement_id, review.agreement_version_id
                 FROM review_workflows AS workflow
-                JOIN review_cases AS review ON review.id = workflow.review_id
-                WHERE workflow.state IN ('approved', 'rejected', 'revision_requested')
+                JOIN review_cases AS review
+                  ON review.id = workflow.review_id
+                 AND review.organization_id = :organization_id
+                 AND review.workspace_id = workflow.workspace_id
+                WHERE workflow.organization_id = :organization_id
+                  AND workflow.state IN ('approved', 'rejected', 'revision_requested')
                   AND NOT EXISTS (
                     SELECT 1 FROM review_final_packages AS package
                     WHERE package.review_id = workflow.review_id
+                      AND package.organization_id = workflow.organization_id
+                      AND package.workspace_id = workflow.workspace_id
                   )
                 ORDER BY workflow.created_at, workflow.id
                     """
-                )
+                ),
+                {"organization_id": organization_id},
             ).mappings()
         )
         for workflow in workflows:
             _backfill_terminal_package_event(connection, workflow)
 
 
-def _delete_backfill_events() -> None:
+def _assert_backfill_events_are_complete() -> None:
     connection = op.get_bind()
     organization_ids = list(
         connection.execute(sa.text("SELECT id FROM organizations ORDER BY id")).scalars()
@@ -166,12 +173,35 @@ def _delete_backfill_events() -> None:
             sa.text("SELECT set_config('app.organization_id', :organization_id, true)"),
             {"organization_id": str(organization_id)},
         )
-        connection.execute(
+        incomplete = connection.scalar(
             sa.text(
-                "DELETE FROM review_workflow_outbox WHERE idempotency_key LIKE :idempotency_pattern"
+                """
+                SELECT count(*)
+                FROM review_workflow_outbox AS event
+                JOIN review_workflows AS workflow
+                  ON workflow.id = event.workflow_id
+                 AND workflow.organization_id = :organization_id
+                 AND workflow.workspace_id = event.workspace_id
+                WHERE event.organization_id = :organization_id
+                  AND event.idempotency_key LIKE :idempotency_pattern
+                  AND NOT EXISTS (
+                    SELECT 1 FROM review_final_packages AS package
+                    WHERE package.review_id = workflow.review_id
+                      AND package.organization_id = workflow.organization_id
+                      AND package.workspace_id = workflow.workspace_id
+                  )
+                """
             ),
-            {"idempotency_pattern": "workflow:%:terminal-package-backfill:0034"},
+            {
+                "organization_id": organization_id,
+                "idempotency_pattern": "workflow:%:terminal-package-backfill:0034",
+            },
         )
+        if incomplete:
+            raise RuntimeError(
+                "cannot downgrade 0034 while terminal package backfill events "
+                "lack committed final-package metadata"
+            )
 
 
 def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.RowMapping) -> None:
@@ -184,11 +214,17 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
                 """
             SELECT correlation_id FROM review_workflow_outbox
             WHERE workflow_id = :workflow_id
+              AND organization_id = :organization_id
+              AND workspace_id = :workspace_id
             ORDER BY created_at DESC, id DESC
             LIMIT 1
             """
             ),
-            {"workflow_id": workflow_id},
+            {
+                "workflow_id": workflow_id,
+                "organization_id": workflow["organization_id"],
+                "workspace_id": workflow["workspace_id"],
+            },
         )
         or f"migration-0034-{workflow_id}"
     )
@@ -198,10 +234,16 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             SELECT actor_id, action, workflow_stage_id, occurred_at
             FROM review_workflow_decisions
             WHERE workflow_id = :workflow_id
+              AND organization_id = :organization_id
+              AND workspace_id = :workspace_id
             ORDER BY occurred_at, id
             """
         ),
-        {"workflow_id": workflow_id},
+        {
+            "workflow_id": workflow_id,
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+        },
     ).mappings()
     stages = connection.execute(
         sa.text(
@@ -209,10 +251,16 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             SELECT id, ordinal, state, activated_at, completed_at
             FROM review_workflow_stages
             WHERE workflow_id = :workflow_id
+              AND organization_id = :organization_id
+              AND workspace_id = :workspace_id
             ORDER BY ordinal, id
             """
         ),
-        {"workflow_id": workflow_id},
+        {
+            "workflow_id": workflow_id,
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+        },
     ).mappings()
     assignments = connection.execute(
         sa.text(
@@ -220,10 +268,16 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             SELECT id, assignee_id, status, due_at
             FROM review_assignments
             WHERE review_id = :review_id
+              AND organization_id = :organization_id
+              AND workspace_id = :workspace_id
             ORDER BY created_at, id
             """
         ),
-        {"review_id": review_id},
+        {
+            "review_id": review_id,
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+        },
     ).mappings()
     comments = connection.execute(
         sa.text(
@@ -231,10 +285,16 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             SELECT id, author_id, finding_id, created_at
             FROM review_comments
             WHERE review_id = :review_id
+              AND organization_id = :organization_id
+              AND workspace_id = :workspace_id
             ORDER BY created_at, id
             """
         ),
-        {"review_id": review_id},
+        {
+            "review_id": review_id,
+            "organization_id": workflow["organization_id"],
+            "workspace_id": workflow["workspace_id"],
+        },
     ).mappings()
     findings = connection.execute(
         sa.text(

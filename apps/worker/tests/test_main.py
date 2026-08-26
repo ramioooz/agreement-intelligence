@@ -139,7 +139,7 @@ def test_workflow_runtime_wires_durable_terminal_package_storage(
     monkeypatch.setenv("DATABASE_URL", "postgresql://worker")
     monkeypatch.setenv("S3_DOCUMENT_BUCKET", "documents")
     monkeypatch.setattr(
-        worker_main.boto3,
+        vars(worker_main)["boto3"],
         "client",
         lambda service, **kwargs: clients[service],
     )
