@@ -27,6 +27,7 @@ def upgrade() -> None:
         sa.Column("profile", sa.String(length=100), nullable=False),
         sa.Column("category", sa.String(length=32), nullable=False),
         sa.Column("artifact_key", sa.String(length=1024), nullable=False),
+        sa.Column("state", sa.String(length=32), server_default="expected", nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False
         ),
@@ -36,6 +37,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "category IN ('analysis', 'comparison')",
             name="ck_processing_artifact_intents_category",
+        ),
+        sa.CheckConstraint(
+            "state IN ('expected', 'settled')",
+            name="ck_processing_artifact_intents_state",
         ),
         sa.ForeignKeyConstraint(["organization_id"], ["organizations.id"]),
         sa.ForeignKeyConstraint(

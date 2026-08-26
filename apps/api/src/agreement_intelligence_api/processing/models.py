@@ -84,6 +84,10 @@ class ProcessingArtifactIntentRecord(Base):
             "category IN ('analysis', 'comparison')",
             name="ck_processing_artifact_intents_category",
         ),
+        CheckConstraint(
+            "state IN ('expected', 'settled')",
+            name="ck_processing_artifact_intents_state",
+        ),
         UniqueConstraint("job_id", name="uq_processing_artifact_intents_job"),
         UniqueConstraint("job_id", "artifact_key", name="uq_processing_artifact_intent_job_key"),
         Index(
@@ -102,6 +106,7 @@ class ProcessingArtifactIntentRecord(Base):
     profile: Mapped[str] = mapped_column(String(100))
     category: Mapped[str] = mapped_column(String(32))
     artifact_key: Mapped[str] = mapped_column(String(1024))
+    state: Mapped[str] = mapped_column(String(32), default="expected", server_default="expected")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

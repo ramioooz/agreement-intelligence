@@ -6,6 +6,9 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from agreement_intelligence_api.agreements.repository import (
+    SQLAlchemyAgreementRepository as APIAgreementRepository,
+)
 from agreement_intelligence_worker.agreement_deletion import (
     AgreementDeletionProcessor,
     SQLAlchemyAgreementDeletionRepository,
@@ -15,13 +18,16 @@ from agreement_intelligence_worker.processing import (
     JobProcessor,
     PermanentProcessingError,
     ProcessingJob,
+    RetryPolicy,
     SQLAlchemyProcessingJobRepository,
+    TransientProcessingError,
 )
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 
 def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
@@ -468,12 +474,13 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
         state = connection.execute(
             text(
                 """
-                SELECT state,completed_at FROM agreement_deletion_requests WHERE id=:id
+                SELECT state,completed_at,failure_category,failure_message
+                FROM agreement_deletion_requests WHERE id=:id
                 """
             ),
             {"id": deletion_id},
         ).one()
-        assert state.state == "completed"
+        assert state.state == "completed", state
         assert state.completed_at is not None
         tombstone = connection.execute(
             text("SELECT title,files,processing_state FROM agreements WHERE id=:id"),
@@ -529,6 +536,14 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
         upload_wins_key=upload_wins_key,
         worker_wins_key=worker_wins_key,
         deletion_id=deletion_id,
+    )
+    _assert_exhausted_response_loss_cleanup(
+        engine=engine,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        actor_id=actor_id,
+        empty_json=empty_json,
+        empty_object=empty_object,
     )
 
 
@@ -870,4 +885,159 @@ def _assert_permanent_failure_cleanup(
                 {"deletion_id": deletion_id},
             )
             == 1
+        )
+
+
+def _assert_exhausted_response_loss_cleanup(
+    *,
+    engine: Engine,
+    organization_id: UUID,
+    workspace_id: UUID,
+    actor_id: UUID,
+    empty_json: str,
+    empty_object: str,
+) -> None:
+    agreement_id, job_id = uuid4(), uuid4()
+    expected_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/{agreement_id}/"
+        f"analysis/{'9' * 64}/document-analysis.v1.json"
+    )
+    objects: set[str] = set()
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO agreements (
+                    id,organization_id,workspace_id,title,agreement_type,status,
+                    parties,files,processing_state,audit_metadata,audit_events
+                ) VALUES (
+                    :id,:organization_id,:workspace_id,'Response loss','client','draft',
+                    CAST(:empty_json AS json),CAST(:empty_json AS json),'queued',
+                    CAST(:empty_object AS json),CAST(:empty_json AS json)
+                )
+                """
+            ),
+            {
+                "id": agreement_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "empty_json": empty_json,
+                "empty_object": empty_object,
+            },
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO processing_jobs (
+                    id,organization_id,workspace_id,agreement_id,idempotency_key,
+                    profile,state,attempt_count,queued_at
+                ) VALUES (
+                    :id,:organization_id,:workspace_id,:agreement_id,
+                    'response-loss','baseline','queued',0,now()
+                )
+                """
+            ),
+            {
+                "id": job_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "agreement_id": agreement_id,
+            },
+        )
+
+    class ResponseLossProcessor:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+            return CompletedArtifact(job_id=job.id, key=expected_key)
+
+        def process(self, job: ProcessingJob) -> CompletedArtifact:
+            del job
+            objects.add(expected_key)
+            raise TransientProcessingError("response lost after object storage accepted the put")
+
+    class NoRetryQueue:
+        def enqueue(self, *_: object, **__: object) -> None:
+            raise AssertionError("exhausted processing must not enqueue a retry")
+
+    JobProcessor(
+        SQLAlchemyProcessingJobRepository(engine),
+        NoRetryQueue(),
+        ResponseLossProcessor(),
+        retry_policy=RetryPolicy(max_attempts=1),
+    ).handle(job_id, organization_id=organization_id, workspace_id=workspace_id)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert connection.execute(
+            text(
+                """
+                SELECT state,artifact_key FROM processing_artifact_intents
+                WHERE job_id=:job_id
+                """
+            ),
+            {"job_id": job_id},
+        ).one() == ("settled", expected_key)
+    assert objects == {expected_key}
+
+    with Session(engine) as session, session.begin():
+        session.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        api_repository = APIAgreementRepository(session)
+        agreement = api_repository.get(agreement_id)
+        assert agreement is not None
+        deletion = api_repository.accept_deletion(agreement, actor_id=actor_id)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert connection.execute(
+            text(
+                """
+                SELECT object_key,state FROM agreement_deletion_objects
+                WHERE deletion_id=:deletion_id
+                """
+            ),
+            {"deletion_id": deletion.id},
+        ).one() == (expected_key, "pending")
+
+    class ObjectStorage:
+        def delete(self, key: str) -> None:
+            objects.discard(key)
+
+    deletion_repository = SQLAlchemyAgreementDeletionRepository(engine)
+    AgreementDeletionProcessor(deletion_repository, ObjectStorage()).handle(
+        deletion.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+
+    assert objects == set()
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert (
+            connection.scalar(
+                text("SELECT state FROM agreement_deletion_requests WHERE id=:id"),
+                {"id": deletion.id},
+            )
+            == "completed"
+        )
+        assert (
+            connection.scalar(
+                text("SELECT count(*) FROM processing_artifact_intents WHERE job_id=:job_id"),
+                {"job_id": job_id},
+            )
+            == 0
         )

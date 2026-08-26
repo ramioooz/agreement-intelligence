@@ -18,6 +18,7 @@ from agreement_intelligence_platform.observability import (
 from agreement_intelligence_platform.telemetry import operation_span
 from opentelemetry.context import attach, detach
 from sqlalchemy import (
+    CheckConstraint,
     Column,
     DateTime,
     Engine,
@@ -119,8 +120,12 @@ processing_artifact_intents = Table(
     Column("profile", String(100), nullable=False),
     Column("category", String(32), nullable=False),
     Column("artifact_key", String(1024), nullable=False),
+    Column("state", String(32), nullable=False, server_default="expected"),
     Column("created_at", DateTime(timezone=True), server_default=func.now()),
     Column("updated_at", DateTime(timezone=True), server_default=func.now()),
+    CheckConstraint(
+        "state IN ('expected', 'settled')", name="ck_processing_artifact_intents_state"
+    ),
     UniqueConstraint("job_id", name="uq_processing_artifact_intents_job"),
     UniqueConstraint("job_id", "artifact_key", name="uq_processing_artifact_intent_job_key"),
 )
@@ -730,6 +735,7 @@ class SQLAlchemyProcessingJobRepository:
                 "profile": job.profile or "",
                 "category": category,
                 "artifact_key": artifact.key,
+                "state": "expected",
                 "updated_at": now,
             }
             if intent is None:
@@ -957,9 +963,9 @@ class SQLAlchemyProcessingJobRepository:
                     _reconcile_artifact_intent(connection, intent, now=now)
                 else:
                     connection.execute(
-                        processing_artifact_intents.delete().where(
-                            processing_artifact_intents.c.job_id == job_id
-                        )
+                        update(processing_artifact_intents)
+                        .where(processing_artifact_intents.c.job_id == job_id)
+                        .values(state="settled", updated_at=now)
                     )
             connection.execute(
                 update(processing_jobs)

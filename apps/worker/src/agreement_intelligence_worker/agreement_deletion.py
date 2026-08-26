@@ -120,6 +120,7 @@ processing_artifact_intents = Table(
     Column("profile", String(100), nullable=False),
     Column("category", String(32), nullable=False),
     Column("artifact_key", String(1024), nullable=False),
+    Column("state", String(32), nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("updated_at", DateTime(timezone=True), nullable=False),
 )
@@ -768,14 +769,25 @@ class SQLAlchemyAgreementDeletionRepository:
             unresolved_intent = connection.scalar(
                 text(
                     """
-                    SELECT id FROM processing_artifact_intents
-                    WHERE agreement_id=:agreement_id
-                      AND organization_id=:organization_id
-                      AND workspace_id=:workspace_id
+                    SELECT intent.id
+                    FROM processing_artifact_intents AS intent
+                    LEFT JOIN agreement_deletion_objects AS object
+                      ON object.deletion_id=:deletion_id
+                     AND object.category=intent.category
+                     AND object.object_key=intent.artifact_key
+                    WHERE intent.agreement_id=:agreement_id
+                      AND intent.organization_id=:organization_id
+                      AND intent.workspace_id=:workspace_id
+                      AND (
+                          intent.state='expected'
+                          OR object.id IS NULL
+                          OR object.state NOT IN ('deleted', 'preserved')
+                      )
                     LIMIT 1
                     """
                 ),
                 {
+                    "deletion_id": deletion.id,
                     "agreement_id": deletion.agreement_id,
                     "organization_id": deletion.organization_id,
                     "workspace_id": deletion.workspace_id,
