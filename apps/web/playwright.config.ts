@@ -15,5 +15,18 @@ export default defineConfig({
     trace: "off",
     video: "off",
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
+    {
+      name: "release",
+      testMatch: "public-release.spec.ts",
+      workers: 1,
+      use: {
+        ...devices["Desktop Chrome"],
+        screenshot: "only-on-failure",
+        trace: "retain-on-failure",
+        viewport: { width: 1440, height: 900 },
+      },
+    },
+  ],
 });

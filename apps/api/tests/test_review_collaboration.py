@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -23,6 +24,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, inspect, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -92,6 +94,63 @@ def test_deletion_tombstone_blocks_existing_review_reads_and_mutations(
     assert blocked_read.status_code == 404
     assert blocked_comment.status_code == 404
     assert session.query(ReviewCommentRecord).count() == 0
+
+
+def test_review_detail_read_does_not_take_the_mutation_row_lock(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    review = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "unlocked-review-detail",
+        },
+    ).json()
+    statements: list[str] = []
+    original_scalar = session.scalar
+
+    def record_scalar(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        if hasattr(statement, "compile"):
+            statements.append(
+                str(
+                    statement.compile(
+                        dialect=postgresql.dialect()  # type: ignore[no-untyped-call]
+                    )
+                )
+            )
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "scalar", record_scalar)
+
+    response = client.get(f"/reviews/{review['id']}", params=seeded.scope)
+
+    assert response.status_code == 200
+    review_reads = [
+        statement for statement in statements if "FROM review_cases JOIN agreements" in statement
+    ]
+    assert len(review_reads) == 1
+    assert "FOR UPDATE" not in review_reads[0]
+
+    statements.clear()
+    mutation = client.post(
+        f"/reviews/{review['id']}/comments",
+        params=seeded.scope,
+        json={
+            "body": "Mutation paths retain the review row lock.",
+            "idempotency_key": "locked-review-comment",
+        },
+    )
+    assert mutation.status_code == 201
+    mutation_reads = [
+        statement for statement in statements if "FROM review_cases JOIN agreements" in statement
+    ]
+    assert len(mutation_reads) == 1
+    assert "FOR UPDATE" in mutation_reads[0]
 
 
 def test_review_assignment_reassignment_and_comment_are_workspace_scoped_and_idempotent(
@@ -295,6 +354,43 @@ def test_review_start_reapplies_tenant_scope_after_creation_commit(
         json={
             "agreement_id": str(seeded.agreement_id),
             "idempotency_key": "review-tenant-scope",
+        },
+    )
+
+    assert response.status_code == 201
+    assert scoped_organizations == [seeded.organization_id, seeded.organization_id]
+
+
+def test_review_comment_reapplies_tenant_scope_after_creation_commit(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    review = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "comment-tenant-scope-review",
+        },
+    ).json()
+    scoped_organizations: list[UUID] = []
+    original_scope_organization = IdentityService.scope_organization
+
+    def track_scope(service: IdentityService, organization_id: UUID) -> None:
+        scoped_organizations.append(organization_id)
+        original_scope_organization(service, organization_id)
+
+    monkeypatch.setattr(IdentityService, "scope_organization", track_scope)
+
+    response = client.post(
+        f"/reviews/{review['id']}/comments",
+        params=seeded.scope,
+        json={
+            "body": "Confirm the tenant-scoped comment response.",
+            "idempotency_key": "comment-tenant-scope",
         },
     )
 

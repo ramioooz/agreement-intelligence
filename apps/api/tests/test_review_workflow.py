@@ -23,8 +23,10 @@ from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
+from agreement_intelligence_api.reviews import final_package as final_package_module
 from agreement_intelligence_api.reviews import workflow as workflow_module
 from agreement_intelligence_api.reviews import workflow_routes as workflow_routes_module
+from agreement_intelligence_api.reviews.final_package import reserve_final_package_intent
 from agreement_intelligence_api.reviews.models import (
     ReviewAssignmentRecord,
     ReviewCaseRecord,
@@ -444,6 +446,52 @@ def test_decision_restores_tenant_scope_before_refreshing_after_commit(
 
     assert [kind for kind, _ in calls[-2:]] == ["scope", "refresh"]
     assert calls[-2][1] == review.organization_id
+
+
+def test_final_package_reservation_scopes_before_accessing_commit_expired_review(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-expired-review-scope",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.commit()
+    organization_id = review.organization_id
+    workspace_id = review.workspace_id
+    review_id = review.id
+    base = f"reviews/{organization_id}/{workspace_id}/{review_id}/final-package"
+    scoped_organizations: list[object] = []
+    original_commit = session.commit
+    original_scope_transaction = final_package_module._scope_transaction
+
+    def commit_and_detach_review() -> None:
+        original_commit()
+        session.expunge(review)
+
+    def track_scope(active_session: Session, active_organization_id: object) -> None:
+        scoped_organizations.append(active_organization_id)
+        original_scope_transaction(active_session, active_organization_id)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(session, "commit", commit_and_detach_review)
+    monkeypatch.setattr(final_package_module, "_scope_transaction", track_scope)
+
+    package = reserve_final_package_intent(
+        session,
+        review=review,
+        workflow=workflow_record,
+        manifest_key=f"{base}/manifest.json",
+        pdf_key=f"{base}/report.pdf",
+        manifest_checksum="a" * 64,
+        pdf_checksum="b" * 64,
+    )
+
+    assert scoped_organizations == [organization_id]
+    assert package.review_id == review_id
 
 
 def test_stage_activation_assigns_each_eligible_actor_once(session: Session) -> None:

@@ -124,10 +124,11 @@ class VersionComparisonService:
         )
         comparison.processing_job_id = job.id
         try:
-            self._repository.create(comparison)
             response = self._processing.create(job)
+            self._repository.create(comparison)
         except IntegrityError as error:
             self._identity.session.rollback()
+            self._identity.scope_organization(organization_id)
             existing = self._repository.by_identity(
                 agreement_id, baseline_id, target_id, request.analysis_version
             )

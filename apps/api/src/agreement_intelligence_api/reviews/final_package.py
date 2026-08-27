@@ -13,9 +13,15 @@ from agreement_intelligence_api.reviews.models import (
     ReviewFinalPackageRecord,
     ReviewWorkflowRecord,
 )
-from agreement_intelligence_api.reviews.workflow import _scope_transaction
+from agreement_intelligence_api.reviews.workflow import (
+    _scope_transaction as _workflow_scope_transaction,
+)
 
 TERMINAL_WORKFLOW_STATES = {"approved", "rejected", "revision_requested"}
+
+
+def _scope_transaction(session: Session, organization_id: UUID) -> None:
+    _workflow_scope_transaction(session, organization_id)
 
 
 def active_final_package_workflow_for_update(
@@ -43,14 +49,17 @@ def reserve_final_package_intent(
     pdf_checksum: str,
 ) -> ReviewFinalPackageRecord:
     """Commit deterministic keys and return with the active-agreement fence held."""
-    locked = session.scalar(active_final_package_workflow_for_update(review.id))
+    review_id = review.id
+    organization_id = review.organization_id
+    workspace_id = review.workspace_id
+    locked = session.scalar(active_final_package_workflow_for_update(review_id))
     if locked is None or locked.state not in TERMINAL_WORKFLOW_STATES:
         raise HTTPException(status_code=409, detail="final_package_not_ready")
     existing = session.scalar(
         select(ReviewFinalPackageRecord).where(
-            ReviewFinalPackageRecord.review_id == review.id,
-            ReviewFinalPackageRecord.organization_id == review.organization_id,
-            ReviewFinalPackageRecord.workspace_id == review.workspace_id,
+            ReviewFinalPackageRecord.review_id == review_id,
+            ReviewFinalPackageRecord.organization_id == organization_id,
+            ReviewFinalPackageRecord.workspace_id == workspace_id,
         )
     )
     if existing is not None:
@@ -74,9 +83,9 @@ def reserve_final_package_intent(
             raise HTTPException(status_code=409, detail="final_package_intent_conflict")
         return existing
     package = ReviewFinalPackageRecord(
-        organization_id=review.organization_id,
-        workspace_id=review.workspace_id,
-        review_id=review.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        review_id=review_id,
         workflow_id=workflow.id,
         state=workflow.state,
         manifest_key=manifest_key,
@@ -86,7 +95,7 @@ def reserve_final_package_intent(
     )
     session.add(package)
     session.commit()
-    _scope_transaction(session, review.organization_id)
-    if session.scalar(active_final_package_workflow_for_update(review.id)) is None:
+    _scope_transaction(session, organization_id)
+    if session.scalar(active_final_package_workflow_for_update(review_id)) is None:
         raise HTTPException(status_code=409, detail="final_package_not_ready")
     return package

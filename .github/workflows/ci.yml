@@ -100,6 +100,9 @@ jobs:
       - name: Install locked dependencies
         run: make setup
 
+      - name: Validate public release documentation
+        run: tests/docs/test-documentation-contract.sh
+
       - name: Audit JavaScript dependencies
         run: pnpm audit --audit-level high
 

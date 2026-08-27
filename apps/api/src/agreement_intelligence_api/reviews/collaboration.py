@@ -87,6 +87,7 @@ class ReviewCollaborationService:
         self._session.add(record)
         try:
             self._session.commit()
+            self._identity.scope_organization(organization_id)
         except IntegrityError as error:
             self._session.rollback()
             existing = self._session.scalar(
@@ -104,7 +105,9 @@ class ReviewCollaborationService:
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID, review_id: UUID
     ) -> ReviewCaseResponse:
         self._authorize_read(principal, organization_id, workspace_id)
-        return self._review_response(self._review(review_id, organization_id, workspace_id))
+        return self._review_response(
+            self._review(review_id, organization_id, workspace_id, for_update=False)
+        )
 
     def inbox(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
@@ -140,7 +143,7 @@ class ReviewCollaborationService:
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID, review_id: UUID
     ) -> list[ReviewCommentResponse]:
         self._authorize_read(principal, organization_id, workspace_id)
-        self._review(review_id, organization_id, workspace_id)
+        self._review(review_id, organization_id, workspace_id, for_update=False)
         records = self._session.scalars(
             select(ReviewCommentRecord)
             .where(ReviewCommentRecord.organization_id == organization_id)
@@ -342,6 +345,7 @@ class ReviewCollaborationService:
                 idempotency_key=f"comment:{record.id}:owner",
             )
         self._session.commit()
+        self._identity.scope_organization(organization_id)
         return self._comment_response(record), True
 
     def _authorize_assign(
@@ -367,17 +371,24 @@ class ReviewCollaborationService:
             hide_resource()
 
     def _review(
-        self, review_id: UUID, organization_id: UUID, workspace_id: UUID
+        self,
+        review_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        *,
+        for_update: bool = True,
     ) -> ReviewCaseRecord:
-        record = self._session.scalar(
+        statement = (
             select(ReviewCaseRecord)
             .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewCaseRecord.id == review_id)
             .where(ReviewCaseRecord.organization_id == organization_id)
             .where(ReviewCaseRecord.workspace_id == workspace_id)
             .where(AgreementRecord.deletion_requested_at.is_(None))
-            .with_for_update()
         )
+        if for_update:
+            statement = statement.with_for_update()
+        record = self._session.scalar(statement)
         if record is None:
             hide_resource()
         return record

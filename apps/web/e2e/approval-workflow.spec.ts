@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
@@ -261,4 +262,15 @@ test("legal and business approvers complete a routed review with immutable packa
     fullPage: true,
     path: testInfo.outputPath("approval-workflow.png"),
   });
+  if (process.env.PUBLIC_RELEASE_SCREENSHOT_DIR) {
+    await mkdir(process.env.PUBLIC_RELEASE_SCREENSHOT_DIR, { recursive: true });
+    await page.screenshot({
+      animations: "disabled",
+      fullPage: true,
+      path: resolve(
+        process.env.PUBLIC_RELEASE_SCREENSHOT_DIR,
+        "approval-workflow.png",
+      ),
+    });
+  }
 });
