@@ -225,7 +225,17 @@ def test_processor_writes_a_versioned_cited_document_analysis_manifest() -> None
     storage, job = _processor_input()
     processor = DocumentUnderstandingProcessor(storage)
 
-    artifact = processor.process(job)
+    prepared = processor.prepare(job)
+    artifact = prepared.artifact
+    assert artifact.key not in storage.objects
+    assert prepared.content is not None
+    assert prepared.content_type is not None
+    assert storage.put_immutable(
+        artifact.key,
+        prepared.content,
+        content_type=prepared.content_type,
+    )
+    processor.finalize(None, job, prepared, prepared.content)
     manifest = json.loads(storage.objects[artifact.key])
 
     assert artifact.key == (
@@ -657,7 +667,11 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
     monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: object())
     monkeypatch.setattr(worker_main, "processing_engine_from_url", lambda url: object())
     monkeypatch.setattr(worker_main, "SQSProcessingQueue", lambda **kwargs: object())
-    monkeypatch.setattr(worker_main, "SQLAlchemyProcessingJobRepository", lambda engine: object())
+    monkeypatch.setattr(
+        worker_main,
+        "SQLAlchemyProcessingJobRepository",
+        lambda engine, **kwargs: captured.update(kwargs) or object(),
+    )
     monkeypatch.setattr(worker_main, "S3ObjectStorage", lambda **kwargs: object())
     configured_sink = object()
     monkeypatch.setattr(
@@ -703,6 +717,7 @@ def test_processing_runtime_injects_provider_and_post_completion_evaluation_hand
 
     assert runtime is not None
     assert captured["analysis_provider"] is configured_provider
+    assert "storage" in captured
     assert captured["fallback_model_comparator"] is configured_comparator
     completion_handler = cast(Any, captured["completion_handler"])
     assert completion_handler.normal.handlers == (

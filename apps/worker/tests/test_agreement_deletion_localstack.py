@@ -3,7 +3,12 @@ from uuid import uuid4
 
 import boto3
 import pytest
+from agreement_intelligence_worker.artifact_commit import (
+    PreparedArtifact,
+    write_or_read_canonical,
+)
 from agreement_intelligence_worker.document_processor import S3ObjectStorage
+from agreement_intelligence_worker.processing import CompletedArtifact
 
 
 def test_localstack_object_deletion_is_idempotent_for_real_key_shapes() -> None:
@@ -36,6 +41,14 @@ def test_localstack_object_deletion_is_idempotent_for_real_key_shapes() -> None:
             storage.delete(key)
             storage.delete(key)
         assert client.list_objects_v2(Bucket=bucket).get("KeyCount") == 0
+
+        commit_key = f"comparisons/{uuid4()}/version-comparison.v1.json"
+        artifact = CompletedArtifact(job_id=uuid4(), key=commit_key)
+        first = PreparedArtifact(artifact, b"first", "application/json")
+        second = PreparedArtifact(artifact, b"second", "application/json")
+        assert write_or_read_canonical(storage, first) == b"first"
+        assert write_or_read_canonical(storage, second) == b"first"
+        assert storage.read(commit_key) == b"first"
     finally:
         for item in client.list_objects_v2(Bucket=bucket).get("Contents", []):
             client.delete_object(Bucket=bucket, Key=item["Key"])

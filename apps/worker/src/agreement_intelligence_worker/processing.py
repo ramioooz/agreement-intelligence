@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -29,9 +29,11 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     Uuid,
+    column,
     create_engine,
     func,
     select,
+    table,
     text,
     update,
 )
@@ -41,6 +43,12 @@ from agreement_intelligence_worker.agreement_deletion import (
     deletion_outbox,
     deletion_requests,
 )
+from agreement_intelligence_worker.artifact_commit import (
+    ImmutableArtifactStorage,
+    PreparedArtifact,
+    write_or_read_canonical,
+)
+from agreement_intelligence_worker.processing_types import CompletedArtifact as CompletedArtifact
 
 logger = logging.getLogger("agreement_intelligence.worker")
 
@@ -136,6 +144,14 @@ processing_artifact_intents = Table(
     UniqueConstraint("job_id", name="uq_processing_artifact_intents_job"),
     UniqueConstraint("job_id", "artifact_key", name="uq_processing_artifact_intent_job_key"),
 )
+version_comparison_runs = table(
+    "version_comparison_runs",
+    column("processing_job_id"),
+    column("state"),
+    column("failure_category"),
+    column("failure_message"),
+    column("updated_at"),
+)
 
 
 class TransientProcessingError(Exception):
@@ -173,12 +189,6 @@ class ProcessingJob:
     completed_at: datetime | None = None
     claim_token: UUID | None = None
     claim_lease_expires_at: datetime | None = None
-
-
-@dataclass(frozen=True)
-class CompletedArtifact:
-    job_id: UUID
-    key: str
 
 
 @dataclass(frozen=True)
@@ -240,6 +250,16 @@ class JobRepository(Protocol):
     ) -> None: ...
 
 
+class PreparedArtifactRepository(Protocol):
+    def commit_prepared(
+        self,
+        claimed_job: ProcessingJob,
+        prepared: PreparedArtifact,
+        *,
+        finalize: Callable[[Any, ProcessingJob, PreparedArtifact, bytes | None], None],
+    ) -> bool: ...
+
+
 class ProcessingQueue(Protocol):
     def enqueue(
         self,
@@ -264,7 +284,19 @@ class DeletionMessageProcessor(Protocol):
 class AgreementProcessor(Protocol):
     def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact: ...
 
-    def process(self, job: ProcessingJob) -> CompletedArtifact: ...
+
+class PreparedAgreementProcessor(AgreementProcessor, Protocol):
+    """Expensive preparation is side-effect-free; finalization runs inside a commit fence."""
+
+    def prepare(self, job: ProcessingJob) -> PreparedArtifact: ...
+
+    def finalize(
+        self,
+        connection: Any,
+        job: ProcessingJob,
+        prepared: PreparedArtifact,
+        canonical_content: bytes | None,
+    ) -> None: ...
 
 
 class CompletionHandler(Protocol):
@@ -341,11 +373,30 @@ class JobProcessor:
             )
             return
         expected_artifact: CompletedArtifact | None = None
+        artifact: CompletedArtifact | None = None
+        prepared_commit = False
         try:
             expected_artifact = self._processor.expected_artifact(job)
             if not self._repository.expect(job, expected_artifact):
                 return
-            artifact = self._processor.process(job)
+            prepare = getattr(self._processor, "prepare", None)
+            if callable(prepare):
+                prepared_processor = cast(PreparedAgreementProcessor, self._processor)
+                prepared = prepared_processor.prepare(job)
+                artifact = prepared.artifact
+                if artifact != expected_artifact:
+                    raise RuntimeError("processor prepared an artifact outside its durable intent")
+                if not cast(PreparedArtifactRepository, self._repository).commit_prepared(
+                    job,
+                    prepared,
+                    finalize=prepared_processor.finalize,
+                ):
+                    return
+                prepared_commit = True
+            else:
+                artifact = cast(CompletedArtifact, cast(Any, self._processor).process(job))
+        except ProcessingLeaseHeldError:
+            raise
         except TransientProcessingError as error:
             self._handle_transient_failure(job, str(error), expected_artifact=expected_artifact)
         except PermanentProcessingError as error:
@@ -362,9 +413,10 @@ class JobProcessor:
                 expected_artifact=expected_artifact,
             )
         else:
+            assert artifact is not None
             if artifact != expected_artifact:
                 raise RuntimeError("processor returned an artifact outside its durable intent")
-            if not self._complete(job, artifact):
+            if not prepared_commit and not self._complete(job, artifact):
                 discard = getattr(self._processor, "discard", None)
                 if callable(discard):
                     discard(artifact)
@@ -623,8 +675,14 @@ class SQSProcessingMessageReceiver:
 
 
 class SQLAlchemyProcessingJobRepository:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        storage: ImmutableArtifactStorage | None = None,
+    ) -> None:
         self._engine = engine
+        self._storage = storage
 
     def claim(
         self,
@@ -819,6 +877,112 @@ class SQLAlchemyProcessingJobRepository:
                         processing_artifact_intents.c.state == "settled",
                     )
                     .values(state="expected", updated_at=now)
+                )
+            return True
+
+    def commit_prepared(
+        self,
+        claimed_job: ProcessingJob,
+        prepared: PreparedArtifact,
+        *,
+        finalize: Callable[[Any, ProcessingJob, PreparedArtifact, bytes | None], None],
+    ) -> bool:
+        """Fence immutable object creation with agreement/job ownership and DB completion."""
+        artifact = prepared.artifact
+        if artifact.job_id != claimed_job.id:
+            raise RuntimeError("prepared artifact belongs to another processing job")
+        organization_id = _required_tenant_scope(
+            claimed_job.organization_id, "organization_id"
+        )
+        workspace_id = _required_tenant_scope(claimed_job.workspace_id, "workspace_id")
+        category = _late_artifact_category(claimed_job.profile or "", artifact.key)
+        now = datetime.now(UTC)
+        with self._engine.begin() as connection:
+            _set_tenant_context(connection, organization_id, workspace_id)
+            context: Mapping[str, Any] = {
+                "id": claimed_job.id,
+                "agreement_id": claimed_job.agreement_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "profile": claimed_job.profile,
+            }
+            agreement = _agreement_for_update(connection, context)
+            if agreement is None:
+                return False
+            job = _job_for_update(connection, claimed_job.id)
+            if job is None:
+                if agreement["deletion_requested_at"] is not None and category is not None:
+                    _inventory_late_artifact(connection, context, artifact.key, now=now)
+                return False
+            if not _matches_tenant_scope(job, organization_id, workspace_id):
+                return False
+            if not _owns_claim(job, claimed_job):
+                if agreement["deletion_requested_at"] is not None and category is not None:
+                    _inventory_late_artifact(connection, job, artifact.key, now=now)
+                    return False
+                raise ProcessingLeaseHeldError("processing job lease is no longer owned")
+            intent = _artifact_intent(
+                connection,
+                claimed_job.id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                lock=True,
+            )
+            if category is not None and (
+                intent is None
+                or intent["artifact_key"] != artifact.key
+                or intent["category"] != category
+                or intent["state"] != "expected"
+            ):
+                raise RuntimeError("prepared artifact has no current durable intent")
+            if agreement["deletion_requested_at"] is not None:
+                if intent is not None:
+                    _reconcile_artifact_intent(connection, intent, now=now)
+                return False
+            canonical_content: bytes | None = None
+            if prepared.content is not None:
+                if self._storage is None:
+                    raise RuntimeError("artifact storage is not configured")
+                canonical_content = write_or_read_canonical(self._storage, prepared)
+            finalize(connection, claimed_job, prepared, canonical_content)
+            existing_artifact = connection.execute(
+                select(processing_artifacts.c.id).where(
+                    processing_artifacts.c.job_id == claimed_job.id,
+                    processing_artifacts.c.artifact_key == artifact.key,
+                )
+            ).one_or_none()
+            if existing_artifact is None and category is not None:
+                connection.execute(
+                    processing_artifacts.insert().values(
+                        id=uuid4(),
+                        job_id=claimed_job.id,
+                        organization_id=job["organization_id"],
+                        workspace_id=job["workspace_id"],
+                        agreement_id=job["agreement_id"],
+                        artifact_key=artifact.key,
+                        created_at=now,
+                    )
+                )
+            connection.execute(
+                update(processing_jobs)
+                .where(processing_jobs.c.id == claimed_job.id)
+                .values(
+                    state="completed",
+                    completed_at=now,
+                    failure_category=None,
+                    failure_message=None,
+                    next_retry_at=None,
+                    claim_token=None,
+                    claim_lease_expires_at=None,
+                    updated_at=now,
+                )
+            )
+            _update_agreement_processing_state(connection, job, state="completed", updated_at=now)
+            if intent is not None:
+                connection.execute(
+                    processing_artifact_intents.delete().where(
+                        processing_artifact_intents.c.job_id == claimed_job.id
+                    )
                 )
             return True
 
@@ -1122,6 +1286,17 @@ class SQLAlchemyProcessingJobRepository:
                     updated_at=now,
                 )
             )
+            if job["profile"] == "version-comparison":
+                connection.execute(
+                    update(version_comparison_runs)
+                    .where(version_comparison_runs.c.processing_job_id == job_id)
+                    .values(
+                        state="failed",
+                        failure_category=category,
+                        failure_message=message,
+                        updated_at=now,
+                    )
+                )
             _update_agreement_processing_state(connection, job, state="failed", updated_at=now)
 
 

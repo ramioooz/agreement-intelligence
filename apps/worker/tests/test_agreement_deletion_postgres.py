@@ -19,6 +19,7 @@ from agreement_intelligence_worker.agreement_deletion import (
     AgreementDeletionProcessor,
     SQLAlchemyAgreementDeletionRepository,
 )
+from agreement_intelligence_worker.artifact_commit import PreparedArtifact
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     JobProcessor,
@@ -967,6 +968,28 @@ def _assert_exhausted_response_loss_cleanup(
         f"analysis/{'9' * 64}/document-analysis.v1.json"
     )
     objects: set[str] = set()
+
+    class RejectLateWriteStorage:
+        def __init__(self) -> None:
+            self.puts: list[str] = []
+
+        def put_immutable(self, key: str, content: bytes, *, content_type: str) -> bool:
+            del content, content_type
+            self.puts.append(key)
+            return True
+
+        def read(self, key: str) -> bytes | None:
+            del key
+            return None
+
+    late_storage = RejectLateWriteStorage()
+    late_repository = SQLAlchemyProcessingJobRepository(engine, storage=late_storage)
+    artifact = CompletedArtifact(job_id=job_id, key=expected_key)
+    prepared = PreparedArtifact(
+        artifact=artifact,
+        content=b'{"schema_version":"document-analysis.v1"}',
+        content_type="application/json",
+    )
     with engine.begin() as connection:
         connection.execute(
             text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -1017,17 +1040,31 @@ def _assert_exhausted_response_loss_cleanup(
         def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
             return CompletedArtifact(job_id=job.id, key=expected_key)
 
-        def process(self, job: ProcessingJob) -> CompletedArtifact:
-            del job
-            objects.add(expected_key)
+        def prepare(self, job: ProcessingJob) -> PreparedArtifact:
+            return PreparedArtifact(
+                artifact=self.expected_artifact(job),
+                content=b'{"schema_version":"document-analysis.v1"}',
+                content_type="application/json",
+            )
+
+        def finalize(self, *_: object) -> None:
+            raise AssertionError("a lost object-store response must roll back before finalize")
+
+    class ResponseLossStorage:
+        def put_immutable(self, key: str, content: bytes, *, content_type: str) -> bool:
+            del content, content_type
+            objects.add(key)
             raise TransientProcessingError("response lost after object storage accepted the put")
+
+        def read(self, key: str) -> bytes | None:
+            return b"stored" if key in objects else None
 
     class NoRetryQueue:
         def enqueue(self, *_: object, **__: object) -> None:
             raise AssertionError("exhausted processing must not enqueue a retry")
 
     JobProcessor(
-        SQLAlchemyProcessingJobRepository(engine),
+        SQLAlchemyProcessingJobRepository(engine, storage=ResponseLossStorage()),
         NoRetryQueue(),
         ResponseLossProcessor(),
         retry_policy=RetryPolicy(max_attempts=1),
@@ -1099,7 +1136,6 @@ def _assert_exhausted_response_loss_cleanup(
         workspace_id=workspace_id,
     )
     assert claimed is not None
-    artifact = CompletedArtifact(job_id=job_id, key=expected_key)
     assert processing_repository.expect(claimed, artifact)
     with pytest.raises(RuntimeError, match="processing job lease is held"):
         processing_repository.claim(
@@ -1139,6 +1175,9 @@ def _assert_exhausted_response_loss_cleanup(
     assert recovered_claim.claim_token != claimed.claim_token
     assert recovered_claim.attempt_count == claimed.attempt_count + 1
     assert processing_repository.expect(recovered_claim, artifact)
+    with pytest.raises(RuntimeError, match="processing job lease is no longer owned"):
+        late_repository.commit_prepared(claimed, prepared, finalize=lambda *_: None)
+    assert late_storage.puts == []
     with pytest.raises(RuntimeError, match="processing job lease is no longer owned"):
         processing_repository.complete(
             job_id,
@@ -1304,3 +1343,11 @@ def _assert_exhausted_response_loss_cleanup(
             )
             == "completed"
         )
+
+    committed = late_repository.commit_prepared(
+        claimed,
+        prepared,
+        finalize=lambda *_: None,
+    )
+    assert committed is False
+    assert late_storage.puts == []
