@@ -17,7 +17,7 @@ contains provider keys, tokens, cookies, prompts, provider bodies, or raw agreem
 | Provider contract | No key exposure; smoke only when an ignored key is already safely available | Owner authorizes external request |
 | Visibility | Not automated | Owner decides after manual pass |
 
-The branch/PR evidence section is updated after the final rehearsal. The owner manual pass
+The branch/PR evidence below records the final automated rehearsal. The owner manual pass
 remains Pending until every release-critical case is executed.
 
 ## Non-destructive automated gate
@@ -64,22 +64,24 @@ passing the configured-provider contract and no-key behavior.
 
 ## Evidence record
 
-Populate on the PR commit:
+Automated rehearsal of commit `24bc47fd17e850160aadcffabd4b9297105c1aab` completed
+at `2026-08-27T10:17:02Z` in a disposable fresh clone. The follow-up evidence-only commit
+does not alter the exercised source, configuration, or test paths.
 
 | Item | Commit/time | Result | Safe evidence |
 | --- | --- | --- | --- |
-| Clean setup and tool versions | Pending | Pending | Version list |
-| No-key `stack-up` / `stack-check` | Pending | Pending | Exit/status summary |
-| Documentation links/contracts/format | Pending | Pending | File/link/case counts |
-| `make check` with disposable PostgreSQL | Pending | Pending | Test/build counts |
-| Production dependency audits | Pending | Pending | Exit/finding counts |
-| Full-history secret scan | Pending | Pending | Commit/file scan counts only |
-| Terraform/LocalStack | Pending | Pending | Exit/resource assertions |
-| Deterministic `make ai-eval` | Pending | Pending | Report checksum/threshold summary |
-| Playwright release project | Pending | Pending | Passed/failed/skipped counts |
-| Provider contract/no-key degradation | Pending | Pending | Mode and safe state summary |
-| Live provider smoke | Pending | Pending/Blocked | Safe model/latency/usage/validation only |
-| Owner manual `MQA-*` pass | Pending | Pending | Case-result matrix |
+| Clean setup and tool versions | `24bc47f` / `2026-08-27` | Pass | Node `22.23.1`; pnpm `10.28.0`; uv `0.11.29`; locked installs completed |
+| No-key `stack-up` / `stack-check` | `24bc47f` / `2026-08-27` | Pass | Both provider-key variables empty; API, web, worker, MCP, PostgreSQL, Redis, Keycloak, LocalStack, and telemetry services healthy |
+| Documentation links/contracts/format | `24bc47f` / `2026-08-27` | Pass | 60 source Markdown files (61 after the generated evaluation report); 47 stable `MQA-*` cases; link, structure, and Prettier checks passed |
+| `make check` with disposable PostgreSQL | `24bc47f` / `2026-08-27` | Pass | 64 web tests and 506 Python tests passed; lint, types, CI/auth contracts, and all production builds passed |
+| Production dependency audits | `24bc47f` / `2026-08-27` | Pass | pnpm and published Python dependencies: 0 known vulnerabilities; four internal packages are not published on PyPI and are listed as unauditable project packages |
+| Full-history secret scan | `24bc47f` / `2026-08-27` | Pass | 226 reachable commits / 4.33 MB scanned; 0 leaks; staged release patch scan also found 0 leaks |
+| Terraform/LocalStack | `24bc47f` / `2026-08-27` | Pass | Terraform valid; Checkov 29 passed / 0 failed; emulated apply, encrypted/private bucket, queue/DLQ, secret, and destroy assertions passed |
+| Deterministic `make ai-eval` | `24bc47f` / `2026-08-27` | Pass | SHA-256 `f1a10a531f0c3c5c2240c6a65d187dad8caf445749a8bc91582a757bc7157831`; all thresholds passed; 0 tokens, USD cost, and provider latency |
+| Playwright release project | `24bc47f` / `2026-08-27` | Pass | 5 passed / 0 failed / 0 skipped in one worker, including the public repository-to-comparison journey |
+| Provider contract/no-key degradation | `24bc47f` / `2026-08-27` | Pass | API/worker configuration tests passed; deterministic analysis and lexical retrieval remained usable without a key; provider provenance stayed empty rather than fabricated |
+| Live provider smoke | `24bc47f` / `2026-08-27` | Blocked | No authorized provider secret was available; no external request was sent and no secret was read or logged |
+| Owner manual `MQA-*` pass | PR head / pre-visibility | Pending | 47 cases remain for owner execution and evidence review before the visibility decision |
 
 ## Honest release limitations
 
