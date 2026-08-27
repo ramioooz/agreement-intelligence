@@ -331,6 +331,16 @@ def test_pdf_renderer_uses_packaged_unicode_font_without_system_fonts(
     assert "اتفاقية المورد" in extracted_text
 
 
+def test_pdf_renderer_is_reproducible_with_a_stable_creation_date() -> None:
+    creation_date = datetime(2026, 8, 27, 10, 0, tzinfo=UTC)
+    lines = ["Agreement Intelligence - Final Review Package", "Outcome: rejected"]
+
+    first = _render_pdf(lines, creation_date=creation_date)
+    second = _render_pdf(lines, creation_date=creation_date)
+
+    assert first == second
+
+
 @dataclass(frozen=True)
 class _SeededReview:
     organization_id: UUID
