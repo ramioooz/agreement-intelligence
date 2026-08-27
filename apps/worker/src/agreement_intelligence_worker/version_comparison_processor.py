@@ -172,9 +172,7 @@ class VersionComparisonProcessor:
             baseline_key = _artifact_key_for_version(connection, baseline["id"])
             target_key = _artifact_key_for_version(connection, target["id"])
 
-        baseline_version = canonical_version_from_manifest(
-            _manifest(self._storage, baseline_key)
-        )
+        baseline_version = canonical_version_from_manifest(_manifest(self._storage, baseline_key))
         target_version = canonical_version_from_manifest(_manifest(self._storage, target_key))
         materiality_configuration = resolve_configuration(
             AIOperation.VERSION_MATERIALITY,
@@ -284,9 +282,7 @@ class VersionComparisonProcessor:
             raise PermanentProcessingError("Version comparison artifact is invalid")
         run = (
             connection.execute(
-                select(_runs)
-                .where(_runs.c.processing_job_id == job.id)
-                .with_for_update()
+                select(_runs).where(_runs.c.processing_job_id == job.id).with_for_update()
             )
             .mappings()
             .one_or_none()
@@ -343,6 +339,7 @@ class VersionComparisonProcessor:
                 updated_at=now,
             )
         )
+
 
 def _manifest(storage: ObjectStorage, key: str) -> dict[str, object]:
     raw = storage.read(key)

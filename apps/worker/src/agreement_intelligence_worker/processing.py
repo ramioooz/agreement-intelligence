@@ -891,9 +891,7 @@ class SQLAlchemyProcessingJobRepository:
         artifact = prepared.artifact
         if artifact.job_id != claimed_job.id:
             raise RuntimeError("prepared artifact belongs to another processing job")
-        organization_id = _required_tenant_scope(
-            claimed_job.organization_id, "organization_id"
-        )
+        organization_id = _required_tenant_scope(claimed_job.organization_id, "organization_id")
         workspace_id = _required_tenant_scope(claimed_job.workspace_id, "workspace_id")
         category = _late_artifact_category(claimed_job.profile or "", artifact.key)
         now = datetime.now(UTC)
