@@ -630,6 +630,11 @@ class ReviewWorkflowCoordinator:
     ) -> None:
         self._session.flush()
         event_id = uuid4()
+        package_base = (
+            f"reviews/{workflow.organization_id}/{workflow.workspace_id}/"
+            f"{workflow.review_id}/final-package"
+        )
+        terminal = event_type == "review.workflow.terminal"
         self._session.add(
             ReviewWorkflowOutboxRecord(
                 id=event_id,
@@ -645,9 +650,11 @@ class ReviewWorkflowCoordinator:
                         event_id=event_id,
                         correlation_id=correlation_id,
                     )
-                    if event_type == "review.workflow.terminal"
+                    if terminal
                     else None
                 ),
+                package_manifest_key=f"{package_base}/manifest.json" if terminal else None,
+                package_pdf_key=f"{package_base}/report.pdf" if terminal else None,
                 delivered_at=None,
                 created_at=datetime.now(UTC),
             )
@@ -696,6 +703,9 @@ class ReviewWorkflowCoordinator:
             .where(PlaybookEvaluationRecord.agreement_id == review.agreement_id)
             .order_by(PlaybookFindingRecord.id)
         ).all()
+        package_base = (
+            f"reviews/{workflow.organization_id}/{workflow.workspace_id}/{review.id}/final-package"
+        )
         return {
             "organization_id": str(workflow.organization_id),
             "workspace_id": str(workflow.workspace_id),
@@ -706,6 +716,8 @@ class ReviewWorkflowCoordinator:
             else None,
             "workflow_id": str(workflow.id),
             "policy_version_id": str(workflow.policy_version_id),
+            "manifest_key": f"{package_base}/manifest.json",
+            "pdf_key": f"{package_base}/report.pdf",
             "state": workflow.state,
             "revision": workflow.revision,
             "decisions": [

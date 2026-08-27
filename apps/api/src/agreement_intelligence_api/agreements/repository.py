@@ -29,7 +29,12 @@ from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
     ProcessingJobRecord,
 )
-from agreement_intelligence_api.reviews.models import ReviewCaseRecord, ReviewFinalPackageRecord
+from agreement_intelligence_api.reviews.models import (
+    ReviewCaseRecord,
+    ReviewFinalPackageRecord,
+    ReviewWorkflowOutboxRecord,
+    ReviewWorkflowRecord,
+)
 
 
 class SQLAlchemyAgreementRepository:
@@ -310,12 +315,35 @@ class SQLAlchemyAgreementRepository:
                 ("review_pdf", pdf_key),
             )
         ]
+        terminal_package_intents = [
+            (category, key)
+            for manifest_key, pdf_key in self._session.execute(
+                select(
+                    ReviewWorkflowOutboxRecord.package_manifest_key,
+                    ReviewWorkflowOutboxRecord.package_pdf_key,
+                )
+                .join(
+                    ReviewWorkflowRecord,
+                    ReviewWorkflowRecord.id == ReviewWorkflowOutboxRecord.workflow_id,
+                )
+                .join(ReviewCaseRecord, ReviewCaseRecord.id == ReviewWorkflowRecord.review_id)
+                .where(ReviewCaseRecord.agreement_id == agreement.id)
+                .where(ReviewWorkflowOutboxRecord.event_type == "review.workflow.terminal")
+                .where(ReviewWorkflowOutboxRecord.package_snapshot.is_not(None))
+            )
+            for category, key in (
+                ("review_manifest", manifest_key),
+                ("review_pdf", pdf_key),
+            )
+            if key is not None
+        ]
         objects = [
             *(("source", key) for key in source_keys),
             *artifact_objects,
             *artifact_intents,
             *(("comparison", key) for key in comparison_keys),
             *package_objects,
+            *terminal_package_intents,
         ]
         return list(dict.fromkeys(objects))
 

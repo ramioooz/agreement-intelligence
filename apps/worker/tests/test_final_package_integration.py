@@ -22,6 +22,7 @@ from agreement_intelligence_worker.workflow_outbox_relay import WorkflowOutboxRe
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, text
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.engine import Engine, make_url
 
 
@@ -39,12 +40,14 @@ class _ConcurrentCheckpointStore:
         event_type: str,
     ) -> None:
         with self._lock:
-            self.calls.append(event_id)
+            if event_id not in self.calls:
+                self.calls.append(event_id)
 
 
 class _SeededTerminalEvent(TypedDict):
     organization_id: UUID
     workspace_id: UUID
+    agreement_id: UUID
     review_id: UUID
     workflow_id: UUID
     event_id: UUID
@@ -76,6 +79,22 @@ class _FailOncePackageStorage:
             self.failed = True
             raise RuntimeError("simulated partial package write")
         return self._delegate.put_immutable(key, content, content_type=content_type, sha256=sha256)
+
+
+class _RecordingPackageStorage:
+    def __init__(self, delegate: S3FinalPackageStorage) -> None:
+        self._delegate = delegate
+        self.put_keys: set[str] = set()
+
+    def read(self, key: str) -> StoredPackageObject | None:
+        return self._delegate.read(key)
+
+    def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        created = self._delegate.put_immutable(
+            key, content, content_type=content_type, sha256=sha256
+        )
+        self.put_keys.add(key)
+        return created
 
 
 def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_package() -> None:
@@ -162,9 +181,46 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         assert backfilled["correlation_id"] == seeded["correlation_id"]
         assert backfilled["package_snapshot"]["state"] == "rejected"
         assert backfilled["package_snapshot"]["organization_id"] == str(seeded["organization_id"])
+        package_base = (
+            f"reviews/{seeded['organization_id']}/{seeded['workspace_id']}/"
+            f"{seeded['review_id']}/final-package"
+        )
+        assert backfilled["package_manifest_key"] == f"{package_base}/manifest.json"
+        assert backfilled["package_pdf_key"] == f"{package_base}/report.pdf"
+        assert backfilled["package_snapshot"]["manifest_key"] == backfilled["package_manifest_key"]
+        assert backfilled["package_snapshot"]["pdf_key"] == backfilled["package_pdf_key"]
         assert backfilled["package_snapshot"]["provenance"]["workflow_event_id"] == str(
             backfilled["id"]
         )
+        with (
+            pytest.raises(Exception, match="ck_review_workflow_outbox_terminal_package"),
+            migration_engine.begin() as connection,
+        ):
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(seeded["organization_id"])},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO review_workflow_outbox (
+                        id, workflow_id, organization_id, workspace_id, event_type,
+                        correlation_id, idempotency_key, delivered_at, processed_at
+                    ) VALUES (
+                        :id, :workflow_id, :organization_id, :workspace_id,
+                        'review.workflow.terminal', 'invalid-terminal-package',
+                        :idempotency_key, NULL, NULL
+                    )
+                    """
+                ),
+                {
+                    "id": uuid4(),
+                    "workflow_id": seeded["workflow_id"],
+                    "organization_id": seeded["organization_id"],
+                    "workspace_id": seeded["workspace_id"],
+                    "idempotency_key": f"invalid-terminal-package-{uuid4()}",
+                },
+            )
         seeded["event_id"] = backfilled["id"]
         seeded["correlation_id"] = backfilled["correlation_id"]
         second_backfilled = _backfilled_event(migration_engine, second_seeded)
@@ -300,7 +356,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                         "SELECT count(*) FROM review_workflow_outbox "
                         "WHERE idempotency_key LIKE :pattern"
                     ),
-                    {"pattern": "workflow:%:terminal-package-backfill:0034"},
+                    {"pattern": "workflow:%:terminal-package-backfill:0035"},
                 )
                 == 2
             )
@@ -340,7 +396,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                 .mappings()
                 .one()
             )
-        assert not ordinary_source["idempotency_key"].endswith("terminal-package-backfill:0034")
+        assert not ordinary_source["idempotency_key"].endswith("terminal-package-backfill:0035")
         assert ordinary_source["package_snapshot"] is not None
         ordinary_partial_storage = _FailOncePackageStorage(object_storage)
         ordinary_partial_processor = SQLAlchemyWorkflowEventProcessor(
@@ -395,6 +451,97 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         )
         assert sha256(ordinary_pdf).hexdigest() == ordinary_package["pdf_checksum"]
 
+        commit_failure_event = _seed_terminal_event(engine)
+        commit_failure_base = (
+            f"reviews/{commit_failure_event['organization_id']}/"
+            f"{commit_failure_event['workspace_id']}/"
+            f"{commit_failure_event['review_id']}/final-package"
+        )
+        expected_commit_failure_keys = {
+            f"{commit_failure_base}/manifest.json",
+            f"{commit_failure_base}/report.pdf",
+        }
+        commit_failure_storage = _RecordingPackageStorage(object_storage)
+        fail_commit = True
+
+        def fail_after_storage(_: object) -> None:
+            nonlocal fail_commit
+            if fail_commit and expected_commit_failure_keys <= commit_failure_storage.put_keys:
+                fail_commit = False
+                raise RuntimeError("simulated database commit failure after storage")
+
+        sqlalchemy_event.listen(engine, "commit", fail_after_storage)
+        try:
+            with pytest.raises(RuntimeError, match="database commit failure after storage"):
+                SQLAlchemyWorkflowEventProcessor(
+                    engine,
+                    checkpoints,
+                    TerminalReviewPackageGenerator(commit_failure_storage),
+                ).process(
+                    commit_failure_event["event_id"],
+                    organization_id=commit_failure_event["organization_id"],
+                    workspace_id=commit_failure_event["workspace_id"],
+                )
+        finally:
+            sqlalchemy_event.remove(engine, "commit", fail_after_storage)
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(commit_failure_event["organization_id"])},
+            )
+            failed_commit_event = (
+                connection.execute(
+                    text(
+                        "SELECT processed_at, package_manifest_key, package_pdf_key "
+                        "FROM review_workflow_outbox WHERE id=:event_id"
+                    ),
+                    {"event_id": commit_failure_event["event_id"]},
+                )
+                .mappings()
+                .one()
+            )
+            assert failed_commit_event["processed_at"] is None
+            assert {
+                failed_commit_event["package_manifest_key"],
+                failed_commit_event["package_pdf_key"],
+            } == expected_commit_failure_keys
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM review_final_packages WHERE review_id=:review_id"),
+                    {"review_id": commit_failure_event["review_id"]},
+                )
+                == 0
+            )
+        assert (
+            SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+                commit_failure_event["event_id"],
+                organization_id=commit_failure_event["organization_id"],
+                workspace_id=commit_failure_event["workspace_id"],
+            )
+            is True
+        )
+        with engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(commit_failure_event["organization_id"])},
+            )
+            recovered_after_commit_failure = (
+                connection.execute(
+                    text("SELECT * FROM review_final_packages WHERE review_id=:review_id"),
+                    {"review_id": commit_failure_event["review_id"]},
+                )
+                .mappings()
+                .one()
+            )
+        assert (
+            sha256(
+                s3.get_object(Bucket=bucket, Key=recovered_after_commit_failure["manifest_key"])[
+                    "Body"
+                ].read()
+            ).hexdigest()
+            == recovered_after_commit_failure["manifest_checksum"]
+        )
+
         assert (
             SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
                 seeded["event_id"],
@@ -436,6 +583,40 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
             assert (
                 connection.scalar(
                     text("SELECT count(*) FROM review_workflow_outbox WHERE delivered_at IS NULL")
+                )
+                == 0
+            )
+        with engine.begin() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(commit_failure_event["organization_id"])},
+            )
+            connection.execute(
+                text(
+                    "UPDATE agreements SET deletion_requested_at=CURRENT_TIMESTAMP "
+                    "WHERE id=:agreement_id"
+                ),
+                {"agreement_id": commit_failure_event["agreement_id"]},
+            )
+            connection.execute(
+                text("DELETE FROM review_final_packages WHERE review_id=:review_id"),
+                {"review_id": commit_failure_event["review_id"]},
+            )
+            connection.execute(
+                text("DELETE FROM review_workflow_outbox WHERE id=:event_id"),
+                {"event_id": commit_failure_event["event_id"]},
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM review_final_packages WHERE review_id=:review_id"),
+                    {"review_id": commit_failure_event["review_id"]},
+                )
+                == 0
+            )
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM review_workflow_outbox WHERE id=:event_id"),
+                    {"event_id": commit_failure_event["event_id"]},
                 )
                 == 0
             )
@@ -488,7 +669,8 @@ def _backfilled_event(engine: Engine, seeded: _SeededTerminalEvent) -> dict[str,
         return dict(
             connection.execute(
                 text(
-                    "SELECT id, correlation_id, package_snapshot, delivered_at, processed_at "
+                    "SELECT id, correlation_id, package_snapshot, package_manifest_key, "
+                    "package_pdf_key, delivered_at, processed_at "
                     "FROM review_workflow_outbox "
                     "WHERE organization_id = :organization_id "
                     "AND workspace_id = :workspace_id "
@@ -498,7 +680,7 @@ def _backfilled_event(engine: Engine, seeded: _SeededTerminalEvent) -> dict[str,
                     "organization_id": seeded["organization_id"],
                     "workspace_id": seeded["workspace_id"],
                     "idempotency_key": (
-                        f"workflow:{seeded['workflow_id']}:terminal-package-backfill:0034"
+                        f"workflow:{seeded['workflow_id']}:terminal-package-backfill:0035"
                     ),
                 },
             )
@@ -522,7 +704,7 @@ def _tenant_backfill_count(engine: Engine, seeded: _SeededTerminalEvent) -> int:
                 ),
                 {
                     "organization_id": seeded["organization_id"],
-                    "pattern": "workflow:%:terminal-package-backfill:0034",
+                    "pattern": "workflow:%:terminal-package-backfill:0035",
                 },
             )
             or 0
@@ -543,6 +725,9 @@ def _seed_terminal_event(
     actor_id = uuid4()
     checkpoint_id = uuid4()
     correlation_id = f"terminal-integration-{event_id.hex[:16]}"
+    package_base = f"reviews/{organization_id}/{workspace_id}/{review_id}/final-package"
+    manifest_key = f"{package_base}/manifest.json"
+    pdf_key = f"{package_base}/report.pdf"
     with engine.begin() as connection:
         connection.execute(
             text("INSERT INTO organizations (id, name, slug) VALUES (:id, 'Test', :slug)"),
@@ -668,12 +853,13 @@ def _seed_terminal_event(
                     """
                 INSERT INTO review_workflow_outbox (
                     id, workflow_id, organization_id, workspace_id, event_type,
-                    correlation_id, idempotency_key, package_snapshot, delivered_at, processed_at
+                    correlation_id, idempotency_key, package_snapshot,
+                    package_manifest_key, package_pdf_key, delivered_at, processed_at
                 ) VALUES (
                     :id, :workflow_id, :organization_id, :workspace_id,
                     'review.workflow.terminal', :correlation_id,
                     :event_key, CAST(:package_snapshot AS JSONB),
-                    CURRENT_TIMESTAMP, NULL
+                    :manifest_key, :pdf_key, CURRENT_TIMESTAMP, NULL
                 )
                     """
                 ),
@@ -693,6 +879,8 @@ def _seed_terminal_event(
                             "agreement_version_id": None,
                             "workflow_id": str(workflow_id),
                             "policy_version_id": str(policy_version_id),
+                            "manifest_key": manifest_key,
+                            "pdf_key": pdf_key,
                             "state": "rejected",
                             "revision": 1,
                             "decisions": [],
@@ -711,6 +899,8 @@ def _seed_terminal_event(
                         },
                         sort_keys=True,
                     ),
+                    "manifest_key": manifest_key,
+                    "pdf_key": pdf_key,
                 },
             )
         else:
@@ -739,6 +929,7 @@ def _seed_terminal_event(
     return {
         "organization_id": organization_id,
         "workspace_id": workspace_id,
+        "agreement_id": agreement_id,
         "review_id": review_id,
         "workflow_id": workflow_id,
         "event_id": event_id,

@@ -23,10 +23,6 @@ class FinalPackageConflictError(RuntimeError):
     """An immutable object or metadata row differs from the terminal workflow snapshot."""
 
 
-class FinalPackageNotTerminalError(RuntimeError):
-    """A non-terminal workflow was delivered as package-generation work."""
-
-
 @dataclass(frozen=True)
 class StoredPackageObject:
     content: bytes
@@ -99,8 +95,22 @@ class PackageGenerationResult:
     created: bool
 
 
+@dataclass(frozen=True)
+class PreparedFinalPackage:
+    event_id: UUID
+    workflow_id: UUID
+    correlation_id: str
+    snapshot: dict[str, object]
+    manifest_key: str
+    pdf_key: str
+    manifest_content: bytes
+    pdf_content: bytes
+    manifest_checksum: str
+    pdf_checksum: str
+
+
 class TerminalReviewPackageGenerator:
-    """Create one recoverable package from a locked terminal workflow outbox event."""
+    """Prepare frozen payloads before locks, then commit them inside the caller's fence."""
 
     def __init__(self, storage: FinalPackageStorage) -> None:
         self._storage = storage
@@ -113,12 +123,29 @@ class TerminalReviewPackageGenerator:
         workflow_id: UUID,
         correlation_id: str,
     ) -> PackageGenerationResult:
+        prepared = self.prepare(
+            connection,
+            event_id=event_id,
+            workflow_id=workflow_id,
+            correlation_id=correlation_id,
+        )
+        return self.commit(connection, prepared=prepared)
+
+    def prepare(
+        self,
+        connection: Connection,
+        *,
+        event_id: UUID,
+        workflow_id: UUID,
+        correlation_id: str,
+    ) -> PreparedFinalPackage:
         event = (
             connection.execute(
                 text(
                     """
                     SELECT workflow_id, organization_id, workspace_id, event_type,
-                           correlation_id, package_snapshot
+                           correlation_id, package_snapshot,
+                           package_manifest_key, package_pdf_key
                     FROM review_workflow_outbox
                     WHERE id = :event_id
                     """
@@ -149,15 +176,6 @@ class TerminalReviewPackageGenerator:
             or snapshot.get("state") not in _TERMINAL_STATES
         ):
             raise FinalPackageConflictError("terminal package snapshot identity conflict")
-        locked = connection.scalar(
-            text(
-                "SELECT id FROM review_workflows WHERE id = :workflow_id"
-                + (" FOR UPDATE" if connection.dialect.name == "postgresql" else "")
-            ),
-            {"workflow_id": _database_uuid(connection, workflow_id)},
-        )
-        if locked is None:
-            raise FinalPackageNotTerminalError(str(workflow_id))
 
         manifest_content = dumps(snapshot, sort_keys=True, separators=(",", ":")).encode()
         manifest_checksum = sha256(manifest_content).hexdigest()
@@ -177,6 +195,30 @@ class TerminalReviewPackageGenerator:
         )
         manifest_key = f"{base}/manifest.json"
         pdf_key = f"{base}/report.pdf"
+        if (
+            snapshot.get("manifest_key") != manifest_key
+            or snapshot.get("pdf_key") != pdf_key
+            or event["package_manifest_key"] != manifest_key
+            or event["package_pdf_key"] != pdf_key
+        ):
+            raise FinalPackageConflictError("terminal package object key conflict")
+        return PreparedFinalPackage(
+            event_id=event_id,
+            workflow_id=workflow_id,
+            correlation_id=correlation_id,
+            snapshot=snapshot,
+            manifest_key=manifest_key,
+            pdf_key=pdf_key,
+            manifest_content=manifest_content,
+            pdf_content=pdf_content,
+            manifest_checksum=manifest_checksum,
+            pdf_checksum=pdf_checksum,
+        )
+
+    def commit(
+        self, connection: Connection, *, prepared: PreparedFinalPackage
+    ) -> PackageGenerationResult:
+        snapshot = prepared.snapshot
         existing = (
             connection.execute(
                 text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
@@ -187,29 +229,37 @@ class TerminalReviewPackageGenerator:
         )
         if existing is not None:
             expected = {
-                "workflow_id": str(workflow_id),
+                "workflow_id": str(prepared.workflow_id),
                 "state": snapshot["state"],
-                "manifest_key": manifest_key,
-                "pdf_key": pdf_key,
-                "manifest_checksum": manifest_checksum,
-                "pdf_checksum": pdf_checksum,
+                "manifest_key": prepared.manifest_key,
+                "pdf_key": prepared.pdf_key,
+                "manifest_checksum": prepared.manifest_checksum,
+                "pdf_checksum": prepared.pdf_checksum,
             }
             if any(str(existing[key]) != str(value) for key, value in expected.items()):
                 raise FinalPackageConflictError("final package metadata conflict")
             self._ensure_object(
-                key=manifest_key,
-                content=manifest_content,
+                key=prepared.manifest_key,
+                content=prepared.manifest_content,
                 content_type="application/json",
             )
-            self._ensure_object(key=pdf_key, content=pdf_content, content_type="application/pdf")
+            self._ensure_object(
+                key=prepared.pdf_key,
+                content=prepared.pdf_content,
+                content_type="application/pdf",
+            )
             return PackageGenerationResult(package_id=UUID(str(existing["id"])), created=False)
 
         self._ensure_object(
-            key=manifest_key,
-            content=manifest_content,
+            key=prepared.manifest_key,
+            content=prepared.manifest_content,
             content_type="application/json",
         )
-        self._ensure_object(key=pdf_key, content=pdf_content, content_type="application/pdf")
+        self._ensure_object(
+            key=prepared.pdf_key,
+            content=prepared.pdf_content,
+            content_type="application/pdf",
+        )
         package_id = uuid4()
         connection.execute(
             text(
@@ -230,20 +280,20 @@ class TerminalReviewPackageGenerator:
                 "review_id": snapshot["review_id"],
                 "workflow_id": snapshot["workflow_id"],
                 "state": snapshot["state"],
-                "manifest_key": manifest_key,
-                "pdf_key": pdf_key,
-                "manifest_checksum": manifest_checksum,
-                "pdf_checksum": pdf_checksum,
+                "manifest_key": prepared.manifest_key,
+                "pdf_key": prepared.pdf_key,
+                "manifest_checksum": prepared.manifest_checksum,
+                "pdf_checksum": prepared.pdf_checksum,
             },
         )
         self._record_audit(
             connection,
             package_id=package_id,
             workflow=snapshot,
-            event_id=event_id,
-            correlation_id=correlation_id,
-            manifest_checksum=manifest_checksum,
-            pdf_checksum=pdf_checksum,
+            event_id=prepared.event_id,
+            correlation_id=prepared.correlation_id,
+            manifest_checksum=prepared.manifest_checksum,
+            pdf_checksum=prepared.pdf_checksum,
         )
         return PackageGenerationResult(package_id=package_id, created=True)
 

@@ -19,6 +19,8 @@ from sqlalchemy import Column, DateTime, MetaData, String, Table, Uuid, func, se
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.sql import Select
 
+from agreement_intelligence_worker.completion_fence import lock_active_agreement
+
 logger = logging.getLogger("agreement_intelligence.worker")
 
 
@@ -89,14 +91,16 @@ class WorkflowCheckpointStore(Protocol):
 
 
 class FinalPackageGenerator(Protocol):
-    def generate(
+    def prepare(
         self,
         connection: Connection,
         *,
         event_id: UUID,
         workflow_id: UUID,
         correlation_id: str,
-    ) -> object: ...
+    ) -> Any: ...
+
+    def commit(self, connection: Connection, *, prepared: Any) -> Any: ...
 
 
 class SQSWorkflowMessageReceiver:
@@ -207,43 +211,76 @@ class SQLAlchemyWorkflowEventProcessor:
                 ),
                 outcome_getter=lambda: transition_outcome,
             ) as span:
+                prepared: Any | None = None
                 with self._engine.begin() as connection:
                     _set_tenant_context(connection, organization_id)
-                    row = (
-                        connection.execute(_workflow_event_for_update(event_id))
-                        .mappings()
-                        .one_or_none()
+                    candidate = (
+                        connection.execute(_workflow_event(event_id)).mappings().one_or_none()
                     )
                     if (
-                        row is None
-                        or row["processed_at"] is not None
-                        or row["organization_id"] != organization_id
-                        or row["workspace_id"] != workspace_id
+                        candidate is None
+                        or candidate["processed_at"] is not None
+                        or candidate["organization_id"] != organization_id
+                        or candidate["workspace_id"] != workspace_id
                     ):
                         transition_outcome = "skipped"
-                    else:
-                        if row["event_type"] == "review.workflow.terminal":
-                            if self._packages is None:
-                                raise RuntimeError("terminal package generator is not configured")
-                            self._packages.generate(
-                                connection,
-                                event_id=event_id,
-                                workflow_id=row["workflow_id"],
-                                correlation_id=row["correlation_id"],
-                            )
-                        self._checkpoints.persist(
+                    elif candidate["event_type"] == "review.workflow.terminal":
+                        if self._packages is None:
+                            raise RuntimeError("terminal package generator is not configured")
+                        prepared = self._packages.prepare(
+                            connection,
                             event_id=event_id,
-                            checkpoint_id=row["checkpoint_id"],
-                            workflow_id=row["workflow_id"],
-                            event_type=row["event_type"],
+                            workflow_id=candidate["workflow_id"],
+                            correlation_id=candidate["correlation_id"],
                         )
-                        connection.execute(
-                            update(workflow_events)
-                            .where(workflow_events.c.id == event_id)
-                            .where(workflow_events.c.processed_at.is_(None))
-                            .values(processed_at=func.now())
+                if transition_outcome != "skipped":
+                    assert candidate is not None
+                    self._checkpoints.persist(
+                        event_id=event_id,
+                        checkpoint_id=candidate["checkpoint_id"],
+                        workflow_id=candidate["workflow_id"],
+                        event_type=candidate["event_type"],
+                    )
+                    with self._engine.begin() as connection:
+                        _set_tenant_context(connection, organization_id)
+                        active = lock_active_agreement(
+                            connection,
+                            agreement_id=candidate["agreement_id"],
+                            organization_id=organization_id,
+                            workspace_id=workspace_id,
                         )
-                        processed = True
+                        row = (
+                            connection.execute(_workflow_event_for_update(event_id))
+                            .mappings()
+                            .one_or_none()
+                            if active
+                            else None
+                        )
+                        if (
+                            row is None
+                            or row["processed_at"] is not None
+                            or row["organization_id"] != organization_id
+                            or row["workspace_id"] != workspace_id
+                            or row["workflow_id"] != candidate["workflow_id"]
+                            or row["event_type"] != candidate["event_type"]
+                            or row["correlation_id"] != candidate["correlation_id"]
+                            or row["agreement_id"] != candidate["agreement_id"]
+                        ):
+                            transition_outcome = "skipped"
+                        else:
+                            if row["event_type"] == "review.workflow.terminal":
+                                if self._packages is None or prepared is None:
+                                    raise RuntimeError(
+                                        "terminal package generator is not configured"
+                                    )
+                                self._packages.commit(connection, prepared=prepared)
+                            updated = connection.execute(
+                                update(workflow_events)
+                                .where(workflow_events.c.id == event_id)
+                                .where(workflow_events.c.processed_at.is_(None))
+                                .values(processed_at=func.now())
+                            )
+                            processed = updated.rowcount == 1
                 span.set_attributes(
                     cast(
                         Any,
@@ -270,14 +307,25 @@ class SQLAlchemyWorkflowEventProcessor:
 
 
 def _workflow_event_for_update(event_id: UUID) -> Select[Any]:
+    return _workflow_event_statement(event_id).with_for_update(of=(workflows, workflow_events))
+
+
+def _workflow_event(event_id: UUID) -> Select[Any]:
+    return _workflow_event_statement(event_id).where(agreements.c.deletion_requested_at.is_(None))
+
+
+def _workflow_event_statement(event_id: UUID) -> Select[Any]:
     return (
-        select(workflow_events, workflows.c.checkpoint_id)
+        select(
+            workflow_events,
+            workflows.c.checkpoint_id,
+            workflows.c.review_id,
+            reviews.c.agreement_id,
+        )
         .join(workflows, workflows.c.id == workflow_events.c.workflow_id)
         .join(reviews, reviews.c.id == workflows.c.review_id)
         .join(agreements, agreements.c.id == reviews.c.agreement_id)
         .where(workflow_events.c.id == event_id)
-        .where(agreements.c.deletion_requested_at.is_(None))
-        .with_for_update(of=workflow_events)
     )
 
 

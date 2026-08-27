@@ -3,6 +3,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
@@ -409,6 +410,12 @@ class ReviewWorkflowOutboxRecord(Base):
     __tablename__ = "review_workflow_outbox"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_review_workflow_outbox_idempotency"),
+        CheckConstraint(
+            "event_type <> 'review.workflow.terminal' OR processed_at IS NOT NULL OR "
+            "(package_snapshot IS NOT NULL AND package_manifest_key IS NOT NULL "
+            "AND package_pdf_key IS NOT NULL)",
+            name="ck_review_workflow_outbox_terminal_package",
+        ),
         Index("ix_review_workflow_outbox_pending", "delivered_at", "created_at"),
     )
 
@@ -420,7 +427,10 @@ class ReviewWorkflowOutboxRecord(Base):
     correlation_id: Mapped[str] = mapped_column(String(64))
     idempotency_key: Mapped[str] = mapped_column(String(255))
     package_snapshot: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+    package_manifest_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    package_pdf_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     lease_owner: Mapped[str | None] = mapped_column(String(64), nullable=True)

@@ -1,5 +1,6 @@
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime
+from json import dumps
 from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
@@ -284,6 +285,82 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
             artifact_key=expected_artifact_key,
         )
     )
+    review_id = uuid4()
+    workflow_id = uuid4()
+    terminal_event_id = uuid4()
+    package_base = f"reviews/{organization.id}/{workspace.id}/{review_id}/final-package"
+    manifest_key = f"{package_base}/manifest.json"
+    pdf_key = f"{package_base}/report.pdf"
+    session.execute(
+        text(
+            """
+            INSERT INTO review_cases (
+                id, organization_id, workspace_id, agreement_id, agreement_version_id,
+                state, created_by, idempotency_key, revision, created_at, updated_at
+            ) VALUES (
+                :id, :organization_id, :workspace_id, :agreement_id, NULL,
+                'open', :created_by, 'deletion-terminal-review', 1, :now, :now
+            )
+            """
+        ),
+        {
+            "id": review_id.hex,
+            "organization_id": organization.id.hex,
+            "workspace_id": workspace.id.hex,
+            "agreement_id": agreement_id.hex,
+            "created_by": user_id.hex,
+            "now": now.isoformat(),
+        },
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO review_workflows (
+                id, organization_id, workspace_id, review_id, policy_version_id,
+                checkpoint_id, state, active_stage_ordinal, revision, created_at, updated_at
+            ) VALUES (
+                :id, :organization_id, :workspace_id, :review_id, :policy_version_id,
+                :checkpoint_id, 'rejected', NULL, 1, :now, :now
+            )
+            """
+        ),
+        {
+            "id": workflow_id.hex,
+            "organization_id": organization.id.hex,
+            "workspace_id": workspace.id.hex,
+            "review_id": review_id.hex,
+            "policy_version_id": uuid4().hex,
+            "checkpoint_id": uuid4().hex,
+            "now": now.isoformat(),
+        },
+    )
+    session.execute(
+        text(
+            """
+            INSERT INTO review_workflow_outbox (
+                id, workflow_id, organization_id, workspace_id, event_type,
+                correlation_id, idempotency_key, package_snapshot,
+                package_manifest_key, package_pdf_key, delivered_at, attempt_count,
+                created_at
+            ) VALUES (
+                :id, :workflow_id, :organization_id, :workspace_id,
+                'review.workflow.terminal', 'deletion-terminal-correlation',
+                'deletion-terminal-event', :package_snapshot,
+                :manifest_key, :pdf_key, NULL, 0, :now
+            )
+            """
+        ),
+        {
+            "id": terminal_event_id.hex,
+            "workflow_id": workflow_id.hex,
+            "organization_id": organization.id.hex,
+            "workspace_id": workspace.id.hex,
+            "package_snapshot": dumps({"review_id": str(review_id)}),
+            "manifest_key": manifest_key,
+            "pdf_key": pdf_key,
+            "now": now.isoformat(),
+        },
+    )
     session.commit()
     admin_id = _create_platform_admin(session, organization, workspace)
     client = client_for_session(admin_id)
@@ -378,6 +455,8 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
         ("source", payload["files"][0]["storage_key"]),
         ("analysis", artifact_key),
         ("analysis", expected_artifact_key),
+        ("review_manifest", manifest_key),
+        ("review_pdf", pdf_key),
     }
     outbox = session.query(AgreementDeletionOutboxRecord).one()
     assert outbox.deletion_id == request_record.id

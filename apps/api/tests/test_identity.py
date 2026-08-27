@@ -756,11 +756,18 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                         """
                         INSERT INTO review_workflow_outbox (
                             id, workflow_id, organization_id, workspace_id, event_type,
-                            correlation_id, idempotency_key
+                            correlation_id, idempotency_key, package_snapshot,
+                            package_manifest_key, package_pdf_key
                         ) VALUES (
                             :outbox, :workflow, :organization_id, :workspace_id,
                             'review.workflow.terminal',
-                            'test', 'workflow-outbox-' || :suffix
+                            'test', 'workflow-outbox-' || :suffix, '{}'::jsonb,
+                            'reviews/' || CAST(:organization_id AS text) || '/' ||
+                                CAST(:workspace_id AS text) || '/' || CAST(:review AS text) ||
+                                '/final-package/manifest.json',
+                            'reviews/' || CAST(:organization_id AS text) || '/' ||
+                                CAST(:workspace_id AS text) || '/' || CAST(:review AS text) ||
+                                '/final-package/report.pdf'
                         )
                         """
                     ),

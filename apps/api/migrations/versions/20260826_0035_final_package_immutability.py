@@ -1,7 +1,7 @@
 """Enforce final review package metadata immutability in PostgreSQL.
 
-Revision ID: 20260826_0034
-Revises: 20260826_0033
+Revision ID: 20260826_0035
+Revises: 20260826_0034
 Create Date: 2026-08-26
 """
 
@@ -12,14 +12,22 @@ from uuid import uuid4
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "20260826_0034"
-down_revision: str | None = "20260826_0033"
+revision: str = "20260826_0035"
+down_revision: str | None = "20260826_0034"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | None = None
 
 
 def upgrade() -> None:
     op.add_column("review_workflow_outbox", sa.Column("package_snapshot", sa.JSON(), nullable=True))
+    op.add_column(
+        "review_workflow_outbox",
+        sa.Column("package_manifest_key", sa.String(length=1024), nullable=True),
+    )
+    op.add_column(
+        "review_workflow_outbox",
+        sa.Column("package_pdf_key", sa.String(length=1024), nullable=True),
+    )
     op.add_column(
         "review_workflow_outbox",
         sa.Column("attempt_count", sa.Integer(), server_default="0", nullable=False),
@@ -41,10 +49,28 @@ def upgrade() -> None:
     if op.get_bind().dialect.name != "postgresql":
         return
     _backfill_terminal_package_events()
+    op.create_check_constraint(
+        "ck_review_workflow_outbox_terminal_package",
+        "review_workflow_outbox",
+        "event_type <> 'review.workflow.terminal' OR processed_at IS NOT NULL OR "
+        "(package_snapshot IS NOT NULL AND package_manifest_key IS NOT NULL "
+        "AND package_pdf_key IS NOT NULL)",
+    )
     op.execute(
         """
         CREATE FUNCTION prevent_review_final_package_mutation() RETURNS trigger AS $$
         BEGIN
+          IF TG_OP = 'DELETE' AND EXISTS (
+            SELECT 1
+            FROM review_cases AS review
+            JOIN agreements AS agreement ON agreement.id = review.agreement_id
+            WHERE review.id = OLD.review_id
+              AND review.organization_id = OLD.organization_id
+              AND review.workspace_id = OLD.workspace_id
+              AND agreement.deletion_requested_at IS NOT NULL
+          ) THEN
+            RETURN OLD;
+          END IF;
           RAISE EXCEPTION 'review final packages are immutable';
         END;
         $$ LANGUAGE plpgsql;
@@ -56,6 +82,18 @@ def upgrade() -> None:
         BEGIN
           IF TG_OP = 'DELETE' THEN
             IF OLD.event_type = 'review.workflow.terminal' THEN
+              IF EXISTS (
+                SELECT 1
+                FROM review_workflows AS workflow
+                JOIN review_cases AS review ON review.id = workflow.review_id
+                JOIN agreements AS agreement ON agreement.id = review.agreement_id
+                WHERE workflow.id = OLD.workflow_id
+                  AND workflow.organization_id = OLD.organization_id
+                  AND workflow.workspace_id = OLD.workspace_id
+                  AND agreement.deletion_requested_at IS NOT NULL
+              ) THEN
+                RETURN OLD;
+              END IF;
               RAISE EXCEPTION 'terminal workflow outbox business fields are immutable';
             END IF;
             RETURN OLD;
@@ -71,6 +109,8 @@ def upgrade() -> None:
                OR NEW.correlation_id IS DISTINCT FROM OLD.correlation_id
                OR NEW.idempotency_key IS DISTINCT FROM OLD.idempotency_key
                OR NEW.package_snapshot::jsonb IS DISTINCT FROM OLD.package_snapshot::jsonb
+               OR NEW.package_manifest_key IS DISTINCT FROM OLD.package_manifest_key
+               OR NEW.package_pdf_key IS DISTINCT FROM OLD.package_pdf_key
                OR NEW.created_at IS DISTINCT FROM OLD.created_at
              ) THEN
             RAISE EXCEPTION 'terminal workflow outbox business fields are immutable';
@@ -99,6 +139,11 @@ def upgrade() -> None:
 def downgrade() -> None:
     if op.get_bind().dialect.name == "postgresql":
         _assert_terminal_snapshot_events_are_complete()
+        op.drop_constraint(
+            "ck_review_workflow_outbox_terminal_package",
+            "review_workflow_outbox",
+            type_="check",
+        )
         op.execute(
             "DROP TRIGGER IF EXISTS review_workflow_terminal_snapshot_immutable "
             "ON review_workflow_outbox"
@@ -114,6 +159,8 @@ def downgrade() -> None:
         "lease_owner",
         "next_attempt_at",
         "attempt_count",
+        "package_pdf_key",
+        "package_manifest_key",
         "package_snapshot",
     ):
         op.drop_column("review_workflow_outbox", column)
@@ -194,7 +241,7 @@ def _assert_terminal_snapshot_events_are_complete() -> None:
         )
         if incomplete:
             raise RuntimeError(
-                "cannot downgrade 0034 while terminal package snapshot events "
+                "cannot downgrade 0035 while terminal package snapshot events "
                 "lack committed final-package metadata"
             )
 
@@ -203,6 +250,12 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
     workflow_id = workflow["workflow_id"]
     review_id = workflow["review_id"]
     event_id = uuid4()
+    package_base = (
+        f"reviews/{workflow['organization_id']}/{workflow['workspace_id']}/"
+        f"{review_id}/final-package"
+    )
+    manifest_key = f"{package_base}/manifest.json"
+    pdf_key = f"{package_base}/report.pdf"
     correlation_id = (
         connection.scalar(
             sa.text(
@@ -221,7 +274,7 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
                 "workspace_id": workflow["workspace_id"],
             },
         )
-        or f"migration-0034-{workflow_id}"
+        or f"migration-0035-{workflow_id}"
     )
     decisions = connection.execute(
         sa.text(
@@ -337,6 +390,8 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
         ),
         "workflow_id": str(workflow_id),
         "policy_version_id": str(workflow["policy_version_id"]),
+        "manifest_key": manifest_key,
+        "pdf_key": pdf_key,
         "state": workflow["state"],
         "revision": workflow["revision"],
         "decisions": [
@@ -399,12 +454,14 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             """
             INSERT INTO review_workflow_outbox (
                 id, workflow_id, organization_id, workspace_id, event_type,
-                correlation_id, idempotency_key, package_snapshot, delivered_at,
-                processed_at, attempt_count, created_at
+                correlation_id, idempotency_key, package_snapshot,
+                package_manifest_key, package_pdf_key, delivered_at, processed_at,
+                attempt_count, created_at
             ) VALUES (
                 :id, :workflow_id, :organization_id, :workspace_id,
                 'review.workflow.terminal', :correlation_id, :idempotency_key,
-                CAST(:package_snapshot AS JSONB), NULL, NULL, 0, CURRENT_TIMESTAMP
+                CAST(:package_snapshot AS JSONB), :package_manifest_key,
+                :package_pdf_key, NULL, NULL, 0, CURRENT_TIMESTAMP
             )
             ON CONFLICT (idempotency_key) DO NOTHING
             """
@@ -415,8 +472,10 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             "organization_id": workflow["organization_id"],
             "workspace_id": workflow["workspace_id"],
             "correlation_id": correlation_id,
-            "idempotency_key": f"workflow:{workflow_id}:terminal-package-backfill:0034",
+            "idempotency_key": f"workflow:{workflow_id}:terminal-package-backfill:0035",
             "package_snapshot": dumps(snapshot, sort_keys=True),
+            "package_manifest_key": manifest_key,
+            "package_pdf_key": pdf_key,
         },
     )
 

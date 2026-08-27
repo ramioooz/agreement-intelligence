@@ -147,6 +147,11 @@ def test_terminal_decision_emits_a_correlated_package_generation_event(session: 
     assert event_record.correlation_id == "terminal-package-correlation"
     assert event_record.package_snapshot is not None
     assert event_record.package_snapshot["state"] == "rejected"
+    package_base = (
+        f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/final-package"
+    )
+    assert event_record.package_manifest_key == f"{package_base}/manifest.json"
+    assert event_record.package_pdf_key == f"{package_base}/report.pdf"
 
 
 def test_unconfigured_logging_dispatcher_keeps_outbox_pending(session: Session) -> None:

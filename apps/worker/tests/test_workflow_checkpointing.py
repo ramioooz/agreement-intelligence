@@ -25,7 +25,7 @@ def test_workflow_event_delivery_locks_the_outbox_row_before_checkpointing() -> 
 
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
 
-    assert "FOR UPDATE OF review_workflow_outbox" in sql
+    assert "FOR UPDATE OF review_workflows, review_workflow_outbox" in sql
 
 
 def test_checkpoint_graph_accepts_an_event_derived_top_level_thread() -> None:
@@ -108,8 +108,9 @@ def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
 
 
 class RecordingCheckpointStore:
-    def __init__(self) -> None:
+    def __init__(self, timeline: list[str] | None = None) -> None:
         self.calls: list[tuple[object, object, object, object]] = []
+        self.timeline = timeline
 
     def persist(
         self,
@@ -119,23 +120,38 @@ class RecordingCheckpointStore:
         workflow_id: object,
         event_type: object,
     ) -> None:
+        if self.timeline is not None:
+            self.timeline.append("checkpoint")
         self.calls.append((event_id, checkpoint_id, workflow_id, event_type))
 
 
 class RecordingFinalPackageGenerator:
-    def __init__(self, *, failure: Exception | None = None) -> None:
-        self.calls: list[tuple[object, object, object, object]] = []
+    def __init__(
+        self, *, timeline: list[str] | None = None, failure: Exception | None = None
+    ) -> None:
+        self.prepare_calls: list[tuple[object, object, object, object]] = []
+        self.commit_calls: list[tuple[object, object]] = []
+        self.timeline = timeline
         self.failure = failure
 
-    def generate(
+    def prepare(
         self,
         connection: object,
         *,
         event_id: object,
         workflow_id: object,
         correlation_id: object,
-    ) -> None:
-        self.calls.append((connection, event_id, workflow_id, correlation_id))
+    ) -> object:
+        if self.timeline is not None:
+            self.timeline.append("prepare")
+        prepared = (event_id, workflow_id, correlation_id)
+        self.prepare_calls.append((connection, *prepared))
+        return prepared
+
+    def commit(self, connection: object, *, prepared: object) -> None:
+        if self.timeline is not None:
+            self.timeline.append("commit")
+        self.commit_calls.append((connection, prepared))
         if self.failure is not None:
             failure = self.failure
             self.failure = None
@@ -247,8 +263,10 @@ def test_workflow_event_for_deleted_agreement_is_not_processed() -> None:
     engine.dispose()
 
 
-def test_terminal_event_generates_package_before_checkpoint_and_retries_after_failure() -> None:
-    """Fails if terminal work can be marked processed after package generation fails."""
+def test_terminal_event_prepares_before_lock_and_commits_after_active_agreement_fence(
+    monkeypatch: Any,
+) -> None:
+    """Fails if payload work holds locks or storage can precede the deletion fence."""
     engine = create_engine("sqlite+pysqlite:///:memory:")
     workflow_metadata.create_all(engine)
     agreement_id, review_id = uuid4(), uuid4()
@@ -276,8 +294,21 @@ def test_terminal_event_generates_package_before_checkpoint_and_retries_after_fa
                 processed_at=None,
             )
         )
-    checkpoints = RecordingCheckpointStore()
-    packages = RecordingFinalPackageGenerator(failure=RuntimeError("storage unavailable"))
+    timeline: list[str] = []
+    checkpoints = RecordingCheckpointStore(timeline)
+    packages = RecordingFinalPackageGenerator(
+        timeline=timeline, failure=RuntimeError("storage unavailable")
+    )
+
+    def record_agreement_lock(*args: object, **kwargs: object) -> bool:
+        timeline.append("agreement-lock")
+        return True
+
+    monkeypatch.setattr(
+        review_workflow,
+        "lock_active_agreement",
+        record_agreement_lock,
+    )
     processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages)
 
     with pytest.raises(RuntimeError, match="storage unavailable"):
@@ -290,13 +321,19 @@ def test_terminal_event_generates_package_before_checkpoint_and_retries_after_fa
             )
             is None
         )
-    assert checkpoints.calls == []
+    assert timeline == ["prepare", "checkpoint", "agreement-lock", "commit"]
 
+    timeline.clear()
     assert (
         processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
         is True
     )
-    assert len(packages.calls) == 2
-    assert packages.calls[-1][1:] == (event_id, workflow_id, None)
-    assert checkpoints.calls == [(event_id, checkpoint_id, workflow_id, "review.workflow.terminal")]
+    assert timeline == ["prepare", "checkpoint", "agreement-lock", "commit"]
+    assert len(packages.prepare_calls) == 2
+    assert packages.prepare_calls[-1][1:] == (event_id, workflow_id, None)
+    assert len(packages.commit_calls) == 2
+    assert checkpoints.calls == [
+        (event_id, checkpoint_id, workflow_id, "review.workflow.terminal"),
+        (event_id, checkpoint_id, workflow_id, "review.workflow.terminal"),
+    ]
     engine.dispose()

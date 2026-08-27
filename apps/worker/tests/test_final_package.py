@@ -219,6 +219,9 @@ def _seed_terminal_workflow(
     event_id = uuid4()
     actor_id = uuid4()
     stage_id = uuid4()
+    package_base = f"reviews/{organization_id}/{workspace_id}/{review_id}/final-package"
+    manifest_key = f"{package_base}/manifest.json"
+    pdf_key = f"{package_base}/report.pdf"
     schema = """
     CREATE TABLE review_cases (
       id TEXT PRIMARY KEY, organization_id TEXT NOT NULL, workspace_id TEXT NOT NULL,
@@ -236,7 +239,8 @@ def _seed_terminal_workflow(
     CREATE TABLE review_workflow_outbox (
       id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, event_type TEXT NOT NULL,
       correlation_id TEXT NOT NULL, organization_id TEXT NOT NULL,
-      workspace_id TEXT NOT NULL, package_snapshot TEXT
+      workspace_id TEXT NOT NULL, package_snapshot TEXT,
+      package_manifest_key TEXT, package_pdf_key TEXT
     );
     CREATE TABLE review_workflow_stages (
       id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, ordinal INTEGER NOT NULL,
@@ -329,7 +333,7 @@ def _seed_terminal_workflow(
             text(
                 "INSERT INTO review_workflow_outbox VALUES "
                 "(:id, :workflow_id, 'review.workflow.terminal', :correlation_id, "
-                ":organization_id, :workspace_id, :snapshot)"
+                ":organization_id, :workspace_id, :snapshot, :manifest_key, :pdf_key)"
             ),
             {
                 "id": str(event_id),
@@ -345,6 +349,8 @@ def _seed_terminal_workflow(
                         "agreement_version_id": None,
                         "workflow_id": str(workflow_id),
                         "policy_version_id": str(policy_version_id),
+                        "manifest_key": manifest_key,
+                        "pdf_key": pdf_key,
                         "state": "rejected",
                         "revision": 1,
                         "decisions": [
@@ -379,6 +385,8 @@ def _seed_terminal_workflow(
                     sort_keys=True,
                 ),
                 "correlation_id": correlation_id,
+                "manifest_key": manifest_key,
+                "pdf_key": pdf_key,
             },
         )
     return engine, {
