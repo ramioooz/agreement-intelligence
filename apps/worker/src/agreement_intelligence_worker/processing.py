@@ -1121,7 +1121,12 @@ class SQLAlchemyProcessingJobRepository:
                 .mappings()
                 .one_or_none()
             )
-            if artifact is None:
+            artifact_key = (
+                cast(str, artifact["artifact_key"])
+                if artifact is not None
+                else _embedding_sentinel_key(cast(str, job["profile"]))
+            )
+            if artifact_key is None:
                 return None
             return (
                 ProcessingJob(
@@ -1137,7 +1142,7 @@ class SQLAlchemyProcessingJobRepository:
                     source_content_type=cast(str | None, job["source_content_type"]),
                     completed_at=cast(datetime | None, job["completed_at"]),
                 ),
-                CompletedArtifact(job_id=job_id, key=cast(str, artifact["artifact_key"])),
+                CompletedArtifact(job_id=job_id, key=artifact_key),
             )
 
     def requeue(
@@ -1518,6 +1523,16 @@ def _late_artifact_category(profile: str, key: str) -> str | None:
     if profile == "version-comparison":
         return "comparison"
     return "analysis"
+
+
+def _embedding_sentinel_key(profile: str) -> str | None:
+    if not profile.startswith("embedding-reindex:"):
+        return None
+    try:
+        configuration_id = UUID(profile.removeprefix("embedding-reindex:"))
+    except ValueError:
+        return None
+    return f"embedding-reindex/{configuration_id}.json"
 
 
 def _required_tenant_scope(value: UUID | None, field_name: str) -> UUID:

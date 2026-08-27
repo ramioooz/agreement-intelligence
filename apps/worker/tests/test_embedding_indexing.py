@@ -214,7 +214,7 @@ def test_embedding_promotion_replaces_vectors_in_the_exact_active_configuration_
     assert list(row["embedding"]) == [0.8, 0.9]
 
 
-def test_embedding_reindex_completion_bypasses_unrelated_document_handlers() -> None:
+def test_profile_completion_routes_embedding_and_ignores_comparison() -> None:
     normal = _CompletionRecorder()
     embeddings = _CompletionRecorder()
     handler = EmbeddingReindexCompletionHandler(normal=normal, embeddings=embeddings)
@@ -229,6 +229,23 @@ def test_embedding_reindex_completion_bypasses_unrelated_document_handlers() -> 
     artifact = CompletedArtifact(job_id=reindex_job.id, key="embedding-reindex/result.json")
 
     handler.completed(reindex_job, artifact)
+
+    assert normal.calls == []
+    assert embeddings.calls == [(reindex_job, artifact)]
+
+    comparison_job = ProcessingJob(
+        id=uuid4(),
+        agreement_id=uuid4(),
+        state="completed",
+        attempt_count=1,
+        profile="version-comparison",
+    )
+    comparison_artifact = CompletedArtifact(
+        job_id=comparison_job.id,
+        key=f"comparisons/{uuid4()}/version-comparison.v1.json",
+    )
+    handler.completed(comparison_job, comparison_artifact)
+    handler.completed(comparison_job, comparison_artifact)
 
     assert normal.calls == []
     assert embeddings.calls == [(reindex_job, artifact)]

@@ -28,6 +28,7 @@ from sqlalchemy import (
     update,
 )
 
+from agreement_intelligence_worker.completion_fence import lock_active_agreement
 from agreement_intelligence_worker.processing import CompletedArtifact, ProcessingJob
 
 STRUCTURE_AWARE_CHUNKER_VERSION = "structure-aware.v1"
@@ -152,6 +153,13 @@ class SQLAlchemyDocumentIndexSink:
                     text("SELECT set_config('app.organization_id', :organization_id, true)"),
                     {"organization_id": str(job.organization_id)},
                 )
+            if not lock_active_agreement(
+                connection,
+                agreement_id=job.agreement_id,
+                organization_id=job.organization_id,
+                workspace_id=job.workspace_id,
+            ):
+                return
             build = (
                 connection.execute(
                     select(retrieval_index_builds).where(

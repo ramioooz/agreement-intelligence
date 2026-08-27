@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from agreement_intelligence_platform.observability import inject_trace_context
+from agreement_intelligence_worker.artifact_commit import PreparedArtifact
 from agreement_intelligence_worker.playbook_evaluation import (
     SQLAlchemyPlaybookEvaluationSink,
     worker_evaluation_metadata,
@@ -304,8 +305,65 @@ def test_completion_rejected_by_deletion_fence_discards_artifact_and_skips_handl
     assert observed == []
 
 
-def test_transient_completion_handler_failure_recovers_on_redelivery() -> None:
-    repository = InMemoryRepository(job=_job(), artifacts=[])
+def test_embedding_completion_handler_failure_recovers_from_durable_sentinel(
+    tmp_path: Path,
+) -> None:
+    from agreement_intelligence_worker.processing import (
+        agreements,
+        processing_artifacts,
+        processing_jobs,
+    )
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'embedding-replay.db'}")
+    create_processing_tables(engine)
+    organization_id, workspace_id, agreement_id, job_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    configuration_id = uuid4()
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                processing_state="queued",
+                updated_at=now,
+                deletion_requested_at=None,
+            )
+        )
+        connection.execute(
+            processing_jobs.insert().values(
+                id=job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                idempotency_key="embedding-replay",
+                profile=f"embedding-reindex:{configuration_id}",
+                state="queued",
+                attempt_count=0,
+                queued_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    class EmbeddingSentinelProcessor:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+            return CompletedArtifact(
+                job_id=job.id,
+                key=f"embedding-reindex/{configuration_id}.json",
+            )
+
+        def prepare(self, job: ProcessingJob) -> PreparedArtifact:
+            return PreparedArtifact(self.expected_artifact(job), None, None)
+
+        def finalize(self, *_: object) -> None:
+            return None
+
     attempts: list[str] = []
 
     class FlakyEvaluationHandler:
@@ -315,21 +373,30 @@ def test_transient_completion_handler_failure_recovers_on_redelivery() -> None:
                 raise RuntimeError("evaluation database temporarily unavailable")
 
     worker = JobProcessor(
-        repository,
+        SQLAlchemyProcessingJobRepository(engine),
         InMemoryQueue(retries=[]),
-        PlaceholderProcessor(),
+        EmbeddingSentinelProcessor(),
         completion_handler=FlakyEvaluationHandler(),
     )
 
     with raises(RuntimeError, match="temporarily unavailable"):
-        worker.handle(repository.job.id)
-    worker.handle(repository.job.id)
+        worker.handle(job_id, organization_id=organization_id, workspace_id=workspace_id)
+    worker.handle(job_id, organization_id=organization_id, workspace_id=workspace_id)
 
-    assert repository.job.state == "completed"
+    sentinel_key = f"embedding-reindex/{configuration_id}.json"
     assert attempts == [
-        f"checkpoints/{repository.job.id}/placeholder.json",
-        f"checkpoints/{repository.job.id}/placeholder.json",
+        sentinel_key,
+        sentinel_key,
     ]
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(processing_artifacts.c.artifact_key).where(
+                    processing_artifacts.c.job_id == job_id
+                )
+            )
+            is None
+        )
 
 
 def test_completing_a_version_job_updates_agreement_and_version_state(tmp_path: Path) -> None:

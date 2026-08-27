@@ -20,6 +20,11 @@ from agreement_intelligence_worker.agreement_deletion import (
     SQLAlchemyAgreementDeletionRepository,
 )
 from agreement_intelligence_worker.artifact_commit import PreparedArtifact
+from agreement_intelligence_worker.document_indexing import (
+    SQLAlchemyDocumentIndexSink,
+    retrieval_chunks,
+    retrieval_index_builds,
+)
 from agreement_intelligence_worker.processing import (
     CompletedArtifact,
     JobProcessor,
@@ -31,7 +36,7 @@ from agreement_intelligence_worker.processing import (
 )
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, create_engine, text
+from sqlalchemy import Engine, create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -552,6 +557,14 @@ def test_postgres_cleanup_is_tenant_scoped_and_purges_owned_rows(
         empty_json=empty_json,
         empty_object=empty_object,
     )
+    _assert_document_index_completion_respects_deletion_fence(
+        engine=engine,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        actor_id=actor_id,
+        empty_json=empty_json,
+        empty_object=empty_object,
+    )
 
 
 def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
@@ -735,6 +748,112 @@ def test_artifact_intent_downgrade_refuses_live_rows_for_non_superuser_owner(
                 WHERE oid='processing_jobs'::regclass
                 """
             )
+        )
+
+
+def _assert_document_index_completion_respects_deletion_fence(
+    *,
+    engine: Engine,
+    organization_id: UUID,
+    workspace_id: UUID,
+    actor_id: UUID,
+    empty_json: str,
+    empty_object: str,
+) -> None:
+    agreement_id = uuid4()
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO agreements (
+                    id,organization_id,workspace_id,title,agreement_type,status,
+                    parties,files,processing_state,audit_metadata,audit_events
+                ) VALUES (
+                    :id,:organization_id,:workspace_id,'Index race','client','draft',
+                    CAST(:empty_json AS json),CAST(:empty_json AS json),'completed',
+                    CAST(:empty_object AS json),CAST(:empty_json AS json)
+                )
+                """
+            ),
+            {
+                "id": agreement_id,
+                "organization_id": organization_id,
+                "workspace_id": workspace_id,
+                "empty_json": empty_json,
+                "empty_object": empty_object,
+            },
+        )
+
+    class DeletesAfterReadStorage:
+        def read(self, key: str) -> bytes:
+            assert key == "analysis/index-race.json"
+            content = json.dumps(
+                {
+                    "source": {"checksum": "d" * 64},
+                    "document": {
+                        "pages": [
+                            {
+                                "blocks": [
+                                    {
+                                        "anchor_id": "citation-index-race",
+                                        "kind": "paragraph",
+                                        "text": "This chunk must not survive accepted deletion.",
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                }
+            ).encode()
+            with Session(engine) as session, session.begin():
+                session.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(organization_id)},
+                )
+                api_repository = APIAgreementRepository(session)
+                agreement = api_repository.get(agreement_id)
+                assert agreement is not None
+                api_repository.accept_deletion(agreement, actor_id=actor_id)
+            return content
+
+    job = ProcessingJob(
+        id=uuid4(),
+        agreement_id=agreement_id,
+        state="completed",
+        attempt_count=1,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        source_checksum="d" * 64,
+    )
+    SQLAlchemyDocumentIndexSink(engine, DeletesAfterReadStorage()).completed(
+        job,
+        CompletedArtifact(job_id=job.id, key="analysis/index-race.json"),
+    )
+
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(organization_id)},
+        )
+        assert (
+            connection.scalar(
+                select(retrieval_index_builds.c.id).where(
+                    retrieval_index_builds.c.agreement_id == agreement_id
+                )
+            )
+            is None
+        )
+        assert (
+            connection.scalar(
+                select(retrieval_chunks.c.chunk_id).where(
+                    retrieval_chunks.c.agreement_id == agreement_id
+                )
+            )
+            is None
         )
 
 
