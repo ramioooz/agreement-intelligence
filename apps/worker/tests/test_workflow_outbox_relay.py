@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from threading import Event
 from uuid import uuid4
 
 from agreement_intelligence_worker.workflow_outbox_relay import (
@@ -120,3 +121,37 @@ def test_relay_loop_survives_a_transient_database_failure() -> None:
         )
     )
     assert relay.calls == 2
+
+
+def test_relay_loop_keeps_event_loop_responsive_during_blocking_publish() -> None:
+    timeline: list[str] = []
+    release = Event()
+    stop_event = asyncio.Event()
+
+    class BlockingRelay:
+        def relay_once(self) -> bool:
+            timeline.append("relay-started")
+            release.wait(timeout=0.2)
+            timeline.append("relay-finished")
+            return False
+
+    async def heartbeat() -> None:
+        while "relay-started" not in timeline:
+            await asyncio.sleep(0)
+        timeline.append("heartbeat")
+        release.set()
+        stop_event.set()
+
+    async def exercise() -> None:
+        await asyncio.gather(
+            run_workflow_outbox_relay(
+                stop_event,
+                BlockingRelay(),  # type: ignore[arg-type]
+                idle_seconds=0,
+            ),
+            heartbeat(),
+        )
+
+    asyncio.run(exercise())
+
+    assert timeline == ["relay-started", "heartbeat", "relay-finished"]

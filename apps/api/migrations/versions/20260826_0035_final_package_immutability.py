@@ -6,6 +6,7 @@ Create Date: 2026-08-26
 """
 
 from collections.abc import Sequence
+from hashlib import sha256
 from json import dumps
 from uuid import uuid4
 
@@ -60,6 +61,50 @@ def upgrade() -> None:
         """
         CREATE FUNCTION prevent_review_final_package_mutation() RETURNS trigger AS $$
         BEGIN
+          IF TG_OP = 'UPDATE' AND EXISTS (
+            SELECT 1
+            FROM review_workflow_outbox AS event
+            JOIN review_workflows AS workflow ON workflow.id = event.workflow_id
+            WHERE event.id::text = current_setting(
+                    'app.final_package_repair_event_id', true
+                  )
+              AND event.event_type = 'review.workflow.terminal'
+              AND event.processed_at IS NULL
+              AND event.idempotency_key =
+                    'workflow' || ':' || event.workflow_id::text || ':' ||
+                    'terminal-package-backfill' || ':' || '0035'
+              AND event.organization_id = OLD.organization_id
+              AND event.workspace_id = OLD.workspace_id
+              AND workflow.review_id = OLD.review_id
+              AND event.package_snapshot->'repair'->>'source'
+                    = 'postgresql-terminal-migration-package-repair'
+              AND event.package_snapshot->'repair'->>'package_id' = OLD.id::text
+              AND event.package_snapshot->'repair'->>'legacy_workflow_id'
+                    = OLD.workflow_id::text
+              AND event.package_snapshot->'repair'->>'legacy_state' = OLD.state
+              AND event.package_snapshot->'repair'->>'legacy_manifest_key'
+                    = OLD.manifest_key
+              AND event.package_snapshot->'repair'->>'legacy_pdf_key' = OLD.pdf_key
+              AND event.package_snapshot->'repair'->>'legacy_manifest_checksum'
+                    = OLD.manifest_checksum
+              AND event.package_snapshot->'repair'->>'legacy_pdf_checksum'
+                    = OLD.pdf_checksum
+              AND event.package_manifest_key = NEW.manifest_key
+              AND event.package_pdf_key = NEW.pdf_key
+              AND event.package_snapshot->'repair'->>'manifest_checksum'
+                    = NEW.manifest_checksum
+              AND event.package_snapshot->'repair'->>'pdf_checksum'
+                    = NEW.pdf_checksum
+              AND NEW.id IS NOT DISTINCT FROM OLD.id
+              AND NEW.organization_id IS NOT DISTINCT FROM OLD.organization_id
+              AND NEW.workspace_id IS NOT DISTINCT FROM OLD.workspace_id
+              AND NEW.review_id IS NOT DISTINCT FROM OLD.review_id
+              AND NEW.workflow_id IS NOT DISTINCT FROM event.workflow_id
+              AND NEW.state IS NOT DISTINCT FROM event.package_snapshot->'manifest'->>'state'
+              AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+          ) THEN
+            RETURN NEW;
+          END IF;
           IF TG_OP = 'DELETE' AND EXISTS (
             SELECT 1
             FROM review_cases AS review
@@ -183,20 +228,25 @@ def _backfill_terminal_package_events() -> None:
                 SELECT workflow.id AS workflow_id, workflow.organization_id,
                        workflow.workspace_id, workflow.review_id,
                        workflow.policy_version_id, workflow.state, workflow.revision,
-                       review.agreement_id, review.agreement_version_id
+                       review.agreement_id, review.agreement_version_id,
+                       package.id AS package_id,
+                       package.workflow_id AS legacy_workflow_id,
+                       package.state AS legacy_state,
+                       package.manifest_key AS legacy_manifest_key,
+                       package.pdf_key AS legacy_pdf_key,
+                       package.manifest_checksum AS legacy_manifest_checksum,
+                       package.pdf_checksum AS legacy_pdf_checksum
                 FROM review_workflows AS workflow
                 JOIN review_cases AS review
                   ON review.id = workflow.review_id
                  AND review.organization_id = :organization_id
                  AND review.workspace_id = workflow.workspace_id
+                LEFT JOIN review_final_packages AS package
+                  ON package.review_id = workflow.review_id
+                 AND package.organization_id = workflow.organization_id
+                 AND package.workspace_id = workflow.workspace_id
                 WHERE workflow.organization_id = :organization_id
                   AND workflow.state IN ('approved', 'rejected', 'revision_requested')
-                  AND NOT EXISTS (
-                    SELECT 1 FROM review_final_packages AS package
-                    WHERE package.review_id = workflow.review_id
-                      AND package.organization_id = workflow.organization_id
-                      AND package.workspace_id = workflow.workspace_id
-                  )
                 ORDER BY workflow.created_at, workflow.id
                     """
                 ),
@@ -229,20 +279,14 @@ def _assert_terminal_snapshot_events_are_complete() -> None:
                 WHERE event.organization_id = :organization_id
                   AND event.event_type = 'review.workflow.terminal'
                   AND event.package_snapshot IS NOT NULL
-                  AND NOT EXISTS (
-                    SELECT 1 FROM review_final_packages AS package
-                    WHERE package.review_id = workflow.review_id
-                      AND package.organization_id = workflow.organization_id
-                      AND package.workspace_id = workflow.workspace_id
-                  )
+                  AND event.processed_at IS NULL
                 """
             ),
             {"organization_id": organization_id},
         )
         if incomplete:
             raise RuntimeError(
-                "cannot downgrade 0035 while terminal package snapshot events "
-                "lack committed final-package metadata"
+                "cannot downgrade 0035 while terminal package snapshot events remain unprocessed"
             )
 
 
@@ -254,8 +298,10 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
         f"reviews/{workflow['organization_id']}/{workflow['workspace_id']}/"
         f"{review_id}/final-package"
     )
-    manifest_key = f"{package_base}/manifest.json"
-    pdf_key = f"{package_base}/report.pdf"
+    repair = workflow["package_id"] is not None
+    object_base = f"{package_base}/recovery-0035" if repair else package_base
+    manifest_key = f"{object_base}/manifest.json"
+    pdf_key = f"{object_base}/report.pdf"
     correlation_id = (
         connection.scalar(
             sa.text(
@@ -378,7 +424,7 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
             "review_id": review_id,
         },
     ).scalars()
-    snapshot = {
+    manifest = {
         "organization_id": str(workflow["organization_id"]),
         "workspace_id": str(workflow["workspace_id"]),
         "review_id": str(review_id),
@@ -443,12 +489,46 @@ def _backfill_terminal_package_event(connection: sa.Connection, workflow: sa.Row
         "audit_event_ids": [str(item) for item in audit_ids],
         "provenance": {
             "generator": "review-final-package-worker",
-            "source": "postgresql-terminal-migration-snapshot",
+            "source": (
+                "postgresql-terminal-migration-package-repair"
+                if repair
+                else "postgresql-terminal-migration-snapshot"
+            ),
             "workflow_correlation_id": correlation_id,
             "workflow_event_id": str(event_id),
             "workflow_revision": workflow["revision"],
         },
     }
+    snapshot: dict[str, object] = manifest
+    if repair:
+        manifest_content = dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+        manifest_checksum = sha256(manifest_content).hexdigest()
+        pdf_content = _deterministic_pdf(
+            [
+                "Agreement Intelligence - Final Review Package",
+                f"Agreement ID: {manifest['agreement_id']}",
+                f"Review ID: {manifest['review_id']}",
+                f"Outcome: {manifest['state']}",
+                f"Manifest checksum: sha256:{manifest_checksum}",
+            ]
+        )
+        snapshot = {
+            "manifest": manifest,
+            "legacy_manifest_key": workflow["legacy_manifest_key"],
+            "legacy_pdf_key": workflow["legacy_pdf_key"],
+            "repair": {
+                "source": "postgresql-terminal-migration-package-repair",
+                "package_id": str(workflow["package_id"]),
+                "legacy_workflow_id": str(workflow["legacy_workflow_id"]),
+                "legacy_state": workflow["legacy_state"],
+                "legacy_manifest_key": workflow["legacy_manifest_key"],
+                "legacy_pdf_key": workflow["legacy_pdf_key"],
+                "legacy_manifest_checksum": workflow["legacy_manifest_checksum"],
+                "legacy_pdf_checksum": workflow["legacy_pdf_checksum"],
+                "manifest_checksum": manifest_checksum,
+                "pdf_checksum": sha256(pdf_content).hexdigest(),
+            },
+        }
     connection.execute(
         sa.text(
             """
@@ -487,3 +567,52 @@ def _isoformat(value: object) -> str | None:
     if not callable(isoformat):
         raise TypeError("package snapshot timestamps must support isoformat")
     return str(isoformat())
+
+
+def _deterministic_pdf(lines: list[str]) -> bytes:
+    commands = ["BT", "/F1 10 Tf", "72 720 Td"]
+    for index, line in enumerate(lines):
+        if index:
+            commands.append("0 -14 Td")
+        commands.append(f"({_pdf_literal(line)}) Tj")
+    commands.append("ET")
+    stream = ("\n".join(commands) + "\n").encode("latin-1")
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        (
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+        ),
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        (
+            b"<< /Length "
+            + str(len(stream)).encode("ascii")
+            + b" >>\nstream\n"
+            + stream
+            + b"endstream"
+        ),
+    ]
+    content = bytearray(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    offsets = [0]
+    for index, item in enumerate(objects, start=1):
+        offsets.append(len(content))
+        content.extend(f"{index} 0 obj\n".encode("ascii"))
+        content.extend(item)
+        content.extend(b"\nendobj\n")
+    xref_offset = len(content)
+    content.extend(f"xref\n0 {len(objects) + 1}\n".encode("ascii"))
+    content.extend(b"0000000000 65535 f \n")
+    for offset in offsets[1:]:
+        content.extend(f"{offset:010d} 00000 n \n".encode("ascii"))
+    content.extend(
+        (
+            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+            f"startxref\n{xref_offset}\n%%EOF\n"
+        ).encode("ascii")
+    )
+    return bytes(content)
+
+
+def _pdf_literal(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")

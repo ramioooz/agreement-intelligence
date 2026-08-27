@@ -58,6 +58,7 @@ class WorkflowOutboxRelay:
         self._publisher = publisher
         self._owner = owner or f"workflow-relay-{uuid4()}"
         self._lease_seconds = lease_seconds
+        self._organization_cursor: str | None = None
 
     def relay_once(self, *, now: datetime | None = None) -> bool:
         current = now or datetime.now(UTC)
@@ -69,6 +70,7 @@ class WorkflowOutboxRelay:
                 organizations = list(
                     connection.execute(text("SELECT id FROM organizations ORDER BY id")).scalars()
                 )
+                organizations = self._fair_organization_order(organizations)
             event = None
             for organization_id in organizations:
                 organization_filter = ""
@@ -118,6 +120,8 @@ class WorkflowOutboxRelay:
                 {"owner": self._owner, "lease_expires": lease_expires, "id": event["id"]},
             )
             claimed = dict(event)
+        if self._engine.dialect.name == "postgresql":
+            self._organization_cursor = str(claimed["organization_id"])
         try:
             self._publisher.publish(claimed)
         except Exception as error:
@@ -162,6 +166,14 @@ class WorkflowOutboxRelay:
             )
         return True
 
+    def _fair_organization_order(self, organizations: list[object | None]) -> list[object | None]:
+        if self._organization_cursor is None:
+            return organizations
+        for index, organization_id in enumerate(organizations):
+            if str(organization_id) > self._organization_cursor:
+                return [*organizations[index:], *organizations[:index]]
+        return organizations
+
     def _scope(self, connection: Any, organization_id: object) -> None:
         if self._engine.dialect.name == "postgresql":
             connection.execute(
@@ -181,7 +193,7 @@ async def run_workflow_outbox_relay(
     database_failures = 0
     while not stop_event.is_set():
         try:
-            delivered = relay.relay_once()
+            delivered = await asyncio.to_thread(relay.relay_once)
         except OperationalError as error:
             database_failures += 1
             logger.warning(

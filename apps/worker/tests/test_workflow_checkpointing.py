@@ -1,5 +1,7 @@
+import asyncio
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from threading import Event
 from typing import Any
 from uuid import uuid4
 
@@ -8,9 +10,11 @@ from agreement_intelligence_worker import review_workflow
 from agreement_intelligence_worker.review_workflow import (
     PostgresWorkflowCheckpointStore,
     SQLAlchemyWorkflowEventProcessor,
+    WorkflowMessage,
     _workflow_event_for_update,
     agreements,
     reviews,
+    run_workflow_loop,
     workflow_events,
     workflow_metadata,
     workflows,
@@ -45,6 +49,59 @@ def test_checkpoint_graph_accepts_an_event_derived_top_level_thread() -> None:
     )
 
     assert graph.get_state(config).values["event_id"] == str(event_id)
+
+
+def test_workflow_loop_keeps_event_loop_responsive_during_blocking_package_work() -> None:
+    timeline: list[str] = []
+    release = Event()
+    stop_event = asyncio.Event()
+    message = WorkflowMessage(
+        event_id=uuid4(),
+        receipt_handle="receipt",
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+    )
+
+    class Receiver:
+        delivered = False
+
+        async def receive(self) -> WorkflowMessage | None:
+            if self.delivered:
+                await stop_event.wait()
+                return None
+            self.delivered = True
+            return message
+
+        async def ack(self, received: WorkflowMessage) -> None:
+            assert received == message
+            stop_event.set()
+
+    class BlockingProcessor:
+        def process(self, *args: object, **kwargs: object) -> bool:
+            timeline.append("process-started")
+            release.wait(timeout=0.2)
+            timeline.append("process-finished")
+            return True
+
+    async def heartbeat() -> None:
+        while "process-started" not in timeline:
+            await asyncio.sleep(0)
+        timeline.append("heartbeat")
+        release.set()
+
+    async def exercise() -> None:
+        await asyncio.gather(
+            run_workflow_loop(
+                stop_event,
+                Receiver(),
+                BlockingProcessor(),  # type: ignore[arg-type]
+            ),
+            heartbeat(),
+        )
+
+    asyncio.run(exercise())
+
+    assert timeline == ["process-started", "heartbeat", "process-finished"]
 
 
 def test_postgres_checkpoint_schema_is_initialized_before_event_processing(

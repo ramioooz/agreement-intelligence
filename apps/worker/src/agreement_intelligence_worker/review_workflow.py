@@ -339,7 +339,8 @@ async def run_workflow_loop(
         if message is None:
             continue
         try:
-            processor.process(
+            await asyncio.to_thread(
+                processor.process,
                 message.event_id,
                 organization_id=message.organization_id,
                 workspace_id=message.workspace_id,

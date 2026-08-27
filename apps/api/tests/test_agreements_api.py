@@ -291,6 +291,8 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
     package_base = f"reviews/{organization.id}/{workspace.id}/{review_id}/final-package"
     manifest_key = f"{package_base}/manifest.json"
     pdf_key = f"{package_base}/report.pdf"
+    legacy_manifest_key = f"{package_base}/legacy-manifest.json"
+    legacy_pdf_key = f"{package_base}/legacy-report.pdf"
     session.execute(
         text(
             """
@@ -355,7 +357,13 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
             "workflow_id": workflow_id.hex,
             "organization_id": organization.id.hex,
             "workspace_id": workspace.id.hex,
-            "package_snapshot": dumps({"review_id": str(review_id)}),
+            "package_snapshot": dumps(
+                {
+                    "review_id": str(review_id),
+                    "legacy_manifest_key": legacy_manifest_key,
+                    "legacy_pdf_key": legacy_pdf_key,
+                }
+            ),
             "manifest_key": manifest_key,
             "pdf_key": pdf_key,
             "now": now.isoformat(),
@@ -456,7 +464,9 @@ def test_platform_admin_accepts_durable_agreement_deletion_before_storage_cleanu
         ("analysis", artifact_key),
         ("analysis", expected_artifact_key),
         ("review_manifest", manifest_key),
+        ("review_manifest", legacy_manifest_key),
         ("review_pdf", pdf_key),
+        ("review_pdf", legacy_pdf_key),
     }
     outbox = session.query(AgreementDeletionOutboxRecord).one()
     assert outbox.deletion_id == request_record.id

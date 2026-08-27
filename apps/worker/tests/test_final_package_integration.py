@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 
 import boto3
 import pytest
+from agreement_intelligence_api.reviews.export import _render_pdf as _legacy_render_pdf
 from agreement_intelligence_worker.final_package import (
     FINAL_PACKAGE_WORKER_ACTOR_ID,
     S3FinalPackageStorage,
@@ -64,6 +65,14 @@ class _CompetingRelayPublisher:
         with self._lock:
             self.published.append(UUID(str(event["id"])))
         self._barrier.wait(timeout=10)
+
+
+class _RecordingRelayPublisher:
+    def __init__(self) -> None:
+        self.published: list[dict[str, object]] = []
+
+    def publish(self, event: dict[str, object]) -> None:
+        self.published.append(event)
 
 
 class _FailOncePackageStorage:
@@ -134,6 +143,9 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         command.upgrade(config, "20260825_0032")
         seeded = _seed_terminal_event(engine, include_terminal_event=False)
         second_seeded = _seed_terminal_event(engine, include_terminal_event=False)
+        legacy_seeded = _seed_terminal_event(engine, include_terminal_event=False)
+        legacy_package = _seed_legacy_partial_package(engine, legacy_seeded)
+        s3.create_bucket(Bucket=bucket)
         with base_engine.begin() as connection:
             connection.execute(
                 text(
@@ -231,12 +243,34 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         assert _tenant_backfill_count(migration_engine, second_seeded) == 1
         second_seeded["event_id"] = second_backfilled["id"]
         second_seeded["correlation_id"] = second_backfilled["correlation_id"]
-        s3.create_bucket(Bucket=bucket)
+        legacy_backfilled = _backfilled_event(migration_engine, legacy_seeded)
+        legacy_recovery_base = (
+            f"reviews/{legacy_seeded['organization_id']}/{legacy_seeded['workspace_id']}/"
+            f"{legacy_seeded['review_id']}/final-package/recovery-0035"
+        )
+        assert legacy_backfilled["package_manifest_key"] == (
+            f"{legacy_recovery_base}/manifest.json"
+        )
+        assert legacy_backfilled["package_pdf_key"] == f"{legacy_recovery_base}/report.pdf"
+        assert (
+            legacy_backfilled["package_snapshot"]["legacy_manifest_key"]
+            == (legacy_package["manifest_key"])
+        )
+        assert (
+            legacy_backfilled["package_snapshot"]["legacy_pdf_key"] == (legacy_package["pdf_key"])
+        )
+        legacy_repair = legacy_backfilled["package_snapshot"]["repair"]
+        assert legacy_repair["legacy_workflow_id"] == str(legacy_package["workflow_id"])
+        assert legacy_repair["legacy_state"] == legacy_package["state"]
+        assert legacy_repair["legacy_manifest_checksum"] == legacy_package["manifest_checksum"]
+        assert legacy_repair["legacy_pdf_checksum"] == legacy_package["pdf_checksum"]
+        legacy_seeded["event_id"] = legacy_backfilled["id"]
+        legacy_seeded["correlation_id"] = legacy_backfilled["correlation_id"]
         checkpoints = _ConcurrentCheckpointStore()
         object_storage = S3FinalPackageStorage(client=s3, bucket=bucket)
         partial_storage = _FailOncePackageStorage(object_storage)
         partial_processor = SQLAlchemyWorkflowEventProcessor(
-            engine,
+            migration_engine,
             checkpoints,
             TerminalReviewPackageGenerator(partial_storage),
         )
@@ -254,14 +288,16 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
             "Body"
         ].read()
         frozen_provenance = loads(frozen_manifest)["provenance"]
-        with pytest.raises(RuntimeError, match="lack committed final-package metadata"):
+        with pytest.raises(RuntimeError, match="remain unprocessed"):
             command.downgrade(migration_config, "20260825_0032")
         assert _backfilled_event(migration_engine, seeded)["id"] == seeded["event_id"]
 
         packages = TerminalReviewPackageGenerator(object_storage)
 
         def process() -> bool:
-            return SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+            return SQLAlchemyWorkflowEventProcessor(
+                migration_engine, checkpoints, packages
+            ).process(
                 seeded["event_id"],
                 organization_id=seeded["organization_id"],
                 workspace_id=seeded["workspace_id"],
@@ -306,7 +342,125 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         assert manifest == frozen_manifest
         assert loads(manifest)["provenance"] == frozen_provenance
 
-        second_processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages)
+        legacy_expected_keys = {
+            legacy_backfilled["package_manifest_key"],
+            legacy_backfilled["package_pdf_key"],
+        }
+        legacy_failure_storage = _RecordingPackageStorage(object_storage)
+        fail_legacy_commit = True
+
+        def fail_legacy_commit_after_storage(_: object) -> None:
+            nonlocal fail_legacy_commit
+            if fail_legacy_commit and legacy_expected_keys <= legacy_failure_storage.put_keys:
+                fail_legacy_commit = False
+                raise RuntimeError("simulated legacy repair commit failure after storage")
+
+        sqlalchemy_event.listen(migration_engine, "commit", fail_legacy_commit_after_storage)
+        try:
+            with pytest.raises(RuntimeError, match="legacy repair commit failure after storage"):
+                SQLAlchemyWorkflowEventProcessor(
+                    migration_engine,
+                    checkpoints,
+                    TerminalReviewPackageGenerator(legacy_failure_storage),
+                ).process(
+                    legacy_seeded["event_id"],
+                    organization_id=legacy_seeded["organization_id"],
+                    workspace_id=legacy_seeded["workspace_id"],
+                )
+        finally:
+            sqlalchemy_event.remove(migration_engine, "commit", fail_legacy_commit_after_storage)
+        with migration_engine.connect() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(legacy_seeded["organization_id"])},
+            )
+            failed_legacy_repair = (
+                connection.execute(
+                    text(
+                        "SELECT package.manifest_key, package.pdf_key, event.processed_at "
+                        "FROM review_final_packages AS package "
+                        "JOIN review_workflows AS workflow "
+                        "ON workflow.review_id = package.review_id "
+                        "JOIN review_workflow_outbox AS event "
+                        "ON event.workflow_id = workflow.id "
+                        "WHERE package.id = :package_id AND event.id = :event_id"
+                    ),
+                    {
+                        "package_id": legacy_package["id"],
+                        "event_id": legacy_seeded["event_id"],
+                    },
+                )
+                .mappings()
+                .one()
+            )
+        assert failed_legacy_repair["manifest_key"] == legacy_package["manifest_key"]
+        assert failed_legacy_repair["pdf_key"] == legacy_package["pdf_key"]
+        assert failed_legacy_repair["processed_at"] is None
+        legacy_retry_storage = _RecordingPackageStorage(object_storage)
+        assert (
+            SQLAlchemyWorkflowEventProcessor(
+                migration_engine,
+                checkpoints,
+                TerminalReviewPackageGenerator(legacy_retry_storage),
+            ).process(
+                legacy_seeded["event_id"],
+                organization_id=legacy_seeded["organization_id"],
+                workspace_id=legacy_seeded["workspace_id"],
+            )
+            is True
+        )
+        assert legacy_retry_storage.put_keys == set()
+        with migration_engine.begin() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(legacy_seeded["organization_id"])},
+            )
+            repaired_legacy_package = (
+                connection.execute(
+                    text("SELECT * FROM review_final_packages WHERE review_id = :review_id"),
+                    {"review_id": legacy_seeded["review_id"]},
+                )
+                .mappings()
+                .one()
+            )
+            repaired_legacy_audit = (
+                connection.execute(
+                    text(
+                        "SELECT * FROM audit_events "
+                        "WHERE action = 'review_final_package_generated' "
+                        "AND resource_id = :package_id"
+                    ),
+                    {"package_id": legacy_package["id"]},
+                )
+                .mappings()
+                .one()
+            )
+            connection.execute(
+                text(
+                    "UPDATE review_workflow_outbox SET delivered_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :event_id"
+                ),
+                {"event_id": legacy_seeded["event_id"]},
+            )
+        assert repaired_legacy_package["id"] == legacy_package["id"]
+        assert (
+            repaired_legacy_package["manifest_key"] == (legacy_backfilled["package_manifest_key"])
+        )
+        assert repaired_legacy_package["pdf_key"] == legacy_backfilled["package_pdf_key"]
+        repaired_legacy_manifest = s3.get_object(
+            Bucket=bucket, Key=repaired_legacy_package["manifest_key"]
+        )["Body"].read()
+        repaired_legacy_pdf = s3.get_object(Bucket=bucket, Key=repaired_legacy_package["pdf_key"])[
+            "Body"
+        ].read()
+        assert (
+            sha256(repaired_legacy_manifest).hexdigest()
+            == repaired_legacy_package["manifest_checksum"]
+        )
+        assert sha256(repaired_legacy_pdf).hexdigest() == repaired_legacy_package["pdf_checksum"]
+        assert repaired_legacy_audit["actor_id"] == FINAL_PACKAGE_WORKER_ACTOR_ID
+
+        second_processor = SQLAlchemyWorkflowEventProcessor(migration_engine, checkpoints, packages)
         assert (
             second_processor.process(
                 second_seeded["event_id"],
@@ -318,7 +472,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         command.downgrade(migration_config, "20260825_0032")
         command.upgrade(migration_config, "head")
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT count(*) FROM review_final_packages")) == 2
+            assert connection.scalar(text("SELECT count(*) FROM review_final_packages")) == 3
             assert (
                 connection.scalar(
                     text(
@@ -326,7 +480,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                         "WHERE action = 'review_final_package_generated'"
                     )
                 )
-                == 2
+                == 3
             )
             retained = (
                 connection.execute(
@@ -358,7 +512,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                     ),
                     {"pattern": "workflow:%:terminal-package-backfill:0035"},
                 )
-                == 2
+                == 3
             )
         assert {item["id"] for item in retained} == {
             seeded["event_id"],
@@ -400,7 +554,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         assert ordinary_source["package_snapshot"] is not None
         ordinary_partial_storage = _FailOncePackageStorage(object_storage)
         ordinary_partial_processor = SQLAlchemyWorkflowEventProcessor(
-            engine,
+            migration_engine,
             checkpoints,
             TerminalReviewPackageGenerator(ordinary_partial_storage),
         )
@@ -417,11 +571,11 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         ordinary_manifest = s3.get_object(Bucket=bucket, Key=f"{ordinary_base}/manifest.json")[
             "Body"
         ].read()
-        with pytest.raises(RuntimeError, match="lack committed final-package metadata"):
+        with pytest.raises(RuntimeError, match="remain unprocessed"):
             command.downgrade(migration_config, "20260825_0032")
 
         assert (
-            SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+            SQLAlchemyWorkflowEventProcessor(migration_engine, checkpoints, packages).process(
                 ordinary_event["event_id"],
                 organization_id=ordinary_event["organization_id"],
                 workspace_id=ordinary_event["workspace_id"],
@@ -470,11 +624,11 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                 fail_commit = False
                 raise RuntimeError("simulated database commit failure after storage")
 
-        sqlalchemy_event.listen(engine, "commit", fail_after_storage)
+        sqlalchemy_event.listen(migration_engine, "commit", fail_after_storage)
         try:
             with pytest.raises(RuntimeError, match="database commit failure after storage"):
                 SQLAlchemyWorkflowEventProcessor(
-                    engine,
+                    migration_engine,
                     checkpoints,
                     TerminalReviewPackageGenerator(commit_failure_storage),
                 ).process(
@@ -483,7 +637,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                     workspace_id=commit_failure_event["workspace_id"],
                 )
         finally:
-            sqlalchemy_event.remove(engine, "commit", fail_after_storage)
+            sqlalchemy_event.remove(migration_engine, "commit", fail_after_storage)
         with engine.connect() as connection:
             connection.execute(
                 text("SELECT set_config('app.organization_id', :organization_id, true)"),
@@ -513,7 +667,7 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
                 == 0
             )
         assert (
-            SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+            SQLAlchemyWorkflowEventProcessor(migration_engine, checkpoints, packages).process(
                 commit_failure_event["event_id"],
                 organization_id=commit_failure_event["organization_id"],
                 workspace_id=commit_failure_event["workspace_id"],
@@ -543,13 +697,74 @@ def test_concurrent_terminal_delivery_creates_one_correlated_checksum_valid_pack
         )
 
         assert (
-            SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages).process(
+            SQLAlchemyWorkflowEventProcessor(migration_engine, checkpoints, packages).process(
                 seeded["event_id"],
                 organization_id=seeded["organization_id"],
                 workspace_id=seeded["workspace_id"],
             )
             is False
         )
+
+        busy_tenant, later_tenant = sorted(
+            (seeded, second_seeded), key=lambda item: str(item["organization_id"])
+        )
+        extra_busy_event_id = uuid4()
+        with migration_engine.begin() as connection:
+            for event in (busy_tenant, later_tenant):
+                connection.execute(
+                    text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                    {"organization_id": str(event["organization_id"])},
+                )
+                connection.execute(
+                    text(
+                        "UPDATE review_workflow_outbox SET delivered_at = NULL, "
+                        "lease_owner = NULL, lease_expires_at = NULL "
+                        "WHERE id = :event_id"
+                    ),
+                    {"event_id": event["event_id"]},
+                )
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(busy_tenant["organization_id"])},
+            )
+            connection.execute(
+                text(
+                    """
+                    INSERT INTO review_workflow_outbox (
+                        id, workflow_id, organization_id, workspace_id, event_type,
+                        correlation_id, idempotency_key, delivered_at, processed_at
+                    ) VALUES (
+                        :id, :workflow_id, :organization_id, :workspace_id,
+                        'review.workflow.resume', 'relay-fairness', :idempotency_key,
+                        NULL, CURRENT_TIMESTAMP
+                    )
+                    """
+                ),
+                {
+                    "id": extra_busy_event_id,
+                    "workflow_id": busy_tenant["workflow_id"],
+                    "organization_id": busy_tenant["organization_id"],
+                    "workspace_id": busy_tenant["workspace_id"],
+                    "idempotency_key": f"relay-fairness-{extra_busy_event_id}",
+                },
+            )
+        fair_publisher = _RecordingRelayPublisher()
+        fair_relay = WorkflowOutboxRelay(migration_engine, fair_publisher, owner="relay-fairness")
+        assert fair_relay.relay_once() is True
+        assert fair_relay.relay_once() is True
+        assert [item["organization_id"] for item in fair_publisher.published] == [
+            busy_tenant["organization_id"],
+            later_tenant["organization_id"],
+        ]
+        with migration_engine.begin() as connection:
+            connection.execute(
+                text("SELECT set_config('app.organization_id', :organization_id, true)"),
+                {"organization_id": str(busy_tenant["organization_id"])},
+            )
+            connection.execute(
+                text("DELETE FROM review_workflow_outbox WHERE id = :event_id"),
+                {"event_id": extra_busy_event_id},
+            )
 
         with engine.begin() as connection:
             for event in (seeded, second_seeded):
@@ -934,4 +1149,92 @@ def _seed_terminal_event(
         "workflow_id": workflow_id,
         "event_id": event_id,
         "correlation_id": correlation_id,
+    }
+
+
+def _seed_legacy_partial_package(
+    engine: Engine, seeded: _SeededTerminalEvent
+) -> dict[str, UUID | str]:
+    package_id = uuid4()
+    package_base = (
+        f"reviews/{seeded['organization_id']}/{seeded['workspace_id']}/"
+        f"{seeded['review_id']}/final-package"
+    )
+    manifest_key = f"{package_base}/manifest.json"
+    pdf_key = f"{package_base}/report.pdf"
+    with engine.begin() as connection:
+        connection.execute(
+            text("SELECT set_config('app.organization_id', :organization_id, true)"),
+            {"organization_id": str(seeded["organization_id"])},
+        )
+        workflow = (
+            connection.execute(
+                text(
+                    "SELECT policy_version_id, state, revision FROM review_workflows "
+                    "WHERE id = :workflow_id"
+                ),
+                {"workflow_id": seeded["workflow_id"]},
+            )
+            .mappings()
+            .one()
+        )
+        legacy_manifest = {
+            "review_id": str(seeded["review_id"]),
+            "agreement_id": str(seeded["agreement_id"]),
+            "agreement_version_id": None,
+            "workflow_id": str(seeded["workflow_id"]),
+            "policy_version_id": str(workflow["policy_version_id"]),
+            "state": workflow["state"],
+            "revision": workflow["revision"],
+            "decisions": [],
+            "stages": [],
+            "assignments": [],
+            "comments": [],
+            "findings": [],
+            "audit_event_ids": [],
+            "provenance": {"source": "postgresql", "workflow_revision": 1},
+        }
+        manifest_content = dumps(legacy_manifest, sort_keys=True, separators=(",", ":")).encode()
+        manifest_checksum = sha256(manifest_content).hexdigest()
+        pdf_content = _legacy_render_pdf(
+            [
+                "Agreement Intelligence - Final Review Package",
+                f"Agreement ID: {seeded['agreement_id']}",
+                f"Review ID: {seeded['review_id']}",
+                "Outcome: rejected",
+                f"Manifest checksum: sha256:{manifest_checksum}",
+            ]
+        )
+        connection.execute(
+            text(
+                """
+                INSERT INTO review_final_packages (
+                    id, organization_id, workspace_id, review_id, workflow_id, state,
+                    manifest_key, pdf_key, manifest_checksum, pdf_checksum
+                ) VALUES (
+                    :id, :organization_id, :workspace_id, :review_id, :workflow_id,
+                    'rejected', :manifest_key, :pdf_key, :manifest_checksum, :pdf_checksum
+                )
+                """
+            ),
+            {
+                "id": package_id,
+                "organization_id": seeded["organization_id"],
+                "workspace_id": seeded["workspace_id"],
+                "review_id": seeded["review_id"],
+                "workflow_id": seeded["workflow_id"],
+                "manifest_key": manifest_key,
+                "pdf_key": pdf_key,
+                "manifest_checksum": manifest_checksum,
+                "pdf_checksum": sha256(pdf_content).hexdigest(),
+            },
+        )
+    return {
+        "id": package_id,
+        "workflow_id": seeded["workflow_id"],
+        "state": "rejected",
+        "manifest_key": manifest_key,
+        "pdf_key": pdf_key,
+        "manifest_checksum": manifest_checksum,
+        "pdf_checksum": sha256(pdf_content).hexdigest(),
     }

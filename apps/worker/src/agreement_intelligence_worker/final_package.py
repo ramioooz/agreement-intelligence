@@ -107,6 +107,8 @@ class PreparedFinalPackage:
     pdf_content: bytes
     manifest_checksum: str
     pdf_checksum: str
+    repair_package_id: UUID | None = None
+    repair_legacy_metadata: dict[str, str] | None = None
 
 
 class TerminalReviewPackageGenerator:
@@ -165,7 +167,39 @@ class TerminalReviewPackageGenerator:
         frozen = event["package_snapshot"]
         if frozen is None:
             raise FinalPackageConflictError("terminal package snapshot is missing")
-        snapshot = loads(frozen) if isinstance(frozen, str) else dict(frozen)
+        frozen_snapshot = loads(frozen) if isinstance(frozen, str) else dict(frozen)
+        repair = frozen_snapshot.get("repair")
+        repair_package_id: UUID | None = None
+        repair_legacy_metadata: dict[str, str] | None = None
+        if repair is not None:
+            if not isinstance(repair, dict) or not isinstance(
+                frozen_snapshot.get("manifest"), dict
+            ):
+                raise FinalPackageConflictError("terminal package repair snapshot is invalid")
+            snapshot = dict(cast(dict[str, object], frozen_snapshot["manifest"]))
+            if repair.get("source") != "postgresql-terminal-migration-package-repair":
+                raise FinalPackageConflictError("terminal package repair source is invalid")
+            try:
+                repair_package_id = UUID(str(repair["package_id"]))
+            except (KeyError, TypeError, ValueError) as error:
+                raise FinalPackageConflictError(
+                    "terminal package repair identity is invalid"
+                ) from error
+            repair_fields = {
+                "workflow_id": "legacy_workflow_id",
+                "state": "legacy_state",
+                "manifest_key": "legacy_manifest_key",
+                "pdf_key": "legacy_pdf_key",
+                "manifest_checksum": "legacy_manifest_checksum",
+                "pdf_checksum": "legacy_pdf_checksum",
+            }
+            if any(not isinstance(repair.get(source), str) for source in repair_fields.values()):
+                raise FinalPackageConflictError("terminal package legacy metadata is invalid")
+            repair_legacy_metadata = {
+                target: cast(str, repair[source]) for target, source in repair_fields.items()
+            }
+        else:
+            snapshot = frozen_snapshot
         provenance = snapshot.get("provenance")
         if not isinstance(provenance, dict) or (
             provenance.get("workflow_event_id") != str(event_id)
@@ -193,6 +227,8 @@ class TerminalReviewPackageGenerator:
             f"reviews/{snapshot['organization_id']}/{snapshot['workspace_id']}/"
             f"{snapshot['review_id']}/final-package"
         )
+        if repair is not None:
+            base = f"{base}/recovery-0035"
         manifest_key = f"{base}/manifest.json"
         pdf_key = f"{base}/report.pdf"
         if (
@@ -202,6 +238,11 @@ class TerminalReviewPackageGenerator:
             or event["package_pdf_key"] != pdf_key
         ):
             raise FinalPackageConflictError("terminal package object key conflict")
+        if repair is not None and (
+            repair.get("manifest_checksum") != manifest_checksum
+            or repair.get("pdf_checksum") != pdf_checksum
+        ):
+            raise FinalPackageConflictError("terminal package repair checksum conflict")
         return PreparedFinalPackage(
             event_id=event_id,
             workflow_id=workflow_id,
@@ -213,6 +254,8 @@ class TerminalReviewPackageGenerator:
             pdf_content=pdf_content,
             manifest_checksum=manifest_checksum,
             pdf_checksum=pdf_checksum,
+            repair_package_id=repair_package_id,
+            repair_legacy_metadata=repair_legacy_metadata,
         )
 
     def commit(
@@ -229,6 +272,9 @@ class TerminalReviewPackageGenerator:
         )
         if existing is not None:
             expected = {
+                "organization_id": snapshot["organization_id"],
+                "workspace_id": snapshot["workspace_id"],
+                "review_id": snapshot["review_id"],
                 "workflow_id": str(prepared.workflow_id),
                 "state": snapshot["state"],
                 "manifest_key": prepared.manifest_key,
@@ -236,7 +282,22 @@ class TerminalReviewPackageGenerator:
                 "manifest_checksum": prepared.manifest_checksum,
                 "pdf_checksum": prepared.pdf_checksum,
             }
-            if any(str(existing[key]) != str(value) for key, value in expected.items()):
+            metadata_matches = all(
+                str(existing[key]) == str(value) for key, value in expected.items()
+            )
+            if prepared.repair_package_id is not None and prepared.repair_package_id != UUID(
+                str(existing["id"])
+            ):
+                raise FinalPackageConflictError("legacy final package identity conflict")
+            if prepared.repair_package_id is not None and (
+                prepared.repair_legacy_metadata is None
+                or any(
+                    str(existing[key]) != value
+                    for key, value in prepared.repair_legacy_metadata.items()
+                )
+            ):
+                raise FinalPackageConflictError("legacy final package metadata conflict")
+            if not metadata_matches and prepared.repair_package_id is None:
                 raise FinalPackageConflictError("final package metadata conflict")
             self._ensure_object(
                 key=prepared.manifest_key,
@@ -248,7 +309,21 @@ class TerminalReviewPackageGenerator:
                 content=prepared.pdf_content,
                 content_type="application/pdf",
             )
+            if not metadata_matches:
+                self._repair_metadata(connection, existing=existing, prepared=prepared)
+            self._record_audit(
+                connection,
+                package_id=UUID(str(existing["id"])),
+                workflow=snapshot,
+                event_id=prepared.event_id,
+                correlation_id=prepared.correlation_id,
+                manifest_checksum=prepared.manifest_checksum,
+                pdf_checksum=prepared.pdf_checksum,
+            )
             return PackageGenerationResult(package_id=UUID(str(existing["id"])), created=False)
+
+        if prepared.repair_package_id is not None:
+            raise FinalPackageConflictError("legacy final package metadata is missing")
 
         self._ensure_object(
             key=prepared.manifest_key,
@@ -297,6 +372,51 @@ class TerminalReviewPackageGenerator:
         )
         return PackageGenerationResult(package_id=package_id, created=True)
 
+    @staticmethod
+    def _repair_metadata(
+        connection: Connection,
+        *,
+        existing: Any,
+        prepared: PreparedFinalPackage,
+    ) -> None:
+        if prepared.repair_package_id is None:
+            raise FinalPackageConflictError("final package metadata conflict")
+        if connection.dialect.name == "postgresql":
+            connection.execute(
+                text("SELECT set_config('app.final_package_repair_event_id', :event_id, true)"),
+                {"event_id": str(prepared.event_id)},
+            )
+        updated = connection.execute(
+            text(
+                """
+                UPDATE review_final_packages
+                SET workflow_id = :workflow_id, state = :state,
+                    manifest_key = :manifest_key, pdf_key = :pdf_key,
+                    manifest_checksum = :manifest_checksum, pdf_checksum = :pdf_checksum
+                WHERE id = :id
+                  AND manifest_key = :existing_manifest_key
+                  AND pdf_key = :existing_pdf_key
+                  AND manifest_checksum = :existing_manifest_checksum
+                  AND pdf_checksum = :existing_pdf_checksum
+                """
+            ),
+            {
+                "id": _database_uuid(connection, prepared.repair_package_id),
+                "workflow_id": _database_uuid(connection, prepared.workflow_id),
+                "state": prepared.snapshot["state"],
+                "manifest_key": prepared.manifest_key,
+                "pdf_key": prepared.pdf_key,
+                "manifest_checksum": prepared.manifest_checksum,
+                "pdf_checksum": prepared.pdf_checksum,
+                "existing_manifest_key": existing["manifest_key"],
+                "existing_pdf_key": existing["pdf_key"],
+                "existing_manifest_checksum": existing["manifest_checksum"],
+                "existing_pdf_checksum": existing["pdf_checksum"],
+            },
+        )
+        if updated.rowcount != 1:
+            raise FinalPackageConflictError("legacy final package metadata changed during repair")
+
     def _ensure_object(self, *, key: str, content: bytes, content_type: str) -> None:
         checksum = sha256(content).hexdigest()
         stored = self._storage.read(key)
@@ -327,6 +447,26 @@ class TerminalReviewPackageGenerator:
         manifest_checksum: str,
         pdf_checksum: str,
     ) -> None:
+        existing = connection.scalar(
+            text(
+                """
+                SELECT id FROM audit_events
+                WHERE actor_id = :actor_id
+                  AND action = 'review_final_package_generated'
+                  AND resource_type = 'review_final_package'
+                  AND resource_id = :resource_id
+                  AND correlation_id = :correlation_id
+                LIMIT 1
+                """
+            ),
+            {
+                "actor_id": _database_uuid(connection, FINAL_PACKAGE_WORKER_ACTOR_ID),
+                "resource_id": _database_uuid(connection, package_id),
+                "correlation_id": correlation_id,
+            },
+        )
+        if existing is not None:
+            return
         json_cast = (
             "CAST(:{name} AS JSONB)" if connection.dialect.name == "postgresql" else ":{name}"
         )
