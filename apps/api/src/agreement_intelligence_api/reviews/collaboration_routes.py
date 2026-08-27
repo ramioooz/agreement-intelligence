@@ -90,7 +90,8 @@ def start_review(
                     agreement_family=cast(
                         SupportedAgreementFamily,
                         agreement.agreement_type,
-                    )
+                    ),
+                    jurisdiction=agreement.audit_metadata.get("jurisdiction", "any"),
                 ),
             )
             selected_policy_id = routed.id if routed is not None else None

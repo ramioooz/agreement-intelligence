@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.approval_policies.service import ApprovalPolicyService
 from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
@@ -570,6 +571,45 @@ def test_policy_override_persists_only_the_structured_reason_code(
     )
     assert audit_event is not None
     assert audit_event.metadata_json == {"reason_code": "risk_exception"}
+
+
+def test_start_review_routes_using_the_agreement_jurisdiction(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    agreement = session.get(AgreementRecord, seeded.agreement_id)
+    assert agreement is not None
+    agreement.audit_metadata = {"jurisdiction": "UAE"}
+    session.commit()
+    routed_jurisdictions: list[str] = []
+
+    def capture_route(
+        _service: ApprovalPolicyService,
+        _principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        request: Any,
+    ) -> None:
+        assert organization_id == seeded.organization_id
+        assert workspace_id == seeded.workspace_id
+        routed_jurisdictions.append(request.jurisdiction)
+
+    monkeypatch.setattr(ApprovalPolicyService, "route", capture_route)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "jurisdiction-routed-review",
+        },
+    )
+
+    assert response.status_code == 201
+    assert routed_jurisdictions == ["UAE"]
 
 
 def test_policy_override_uses_other_code_for_legacy_reason_without_auditing_it(
