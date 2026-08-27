@@ -240,7 +240,9 @@ authenticate; no configured demo account is altered.
 
 **Preconditions and test data:** Run
 `STACK_ENV_FILE=.env STACK_PROJECT_NAME=agreement-intelligence scripts/manual-qa-state.sh second-tenant-setup`;
-record its fixed second organization/workspace/agreement IDs.
+record every printed fixed organization, workspace, agreement, citation, review, and package
+ID. The package is metadata-only because authorization denial must occur before object
+storage access.
 
 **Steps:**
 
@@ -315,8 +317,8 @@ scope; UI explains download behavior.
 
 ### MQA-REP-003 — Invalid file, duplicate checksum, and validation
 
-**Purpose and risk:** Ensure extension spoofing, unsupported input, and exact duplicate
-content fail safely.
+**Purpose and risk:** Ensure extension spoofing and unsupported input fail safely, while an
+exact duplicate follows the documented idempotent document-upload contract.
 
 **Identity:** `legal.reviewer`.
 
@@ -327,14 +329,21 @@ already uploaded v1 PDF.
 
 1. Upload the invalid-signature PDF and then the unsupported text file.
 2. Upload the exact v1 PDF again to the same workspace.
-3. Inspect visible error/status and repository count after each attempt.
+3. Inspect the visible error/status, returned document ID/object key, and repository count
+   after each attempt.
 
-**Expected result:** Invalid/unsupported content is rejected without object/agreement residue;
-duplicate returns the documented conflict and does not create another version/record.
+**Expected result:** Invalid-signature and unsupported files return `422` without a stored
+object. The same-scope duplicate returns `200` with `duplicate:true` and the original
+document ID/object key, so the immutable source object is not rewritten. The current
+repository UI may continue and create a second agreement record after that document
+response; if it does, record and remove that case-specific record rather than treating the
+record count as the document-deduplication contract.
 
-**Evidence:** Redacted validation messages/status codes and unchanged item count.
+**Evidence:** Redacted validation messages/status codes, duplicate response fields, and
+before/after repository counts.
 
-**Cleanup:** Remove any temporary unsupported local file; no server cleanup should be needed.
+**Cleanup:** Remove any case-specific agreement created after the duplicate response and the
+temporary unsupported local file.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -687,28 +696,31 @@ appropriate materiality/uncertainty; both citations resolve to their respective 
 
 **Result:** Pass / Fail / Blocked — ______
 
-### MQA-INT-008 — Added, removed, and unresolved comparison alignment
+### MQA-INT-008 — Low-confidence matched comparison alignment
 
-**Purpose and risk:** Ensure alignment uncertainty is exposed rather than forced into a
-false match.
+**Purpose and risk:** Ensure uncertainty in the alignment produced by the shipped synthetic
+pair is exposed for human review.
 
 **Identity:** `legal.reviewer`.
 
-**Preconditions and test data:** Synthetic successor with one added, one removed, and one
-ambiguous clause compared to an authorized baseline.
+**Preconditions and test data:** The processed `client-agreement-v1.pdf` and
+`client-agreement-v2.pdf` versions from MQA-REP-008.
 
 **Steps:**
 
-1. Run comparison for the crafted versions.
-2. Filter/inspect added, removed, changed, and unresolved/review-required entries.
-3. Open available citations and confirm missing-side citations are not fabricated.
+1. Run comparison for the shipped v1 baseline and v2 target.
+2. Inspect the single matched change, its confidence, review-required flag, word-level
+   additions/removals/replacements, and rationale.
+3. Open its baseline and target citations and confirm both resolve to the correct version.
 
-**Expected result:** All alignment kinds are explicit; unresolved/low-confidence items
-require review; evidence lists reflect actual sides only.
+**Expected result:** The shipped pair produces one `matched` change with
+`review_required:true`; the changed synthetic terms are visible in the word diff and both
+version citations resolve. This pair does not claim to exercise added, removed, split,
+merged, or moved alignment kinds.
 
 **Evidence:** Alignment-state table and representative citation links.
 
-**Cleanup:** Delete the disposable crafted agreement after evidence.
+**Cleanup:** Preserve the comparison for the review-package walkthrough.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -878,13 +890,14 @@ tenant scope.
 
 **Identity:** Demo Legal reviewer/admin; neither belongs to the temporary second tenant.
 
-**Preconditions and test data:** Synthetic terminal Demo Legal review/package plus the fixed
-foreign organization/workspace/agreement created by `scripts/manual-qa-state.sh second-tenant-setup`.
+**Preconditions and test data:** Synthetic terminal Demo Legal review/package plus every
+fixed foreign organization/workspace/agreement/review/package ID printed by
+`scripts/manual-qa-state.sh second-tenant-setup`. The foreign package fixture is metadata-only.
 
 **Steps:**
 
-1. Request the Demo Legal review/package IDs under the foreign organization/workspace, and
-   request the foreign agreement ID under Demo Legal scope.
+1. Request the Demo Legal review/package IDs under the foreign organization/workspace, then
+   request the foreign review/package/agreement IDs under Demo Legal scope.
 2. Attempt timeline, comments, decisions, package metadata/PDF/manifest, and audit search.
 3. Attempt the same from read-only MCP status tools.
 
@@ -935,14 +948,17 @@ and retry behavior match the published OpenAPI schema.
 
 **Identity:** `platform.admin` for setup; `legal.reviewer` for ordinary calls.
 
-**Preconditions and test data:** `client-agreement-v1.pdf`, a unique run ID, imported
-collection variables, and the frozen demo organization/workspace IDs.
+**Preconditions and test data:** `client-agreement-v1.pdf`, a fresh private
+`request_run_id`, imported collection variables, and the frozen demo
+organization/workspace IDs.
 
 **Steps:**
 
 1. Create/upload a case-specific agreement, list and read it, then request its analysis,
    search, review, and audit resources with explicit organization/workspace query values.
-2. Repeat one safe read and one idempotent mutation with the same request identifier.
+2. Repeat one safe read and one processing or comparison mutation with the same
+   `request_run_id`; confirm the collection sends the operation-specific `Idempotency-Key`.
+   Change `request_run_id` before any new logical mutation.
 3. Compare every observed status/body with the running OpenAPI operation and schema.
 
 **Expected result:** Documented methods and paths exist; scope is explicit; responses match

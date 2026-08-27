@@ -59,10 +59,15 @@ its spawned interpreter reserves a virtual address space larger than a safe
 parser reports temporary unavailability and the job follows the normal retry
 policy.
 
-The authentication integration still lives behind #8's `current_principal`
-dependency. Until a real OIDC/API-gateway implementation supplies that
-principal, the route fails closed with `401`. The download handler additionally
-rejects object keys outside the authorized scope.
+The full local stack authenticates browser and API users with Keycloak OIDC. The
+`current_principal` dependency validates the bearer JWT and maps the Keycloak subject to an
+application identity whose membership and capabilities are checked before upload or
+download. Missing, malformed, expired, wrong-issuer, or wrong-audience tokens fail with
+`401`; workspace authorization and forced database row-level security remain separate
+controls. The download handler additionally rejects object keys outside the authorized
+scope.
 
-Presigned upload URLs are intentionally not used in Sprint 1; server-mediated
-handling keeps validation and immutable writes in one trusted boundary.
+Presigned upload URLs are not used by the local public-release flow; server-mediated
+handling keeps validation and immutable writes in one trusted boundary. A cloud edge,
+gateway, and production identity deployment remain operator responsibilities rather than
+features of the local Compose topology.

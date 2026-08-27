@@ -12,9 +12,14 @@ Run a captured runtime result through the baseline with:
 make version-comparison-eval VERSION_COMPARISON_EVAL_RESULTS=path/to/results.json
 ```
 
-The runtime adapter is intentionally deferred until comparison contracts are
-stable. A result must contain every case and report only identifiers and labels;
-the evaluation dataset never needs source document text.
+The evaluator consumes prepared observation JSON containing every case and only identifiers
+and labels; the evaluation dataset never needs source document text. A direct adapter from
+persisted runtime comparisons to that observation file is still deferred.
+
+Separately, runtime comparison processing already persists and serializes typed
+provider/model, latency, token, and cost provenance when those values exist.
+Deterministic/no-provider comparison rows use an explicit empty safe provenance object, so
+the response remains typed without inventing provider data.
 
 The accepted release thresholds are:
 
@@ -25,6 +30,6 @@ The accepted release thresholds are:
 - Alignment F1: at least `0.80`.
 - Critical material-change recall: `1.00`.
 
-Provider quality, latency, and cost are recorded by the runtime comparison
-provenance flow when it is implemented. They are deliberately not release gates
-in this deterministic baseline.
+Provider-backed runs record validated provider/model and available usage, latency, and cost
+metadata in the comparison provenance flow. Provider quality and operational metrics are
+opt-in evidence and are deliberately not release gates in this deterministic baseline.

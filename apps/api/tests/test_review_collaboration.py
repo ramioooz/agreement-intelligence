@@ -573,15 +573,27 @@ def test_policy_override_persists_only_the_structured_reason_code(
     assert audit_event.metadata_json == {"reason_code": "risk_exception"}
 
 
-def test_start_review_routes_using_the_agreement_jurisdiction(
+@pytest.mark.parametrize(
+    ("stored_jurisdiction", "expected_jurisdiction"),
+    [
+        ("UAE", "UAE"),
+        (" uae ", "UAE"),
+        ("", "any"),
+        ("X", "any"),
+        ("JURISDICTION-TOO-LONG", "any"),
+    ],
+)
+def test_start_review_routes_using_a_safe_agreement_jurisdiction(
     session: Session,
     client_for_session: Callable[[UUID], TestClient],
     monkeypatch: pytest.MonkeyPatch,
+    stored_jurisdiction: str,
+    expected_jurisdiction: str,
 ) -> None:
     seeded = _seed_scope(session)
     agreement = session.get(AgreementRecord, seeded.agreement_id)
     assert agreement is not None
-    agreement.audit_metadata = {"jurisdiction": "UAE"}
+    agreement.audit_metadata = {"jurisdiction": stored_jurisdiction}
     session.commit()
     routed_jurisdictions: list[str] = []
 
@@ -609,7 +621,7 @@ def test_start_review_routes_using_the_agreement_jurisdiction(
     )
 
     assert response.status_code == 201
-    assert routed_jurisdictions == ["UAE"]
+    assert routed_jurisdictions == [expected_jurisdiction]
 
 
 def test_policy_override_uses_other_code_for_legacy_reason_without_auditing_it(

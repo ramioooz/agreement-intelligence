@@ -60,8 +60,10 @@ These commands target only the Compose project and ignored environment named exp
 The helper uses PostgreSQL inside its container, so no database password appears in shell
 history or process arguments.
 
-Create one fixed second organization, workspace, and foreign-scope agreement, record the
-printed safe UUIDs, then remove only those fixed records after the tenant-boundary cases:
+Create one fixed second organization/workspace plus a foreign-scope agreement, search
+citation, terminal review, and final-package metadata row. Record every printed safe ID,
+then remove only those fixed records after the tenant-boundary cases. The package fixture
+does not create object bytes: a cross-tenant request must be denied before storage access.
 
 ```bash
 STACK_ENV_FILE=.env STACK_PROJECT_NAME=agreement-intelligence \

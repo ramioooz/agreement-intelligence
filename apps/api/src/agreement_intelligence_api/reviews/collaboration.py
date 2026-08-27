@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
@@ -39,6 +40,12 @@ class ReviewConflictError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class ReviewRouteContext:
+    agreement_type: str
+    jurisdiction: str
+
+
 class ReviewCollaborationService:
     def __init__(self, session: Session, identity: IdentityService) -> None:
         self._session = session
@@ -51,9 +58,16 @@ class ReviewCollaborationService:
         organization_id: UUID,
         workspace_id: UUID,
         request: StartReviewRequest,
-    ) -> tuple[ReviewCaseResponse, bool]:
+    ) -> tuple[ReviewCaseResponse, bool, ReviewRouteContext]:
         self._authorize_assign(principal, organization_id, workspace_id)
-        self._agreement(request.agreement_id, organization_id, workspace_id)
+        agreement = self._agreement(request.agreement_id, organization_id, workspace_id)
+        audit_metadata = agreement.audit_metadata
+        route_context = ReviewRouteContext(
+            agreement_type=agreement.agreement_type,
+            jurisdiction=_safe_route_jurisdiction(
+                audit_metadata.get("jurisdiction") if isinstance(audit_metadata, dict) else None
+            ),
+        )
         self._version(
             request.agreement_version_id, request.agreement_id, organization_id, workspace_id
         )
@@ -69,7 +83,7 @@ class ReviewCollaborationService:
                 or existing.agreement_version_id != request.agreement_version_id
             ):
                 raise ReviewConflictError
-            return self._review_response(existing), False
+            return self._review_response(existing), False, route_context
         now = datetime.now(UTC)
         record = ReviewCaseRecord(
             id=uuid4(),
@@ -99,8 +113,8 @@ class ReviewCollaborationService:
             )
             if existing is None:
                 raise error
-            return self._review_response(existing), False
-        return self._review_response(record), True
+            return self._review_response(existing), False, route_context
+        return self._review_response(record), True, route_context
 
     def get(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID, review_id: UUID
@@ -536,3 +550,10 @@ def _same_due_at(left: datetime | None, right: datetime | None) -> bool:
     if left is None or right is None:
         return left is right
     return left.replace(tzinfo=left.tzinfo or UTC) == right.replace(tzinfo=right.tzinfo or UTC)
+
+
+def _safe_route_jurisdiction(value: object) -> str:
+    if not isinstance(value, str):
+        return "any"
+    normalized = value.strip()
+    return normalized if 2 <= len(normalized) <= 16 else "any"

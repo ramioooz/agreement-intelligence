@@ -61,13 +61,25 @@ Prepare a JSON file with this shape for Ragas:
 }
 ```
 
-Then run:
+Create an ignored, owner-readable file without putting a credential in shell history or a
+process argument:
 
 ```bash
-OPENAI_API_KEY=... \
-OPENAI_MODEL=gpt-5.4-mini \
-RAGAS_RESULTS=/absolute/path/to/ragas-results.json \
+umask 077
+touch .env.ai-eval.local
+chmod 600 .env.ai-eval.local
+```
+
+Open `.env.ai-eval.local` in an editor, enter `OPENAI_API_KEY`, `OPENAI_MODEL`, and the
+absolute `RAGAS_RESULTS` path, then source it only for the owner-triggered run:
+
+```bash
+set -a
+. ./.env.ai-eval.local
+set +a
 make ai-eval-assisted
+unset OPENAI_API_KEY OPENAI_MODEL RAGAS_RESULTS
+rm -f .env.ai-eval.local
 ```
 
 The command writes Promptfoo and Ragas reports under `artifacts/evaluation/`. Agreement text is

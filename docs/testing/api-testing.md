@@ -25,8 +25,9 @@ only and must never be exported after adding private values.
 5. Use the seeded identities and ignored local password values. Never paste browser cookies,
    provider keys, production tokens, real emails, or documents into Insomnia.
 
-The API uses bearer authentication plus `organization_id` and `workspace_id` query
-parameters on scoped routes. A resource UUID is not authorization.
+The API uses bearer authentication plus explicit `organization_id` and `workspace_id`
+scope. Most scoped routes use query parameters; `POST /documents` carries both values as
+multipart text fields. A resource UUID is not authorization.
 
 [Back to contents](#contents)
 
@@ -45,6 +46,7 @@ Set these values only in a private local sub-environment:
 | `organization_id` | `aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa` |
 | `workspace_id` | `bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb` |
 | `access_token` | Short-lived OAuth result; private, clear after testing |
+| `request_run_id` | A fresh non-secret identifier for this private run; reuse only for the same logical retry |
 | Resource IDs | Copy synthetic IDs from prior responses only |
 | `document_path` | Absolute path to a generated ignored synthetic fixture; never export |
 
@@ -101,7 +103,7 @@ Expected denial semantics:
 - `401`: missing, malformed, expired, unavailable, or wrong-client bearer;
 - `403`: authenticated principal lacks a permission for a non-hidden action;
 - `404`: resource/scope is hidden or absent, including many cross-tenant lookups;
-- `409`: duplicate, illegal transition, optimistic conflict, or idempotency conflict;
+- `409`: conflicting mutation, illegal transition, optimistic conflict, or idempotency conflict;
 - `422`: malformed UUID/query/body/file metadata rejected by validation;
 - `429`: applicable tenant/rate/budget limit is exceeded.
 
@@ -121,7 +123,7 @@ The collection includes these representative requests:
 | Identity/capabilities | `GET /identity/organizations/{organization_id}/workspaces/{workspace_id}/capabilities` | 200 | 401 invalid bearer; hidden denial for inaccessible scope |
 | Agreements/list | `GET /agreements` | 200 | 401/hidden denial; read-only |
 | Agreements/create | `POST /agreements` | 201 | 403/422; archive or permanently delete synthetic record |
-| Documents/upload | `POST /documents` multipart | 201 | 409 duplicate, 415/type failure, 422 invalid scope; delete owning synthetic agreement |
+| Documents/upload | `POST /documents` multipart | 201 first upload; 200 with `duplicate:true` for the same checksum/scope | 404 hidden scope; 422 unsupported, malformed, or invalid multipart; delete any case-specific agreement created by the UI |
 | Processing/submit | `POST /agreements/{agreement_id}/processing-jobs` | 202 | 404/409; do not submit duplicate terminal work |
 | Versions/list | `GET /agreements/{agreement_id}/versions` | 200 | 404 hidden/absent; read-only |
 | Comparison/create | `POST /agreements/{agreement_id}/version-comparisons` | 202 | 404/409/422; keep only synthetic result |
@@ -159,9 +161,12 @@ Processing body is `{"profile":"baseline"}`. Comparison body supplies the return
 `"analysis_version":"version-comparison.v1"`. Question-thread body optionally includes
 `agreement_ids`; turn body is `{"question":"What termination notice is stated?"}`.
 
-For mutating requests, send once, capture status/ID, repeat once only when testing the
-documented duplicate/idempotency contract, and clean up using the UI or authorized API
-workflow. Never delete shared/demo policy records.
+Before MQA-API-002, set private `request_run_id` to a fresh non-secret value such as a local
+UUID. The processing and comparison requests derive separate `Idempotency-Key` values from
+it. Reuse the exact same run ID only to retry the same logical request; change it before a
+new mutation. For mutating requests, send once, capture status/ID, repeat once only when
+testing the documented duplicate/idempotency contract, and clean up using the UI or
+authorized API workflow. Never delete shared/demo policy records.
 
 [Back to contents](#contents)
 

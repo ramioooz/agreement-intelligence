@@ -38,6 +38,7 @@ resources:
       thread_id: ""
       review_id: ""
       document_path: ""
+      request_run_id: ""
     dataPropertyOrder: null
     color: null
     isPrivate: false
@@ -219,13 +220,23 @@ resources:
     parentId: fld_agreements
     modified: 1787788800000
     created: 1787788800000
-    url: "{{ _.base_url }}/documents?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
-    name: Upload synthetic document (201)
-    description: "Expected: 201; 409 duplicate; type/scope denial. Use generated fixture only."
+    url: "{{ _.base_url }}/documents"
+    name: Upload synthetic document (201/200 duplicate)
+    description: "Expected: 201 on first upload; 200 with duplicate:true for the same checksum and scope; 422 unsupported or malformed multipart; 404 hidden scope. Use generated fixture only."
     method: POST
     body:
       mimeType: multipart/form-data
       params:
+        - id: pair_document_organization
+          name: organization_id
+          value: "{{ _.organization_id }}"
+          type: text
+          disabled: false
+        - id: pair_document_workspace
+          name: workspace_id
+          value: "{{ _.workspace_id }}"
+          type: text
+          disabled: false
         - id: pair_synthetic_file
           name: file
           value: ""
@@ -264,6 +275,8 @@ resources:
         value: application/json
       - name: Authorization
         value: "Bearer {{ _.access_token }}"
+      - name: Idempotency-Key
+        value: "mqa-processing-{{ _.request_run_id }}"
     authentication: {}
     metaSortKey: -700
     isPrivate: false
@@ -402,6 +415,8 @@ resources:
         value: application/json
       - name: Authorization
         value: "Bearer {{ _.access_token }}"
+      - name: Idempotency-Key
+        value: "mqa-comparison-{{ _.request_run_id }}"
     authentication: {}
     metaSortKey: -900
     isPrivate: false
