@@ -138,11 +138,16 @@ class VersionComparisonService:
         self._processing.enqueue_outbox(
             response, idempotency_key=job.idempotency_key, profile=job.profile
         )
+        comparison_id = comparison.id
         self._identity.session.commit()
         ProcessingOutboxDispatcher(
             session=self._identity.session, publisher=self._queue
         ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
-        return self._repository.response(comparison), True
+        self._identity.scope_organization(organization_id)
+        committed = self._repository.get(comparison_id)
+        if committed is None:
+            raise AgreementNotFoundError
+        return self._repository.response(committed), True
 
     def get(
         self,

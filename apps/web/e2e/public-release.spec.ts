@@ -1,5 +1,5 @@
 import { mkdir } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 
 import { expect, test, type Page } from "@playwright/test";
 
@@ -13,6 +13,12 @@ import "./search-workspace.spec";
 
 const adminPassword = process.env.DEMO_ADMIN_PASSWORD;
 const screenshotDirectory = process.env.PUBLIC_RELEASE_SCREENSHOT_DIR;
+const videoPath = process.env.PUBLIC_RELEASE_VIDEO_PATH;
+const projectRoot = resolve(process.cwd(), "../..");
+
+function releasePath(path: string): string {
+  return isAbsolute(path) ? path : resolve(projectRoot, path);
+}
 
 function pdfWithText(text: string): Buffer {
   const escaped = text
@@ -54,7 +60,7 @@ async function signIn(page: Page) {
 
 async function capture(page: Page, name: string) {
   if (!screenshotDirectory) return;
-  const directory = resolve(screenshotDirectory);
+  const directory = releasePath(screenshotDirectory);
   await mkdir(directory, { recursive: true });
   await page.screenshot({
     animations: "disabled",
@@ -115,6 +121,13 @@ test("public release repository, analysis, search, and version comparison journe
   await expect(page.getByRole("status")).toHaveText("Agreement uploaded.");
   await page.getByRole("link", { name: title }).click();
   await expect(page).toHaveURL(/\/dashboard\/agreements\/[0-9a-f-]+$/);
+  const agreementId = page
+    .url()
+    .match(/\/dashboard\/agreements\/([0-9a-f-]+)$/)?.[1];
+  expect(
+    agreementId,
+    "Uploaded agreement URL must expose its identifier",
+  ).toBeTruthy();
 
   await expect(
     page.getByRole("heading", { name: "Document understanding" }),
@@ -150,7 +163,91 @@ test("public release repository, analysis, search, and version comparison journe
   await page
     .getByRole("searchbox", { name: "Search" })
     .fill("termination notice");
+  await page.getByLabel("Agreement IDs").fill(agreementId!);
   await page.getByRole("button", { name: "Search" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Search results" }),
+  ).toBeVisible({
+    timeout: 45_000,
+  });
+  const sourceLink = page
+    .getByRole("link", { name: "View source evidence" })
+    .first();
+  await expect(sourceLink).toBeVisible();
   await expect(page.getByRole("heading", { name: "Cited Q&A" })).toBeVisible();
+
+  if (screenshotDirectory) {
+    const sourceHref = await sourceLink.getAttribute("href");
+    const source = sourceHref?.match(
+      /\/dashboard\/agreements\/([0-9a-f-]+)#evidence-(.+)$/,
+    );
+    expect(
+      source,
+      "Search result must expose an agreement evidence anchor",
+    ).not.toBeNull();
+    const [, agreementId, anchorId] = source!;
+    await page.route("**/api/questions/threads", async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({ id: "synthetic-docs-thread", turns: [] }),
+        contentType: "application/json",
+        status: 201,
+      });
+    });
+    await page.route("**/api/questions/threads/*/turns", async (route) => {
+      await route.fulfill({
+        body: JSON.stringify({
+          answer: {
+            claims: [
+              {
+                citations: [
+                  {
+                    agreement_id: agreementId,
+                    anchor_id: anchorId,
+                    source_checksum: "sha256:synthetic-release-capture",
+                    source_version: "synthetic",
+                    supporting_quote:
+                      "Synthetic capture cites the authorized result shown above.",
+                  },
+                ],
+                text: "The authorized result contains termination-notice evidence.",
+              },
+            ],
+            message:
+              "The authorized result contains termination-notice evidence.",
+            status: "answered",
+          },
+          created_at: "2026-08-27T00:00:00Z",
+          id: "synthetic-docs-turn",
+          question: "What termination-notice evidence is available?",
+        }),
+        contentType: "application/json",
+        status: 201,
+      });
+    });
+    await page
+      .getByRole("textbox", { name: "Question" })
+      .fill("What termination-notice evidence is available?");
+    await page.getByRole("button", { name: "Ask question" }).click();
+    await expect(
+      page.getByText(
+        "The authorized result contains termination-notice evidence.",
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("link", { name: "View source evidence" }).last(),
+    ).toHaveAttribute("href", sourceHref!);
+    await page.addStyleTag({
+      content:
+        "#search-results-heading + ol > li:nth-child(n + 2) { display: none; }",
+    });
+  }
   await capture(page, "grounded-search.png");
+
+  if (videoPath) {
+    const video = page.video();
+    const destination = releasePath(videoPath);
+    await mkdir(dirname(destination), { recursive: true });
+    await page.close();
+    await video?.saveAs(destination);
+  }
 });

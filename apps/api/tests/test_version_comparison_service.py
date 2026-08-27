@@ -94,7 +94,40 @@ def test_create_persists_processing_job_before_dependent_comparison(
 
     assert created is True
     assert events.index("processing.create") < events.index("comparison.create")
-    assert events[-3:] == ["processing.outbox", "session.commit", "outbox.dispatch"]
+    assert events[-5:] == [
+        "processing.outbox",
+        "session.commit",
+        "outbox.dispatch",
+        "identity.scope",
+        "comparison.get_after_dispatch",
+    ]
+
+
+def test_create_restores_tenant_scope_after_dispatcher_rollback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    service, principal, agreement_id, organization_id, workspace_id = _create_service(
+        events, monkeypatch, dispatcher_rolls_back=True
+    )
+
+    _, created = service.create(
+        principal,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        agreement_id=agreement_id,
+        idempotency_key="comparison-dispatch-rollback",
+        request=CreateVersionComparisonRequest(),
+    )
+
+    assert created is True
+    dispatch_index = events.index("outbox.dispatch")
+    assert events[dispatch_index : dispatch_index + 4] == [
+        "outbox.dispatch",
+        "session.rollback",
+        "identity.scope",
+        "comparison.get_after_dispatch",
+    ]
 
 
 def test_create_restores_tenant_scope_before_lookup_after_integrity_error(
@@ -203,6 +236,7 @@ def _create_service(
     monkeypatch: pytest.MonkeyPatch,
     *,
     fail_comparison_create: bool = False,
+    dispatcher_rolls_back: bool = False,
 ) -> tuple[VersionComparisonService, Principal, UUID, UUID, UUID]:
     organization_id = uuid4()
     workspace_id = uuid4()
@@ -235,6 +269,9 @@ def _create_service(
 
         def dispatch_pending(self, **_: object) -> int:
             events.append("outbox.dispatch")
+            if dispatcher_rolls_back:
+                identity.session.rollback()
+                return 0
             return 1
 
     monkeypatch.setattr(
@@ -260,6 +297,7 @@ class _CreateRepository:
         self._events = events
         self._fail_create = fail_create
         self._identity_lookups = 0
+        self._created: object | None = None
         self._existing = SimpleNamespace(
             id=uuid4(),
             baseline_version_id=uuid4(),
@@ -282,7 +320,13 @@ class _CreateRepository:
         self._events.append("comparison.create")
         if self._fail_create:
             raise IntegrityError("insert comparison", {}, RuntimeError("conflict"))
+        self._created = record
         return record
+
+    def get(self, _: object) -> object:
+        self._events.append("comparison.get_after_dispatch")
+        assert self._created is not None
+        return self._created
 
     @staticmethod
     def response(record: object) -> object:

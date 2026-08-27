@@ -90,6 +90,7 @@ class ReviewCollaborationService:
             self._identity.scope_organization(organization_id)
         except IntegrityError as error:
             self._session.rollback()
+            self._identity.scope_organization(organization_id)
             existing = self._session.scalar(
                 select(ReviewCaseRecord)
                 .where(ReviewCaseRecord.agreement_id == request.agreement_id)
@@ -211,8 +212,13 @@ class ReviewCollaborationService:
             event_type="review.assignment.created",
             idempotency_key=f"assignment:{record.id}",
         )
+        record_id = record.id
         self._session.commit()
-        return self._assignment_response(record), True
+        self._identity.scope_organization(organization_id)
+        committed = self._session.get(ReviewAssignmentRecord, record_id)
+        if committed is None:
+            hide_resource()
+        return self._assignment_response(committed), True
 
     def transfer(
         self,
@@ -285,8 +291,13 @@ class ReviewCollaborationService:
             else "review.assignment.reassigned",
             idempotency_key=f"assignment:{record.id}",
         )
+        record_id = record.id
         self._session.commit()
-        return self._assignment_response(record), True
+        self._identity.scope_organization(organization_id)
+        committed = self._session.get(ReviewAssignmentRecord, record_id)
+        if committed is None:
+            hide_resource()
+        return self._assignment_response(committed), True
 
     def comment(
         self,

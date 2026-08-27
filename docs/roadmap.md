@@ -1,6 +1,6 @@
 # Roadmap, limitations, and room for improvement
 
-This roadmap separates implemented behavior from useful future work. It is not a promise,
+This roadmap separates implemented behavior from deferred improvements. It is not a promise,
 schedule, or claim that deferred capabilities exist.
 
 ## Current release boundary

@@ -81,6 +81,11 @@ workflow evidence instead of presenting model output as a decision.
 
 ![Synthetic grounded search and cited answer](docs/assets/grounded-search.png)
 
+The screenshot combines actual deterministic local lexical results with a clearly synthetic
+cited-answer capture fixture. Watch the short, reproducible
+[synthetic public-release journey](docs/assets/public-release-demo.webm); it contains only
+the generated fictional agreement and local demo identities.
+
 [Back to contents](#contents)
 
 ## Operating modes
@@ -119,6 +124,10 @@ downloaded.
 - The system reports `ocr_required` but includes no OCR engine or OCR provider.
 - Automatic provider-recovery reconciliation and historical enrichment backfill are not
   implemented; use authorized manual reprocessing after recovery.
+- An API-side SQS publish failure leaves its committed outbox row pending. There is no
+  autonomous API outbox poller: after queue recovery, an operator must invoke an authorized
+  retry/requeue or another same-scope processing action to replay pending publication.
+  Restart alone is not recovery evidence.
 - Model quality, legal interpretation, clause alignment, and materiality remain uncertain
   and require source review by a qualified human.
 - Local Docker, LocalStack, and Terraform checks do not prove live AWS IAM, VPC, TLS, ALB,
@@ -169,6 +178,7 @@ For the full local stack:
 
 - Docker Engine/Desktop with Docker Compose **2.24 or newer**;
 - GNU Make;
+- `zip` for deterministic DOCX fixture generation;
 - at least 8 GB of memory available to Docker is recommended; and
 - a current desktop browser. Automated browser coverage uses Playwright Chromium.
 

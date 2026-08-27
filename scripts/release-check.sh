@@ -34,13 +34,7 @@ effective_value() {
   fi
 }
 
-for provider_variable in OPENAI_API_KEY MODEL_GATEWAY_API_KEY; do
-  test -z "$(effective_value "$provider_variable")" || {
-    echo "The deterministic release gate requires $provider_variable to be empty."
-    echo "Run provider-smoke separately with an ignored, authorized provider configuration."
-    exit 1
-  }
-done
+scripts/validate-release-no-key.sh "$stack_env_file"
 
 for command in gitleaks terraform tflocal checkov; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -73,7 +67,7 @@ tests/docs/test-documentation-contract.sh
 echo "[release] Run source formatting, lint, types, tests, and builds"
 make check
 
-echo "[release] Audit production dependencies"
+echo "[release] Audit production dependencies and reviewed Python development-tool exceptions"
 pnpm audit --prod --audit-level high
 uv run pip-audit --ignore-vuln PYSEC-2026-3046 --ignore-vuln PYSEC-2026-2447
 
@@ -83,6 +77,29 @@ gitleaks git . --log-opts=--all --no-banner --redact
 echo "[release] Validate and provision/destroy emulated infrastructure"
 make terraform-check
 make terraform-provision-local
+
+echo "[release] Recreate and inspect the effective no-key application containers"
+docker compose --project-name "$stack_project_name" --env-file "$stack_env_file" \
+  up --detach --build --force-recreate --no-deps --wait --wait-timeout 180 api worker
+for service in api worker; do
+  docker compose --project-name "$stack_project_name" --env-file "$stack_env_file" \
+    exec -T "$service" python -c '
+import os
+import sys
+
+mode = os.environ.get("MODEL_GATEWAY_MODE", "openai")
+provider_values = (
+    os.environ.get("OPENAI_API_KEY", ""),
+    os.environ.get("MODEL_GATEWAY_API_KEY", ""),
+    os.environ.get("MODEL_GATEWAY_BASE_URL", ""),
+    os.environ.get("MODEL_GATEWAY_FALLBACK_MODE", ""),
+    os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL", ""),
+)
+if mode == "openai-compatible" or any(provider_values):
+    print("Effective container configuration is provider-enabled.", file=sys.stderr)
+    raise SystemExit(1)
+'
+done
 
 echo "[release] Verify the running no-key stack and OpenAPI-linked collection"
 make stack-check

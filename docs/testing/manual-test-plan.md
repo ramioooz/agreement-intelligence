@@ -236,10 +236,11 @@ authenticate; no configured demo account is altered.
 
 **Purpose and risk:** Prove resource IDs and valid tokens cannot cross tenant boundaries.
 
-**Identity:** `legal.reviewer` and a temporary second-tenant synthetic identity.
+**Identity:** `legal.reviewer` and `platform.admin`; neither belongs to the temporary tenant.
 
-**Preconditions and test data:** Disposable local second organization/workspace/record
-created through approved test setup; IDs stored privately in evidence.
+**Preconditions and test data:** Run
+`STACK_ENV_FILE=.env STACK_PROJECT_NAME=agreement-intelligence scripts/manual-qa-state.sh second-tenant-setup`;
+record its fixed second organization/workspace/agreement IDs.
 
 **Steps:**
 
@@ -247,14 +248,17 @@ created through approved test setup; IDs stored privately in evidence.
    agreement, citation, review, and package IDs.
 2. Swap only `organization_id` or `workspace_id` while retaining an otherwise valid
    in-tenant resource ID.
-3. Confirm the second-tenant identity likewise cannot access Demo Legal resources.
+3. Repeat with the organization-scoped platform-admin token; that role must not become a
+   cross-organization superuser.
 
 **Expected result:** Hidden denial/empty scoped result according to route; no title, party,
 filename, citation, review status, package metadata, or existence leaks.
 
 **Evidence:** Request/status matrix with opaque IDs redacted.
 
-**Cleanup:** Delete temporary tenant data through the test setup; confirm Demo Legal remains.
+**Cleanup:** Run
+`STACK_ENV_FILE=.env STACK_PROJECT_NAME=agreement-intelligence scripts/manual-qa-state.sh second-tenant-cleanup`,
+then `make stack-check` and confirm Demo Legal remains.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -341,14 +345,16 @@ transitions.
 
 **Identity:** `legal.reviewer` for viewing; `platform.admin` for any admin-only recovery.
 
-**Preconditions and test data:** MQA-REP-001 agreement; controlled failed job created by
-temporary provider/worker interruption.
+**Preconditions and test data:** MQA-REP-001 agreement; a fresh synthetic upload; exact
+failed-job procedure in [Test data](test-data.md); Insomnia processing status/retry/requeue
+requests populated with the returned agreement/job IDs.
 
 **Steps:**
 
 1. Observe the processing timeline from submission through a terminal state.
-2. Create one controlled failed synthetic job, confirm safe failure category/message and
-   retry-permitted state, then use Retry.
+2. Stop the worker, submit the fresh job, run
+   `scripts/manual-qa-state.sh failed-job-setup AGREEMENT_UUID JOB_UUID`, start the worker,
+   confirm the safe `transient` failure, then invoke **Retry processing (202)**.
 3. Use Requeue only on a state where the API permits it and poll the exact job/attempt.
 
 **Expected result:** State/attempt/timestamps are coherent; illegal transitions conflict;
@@ -356,7 +362,8 @@ authorized recovery creates no duplicate current version/artifact.
 
 **Evidence:** Timeline screenshots and job/state/attempt table without raw logs.
 
-**Cleanup:** Restore dependency, finish the job, and verify `make stack-check`.
+**Cleanup:** Poll **Processing status (200)** to terminal, delete the synthetic agreement
+through its normal UI/API flow, and verify `make stack-check`.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -635,8 +642,8 @@ document instructions as untrusted text.
 
 **Identity:** `legal.reviewer`.
 
-**Preconditions and test data:** Synthetic no-renewal statement, conflicting notice
-passages, and injection string from test-data guide.
+**Preconditions and test data:** Generated `hostile-conflict.pdf` and the absent renewal
+statement in the [test-data guide](test-data.md).
 
 **Steps:**
 
@@ -649,7 +656,8 @@ cited; injection does not change system behavior or reveal data/actions.
 
 **Evidence:** Answer states and safe citation IDs; never capture prompts/provider bodies.
 
-**Cleanup:** Delete temporary injection/conflict fixture at final cleanup.
+**Cleanup:** Delete the synthetic agreement through the supported flow; remove generated
+fixtures only with `rm -rf artifacts/manual-qa/fixtures` after all upload cases finish.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -868,13 +876,15 @@ review if not needed.
 **Purpose and risk:** Validate the most sensitive workflow/evidence objects do not cross
 tenant scope.
 
-**Identity:** Demo Legal reviewer/admin and temporary second-tenant identity.
+**Identity:** Demo Legal reviewer/admin; neither belongs to the temporary second tenant.
 
-**Preconditions and test data:** Synthetic terminal review/package in each temporary scope.
+**Preconditions and test data:** Synthetic terminal Demo Legal review/package plus the fixed
+foreign organization/workspace/agreement created by `scripts/manual-qa-state.sh second-tenant-setup`.
 
 **Steps:**
 
-1. Swap review/package IDs across organization/workspace query scope in browser/API.
+1. Request the Demo Legal review/package IDs under the foreign organization/workspace, and
+   request the foreign agreement ID under Demo Legal scope.
 2. Attempt timeline, comments, decisions, package metadata/PDF/manifest, and audit search.
 3. Attempt the same from read-only MCP status tools.
 
@@ -883,7 +893,8 @@ citation/existence leakage; no cross-scope audit event content is returned.
 
 **Evidence:** Route/status matrix with opaque IDs redacted.
 
-**Cleanup:** Delete temporary second-tenant data using the approved test setup.
+**Cleanup:** Run `scripts/manual-qa-state.sh second-tenant-cleanup`, remove only the
+case-specific Demo Legal records through supported flows, and run `make stack-check`.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -902,7 +913,8 @@ temporary exact Insomnia redirect URI configured as described in the API guide.
 **Steps:**
 
 1. Populate only the private Insomnia sub-environment, complete browser authorization, and
-   call API health, readiness, OpenAPI, and `GET /api/v1/capabilities` requests.
+   call API health, readiness, OpenAPI, and
+   `GET /identity/organizations/{organization_id}/workspaces/{workspace_id}/capabilities`.
 2. Inspect the final request URL and headers without copying the bearer value into evidence.
 3. Clear the private token, repeat the protected request, and then authenticate again.
 
@@ -948,10 +960,11 @@ identifier hash; never export the private environment.
 **Purpose and risk:** Confirm malformed identifiers, unsupported media, missing scope, and
 foreign organization/workspace identifiers fail closed without leaking existence or data.
 
-**Identity:** `legal.reviewer`; temporary second-tenant reviewer where required.
+**Identity:** `legal.reviewer` and organization-scoped `platform.admin`.
 
-**Preconditions and test data:** Existing demo record, temporary second tenant from the test
-data guide, invalid UUID/string fixtures, and invalid-signature PDF.
+**Preconditions and test data:** Existing demo record; exact
+`scripts/manual-qa-state.sh second-tenant-setup` fixture; invalid UUID/string fixtures;
+generated `invalid-signature.pdf` and `unsupported.txt`.
 
 **Steps:**
 
@@ -966,7 +979,8 @@ or indistinguishable from absence; no protected content or implementation secret
 
 **Evidence:** Status/error-code matrix and redacted log review result.
 
-**Cleanup:** Remove temporary second-tenant records and private Insomnia variables.
+**Cleanup:** Run `scripts/manual-qa-state.sh second-tenant-cleanup`; remove private Insomnia
+variables and run `make stack-check`.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -1001,7 +1015,8 @@ cited; no mutating/general-purpose tool is exposed.
 **Purpose and risk:** Verify invalid authentication, malformed tool input, guessed IDs, and
 foreign scope cannot bypass HTTP/API authorization through MCP.
 
-**Identity:** Unauthenticated client, `legal.reviewer`, temporary second-tenant reviewer.
+**Identity:** Unauthenticated client, `legal.reviewer`, and organization-scoped
+`platform.admin`.
 
 **Preconditions and test data:** One authorized and one foreign synthetic record plus invalid
 UUIDs and expired/invalid token cases.
@@ -1018,7 +1033,8 @@ token disclosure; error/audit behavior remains bounded and consistent.
 
 **Evidence:** Tool/status matrix and redacted audit/log summary.
 
-**Cleanup:** Remove temporary tenant data and credentials; close sessions.
+**Cleanup:** Run `scripts/manual-qa-state.sh second-tenant-cleanup`, clear private client
+credentials, and close sessions.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -1057,14 +1073,17 @@ stops mid-job or receives duplicate delivery.
 **Identity:** Local operator and `platform.admin`.
 
 **Preconditions and test data:** Fresh `liquidity-provider-v1.docx`, healthy queue, safe log
-access, and recorded source checksum.
+access, recorded checksum, and the self-cleaning focused duplicate fixture.
 
 **Steps:**
 
-1. Upload the fixture, stop the worker during processing, and observe bounded pending state.
-2. Restart the worker; if supported by the existing local diagnostic path, redeliver the same
-   job identifier without fabricating a new production mechanism.
-3. Wait for terminal state and inspect version/artifact/finding counts and audit entries.
+1. Run `uv run python tests/resilience/test-duplicate-delivery.py` and record its three
+   focused contract results.
+2. Run `RESILIENCE_TEST_CONFIRM=isolated tests/resilience/test-worker-restart.sh`; it creates
+   a unique project, sends the same processing/workflow deliveries twice, waits on persisted
+   state, and removes only its own volumes.
+3. In the ordinary stack, upload one fresh fixture, restart the worker once, wait for its
+   exact job to become terminal, and inspect version/artifact/finding/audit counts.
 
 **Expected result:** Work resumes or surfaces retry action; one logical artifact set remains;
 no duplicate version/finding/event is committed and the source checksum is unchanged.
@@ -1082,13 +1101,15 @@ deterministic processing, lexical retrieval, and core workflows stay available.
 
 **Identity:** Local operator and `legal.reviewer`.
 
-**Preconditions and test data:** Opt-in provider configuration or a local unreachable provider
-endpoint, processed lexical fixture, no sensitive provider response capture.
+**Preconditions and test data:** Generated text-bearing fixture; ignored
+`.env.provider-outage.local` safely derived from `.env` with both key variables empty,
+`MODEL_GATEWAY_MODE=openai-compatible`, and
+`MODEL_GATEWAY_BASE_URL=http://127.0.0.1:9/v1`.
 
 **Steps:**
 
-1. Record healthy provider-powered capabilities, then make the configured endpoint
-   unreachable using only the disposable local configuration.
+1. Run `uv run python tests/resilience/test-provider-timeout.py`; then recreate API/worker
+   with `docker compose --project-name agreement-intelligence --env-file .env.provider-outage.local up --detach --force-recreate --no-deps api worker`.
 2. Exercise upload/analysis, lexical search, semantic search, and grounded-answer requests.
 3. Restore configuration, restart affected services, verify capability recovery, and retry a
    new query embedding; note that historical backfill remains manual/deferred.
@@ -1098,7 +1119,9 @@ operations show explicit unavailable/degraded state; new requests recover after 
 
 **Evidence:** Capability snapshots, UI/API error states, health, and safe status timeline.
 
-**Cleanup:** Restore original ignored provider configuration and healthy services.
+**Cleanup:** Recreate API/worker with `--env-file .env`, remove only
+`.env.provider-outage.local`, run `make stack-check`, and never copy a provider key into the
+outage file.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -1249,8 +1272,9 @@ fail safely without wedging worker or repository state.
 
 **Identity:** `legal.reviewer`; local operator for service-health inspection.
 
-**Preconditions and test data:** `invalid-signature.pdf`, image-only diagnostic, empty file,
-unsupported extension, and safely generated boundary-size files.
+**Preconditions and test data:** Generated `invalid-signature.pdf`,
+`image-only-diagnostic.pdf`, `empty.pdf`, `unsupported.txt`,
+`boundary-under-limit.pdf` (9 MiB), and `boundary-over-limit.pdf` (11 MiB).
 
 **Steps:**
 
@@ -1263,7 +1287,8 @@ explicitly; no partial visible record/artifact leaks; services recover and proce
 
 **Evidence:** Fixture checksums/sizes, result/status matrix, and health snapshot.
 
-**Cleanup:** Remove generated boundary files and any safely deletable rejected records.
+**Cleanup:** Remove any safely deletable rejected records; after all upload cases, remove
+only the ignored fixture directory with `rm -rf artifacts/manual-qa/fixtures`.
 
 **Result:** Pass / Fail / Blocked — ______
 
@@ -1279,8 +1304,9 @@ second fixture ready; recorded baseline state/checksums. Destructive to disposab
 
 **Steps:**
 
-1. Stop one dependency at a time, exercise the affected read/write flow, and inspect visible
-   status plus health endpoints without resetting volumes.
+1. For SQS/object storage, run the exact LocalStack stop/submit/start/bootstrap/requeue
+   sequence in [Test data](test-data.md); then stop one remaining dependency at a time and
+   inspect the affected flow plus health endpoints without resetting volumes.
 2. Restore it, wait for readiness, reload/retry through documented controls, and compare
    records/artifacts with baseline.
 3. Repeat for each dependency, ending with `make stack-check` and the critical smoke flow.
@@ -1290,7 +1316,9 @@ recovery is possible after readiness; persisted checksums/records remain consist
 
 **Evidence:** Dependency/status/recovery matrix and before/after counts/checksums.
 
-**Cleanup:** Restore every service and remove only disposable records.
+**Cleanup:** Restore every service, invoke an authorized requeue/retry or new same-scope
+processing action for any pending outbox row, wait for exact jobs to become terminal,
+remove only disposable records, and run `make stack-check`.
 
 **Result:** Pass / Fail / Blocked — ______
 

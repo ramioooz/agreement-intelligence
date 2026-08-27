@@ -157,9 +157,13 @@ docker compose --project-name agreement-intelligence --env-file .env restart wor
 make stack-check
 ```
 
-The database outbox and worker leases/idempotent writes protect queue publication,
-redelivery, and restart. Acknowledge recovery only after the exact agreement/version reaches
-a controlled terminal state, artifacts/citations persist, and duplicates are absent.
+The API commits an outbox row and attempts SQS publication immediately. A publish failure
+leaves that row pending; the current local API has no autonomous outbox poller. After SQS
+recovers, invoke an authorized retry/requeue or another same-scope processing action so its
+dispatcher can replay pending rows. Restarting services alone does not guarantee replay.
+Worker leases/idempotent writes protect redelivery. Acknowledge recovery only after the exact
+agreement/version reaches a controlled terminal state, artifacts/citations persist, and
+duplicates are absent.
 
 Use [Stuck processing](runbooks/stuck-processing.md) or
 [Queue backlog](runbooks/queue-backlog.md). Synthetic resilience scripts require explicit
@@ -265,9 +269,18 @@ LocalStack evidence covers AWS-compatible API and Terraform wiring only. Read th
 
 Source quality:
 
+Create owner-readable ignored `.env.release-test.local` in an editor as described in
+[Getting started](../getting-started.md#9-verify-source-and-release-gates), then load it
+without putting the database credential in a command argument:
+
 ```bash
 make setup
-AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL=<disposable-postgresql-url> make check
+chmod 600 .env.release-test.local
+set -a
+. ./.env.release-test.local
+set +a
+make check
+unset AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL
 ```
 
 The URL is mandatory because forced tenant-RLS integration may not be skipped. Never use

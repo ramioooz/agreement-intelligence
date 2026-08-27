@@ -25,6 +25,9 @@ export default defineConfig({
         ...devices["Desktop Chrome"],
         screenshot: "only-on-failure",
         trace: "retain-on-failure",
+        video: process.env.PUBLIC_RELEASE_VIDEO_PATH
+          ? { mode: "on", size: { width: 960, height: 600 } }
+          : "off",
         viewport: { width: 1440, height: 900 },
       },
     },

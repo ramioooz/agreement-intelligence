@@ -39,6 +39,25 @@ async function signIn(page: Page, username: string, password: string) {
   await page.getByRole("button", { name: "Sign In" }).click();
 }
 
+async function changeIdentity(
+  page: Page,
+  targetUrl: string,
+  username: string,
+  password: string,
+) {
+  await page.goto("about:blank");
+  await page.context().clearCookies();
+  await expect
+    .poll(async () => (await page.context().cookies()).length)
+    .toBe(0);
+  await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
+  await expect(
+    page.getByRole("button", { name: "Continue with Keycloak" }),
+  ).toBeVisible();
+  await signIn(page, username, password);
+  await page.goto(targetUrl);
+}
+
 test("a legal reviewer filters high-severity findings and opens cited evidence by keyboard", async ({
   page,
 }) => {
@@ -178,10 +197,9 @@ test("a legal reviewer filters high-severity findings and opens cited evidence b
     )
     .toBe(1);
 
-  await page.context().clearCookies();
-  await page.goto(reviewUrl!);
-  await signIn(
+  await changeIdentity(
     page,
+    reviewUrl!,
     process.env.DEMO_REVIEWER_USERNAME ?? "legal.reviewer",
     reviewerPassword!,
   );

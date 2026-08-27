@@ -43,9 +43,7 @@ test("an administrator runs a scoped search and sees grounded Q&A boundaries", a
     /q=no-evidence-e2e-query.*agreement_type=client_agreement.*party=Example\+Counterparty.*status=active.*updated_after=2026-01-01.*updated_before=2026-01-31.*source_version=v3.*agreement_id=55555555-5555-5555-5555-555555555555/,
   );
   await expect(
-    page.getByText(
-      "No reviewer-approved information is available for this search yet.",
-    ),
+    page.getByText("No reviewer-approved information matched this search."),
   ).toBeVisible();
   await expect(page.getByRole("heading", { name: "Cited Q&A" })).toBeVisible();
   const askQuestion = page.getByRole("button", { name: "Ask question" });

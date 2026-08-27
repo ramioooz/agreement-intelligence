@@ -8,6 +8,7 @@ const root = path.resolve(process.argv[2] ?? process.cwd());
 const ignoredDirectories = new Set([
   ".git",
   ".next",
+  ".pytest_cache",
   ".venv",
   ".worktrees",
   "artifacts",

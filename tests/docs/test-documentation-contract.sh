@@ -24,6 +24,9 @@ docs/testing/api-testing.md
 docs/testing/insomnia/agreement-intelligence.yaml
 scripts/check-doc-links.mjs
 scripts/release-check.sh
+scripts/validate-release-no-key.sh
+scripts/manual-qa-state.sh
+docs/assets/public-release-demo.webm
 '
 
 for path in $required_files; do
@@ -126,6 +129,12 @@ for (const forbidden of [
 NODE
 
 make -n release-check >/dev/null
+tests/docs/test-release-no-key-mode.sh
+tests/docs/test-synthetic-fixtures.sh
+grep -q -- '--force-recreate' scripts/release-check.sh
+grep -q 'second-tenant-setup' scripts/manual-qa-state.sh
+grep -q 'failed-job-setup' scripts/manual-qa-state.sh
+grep -q 'PUBLIC_RELEASE_VIDEO_PATH' apps/web/e2e/public-release.spec.ts
 pnpm --filter @agreement-intelligence/web exec playwright test --project release --list >/dev/null
 
 echo "Public documentation contracts pass."

@@ -299,6 +299,52 @@ resources:
     settingRebuildPath: true
     settingFollowRedirects: global
     _type: request
+  - _id: req_processing_retry
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/processing-jobs/{{ _.job_id }}/retry?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Retry processing (202)
+    description: "Expected: 202 only for retryable failed work; 404/409 otherwise. Poll the exact job and do not repeat after terminal state."
+    method: POST
+    body: {}
+    parameters: []
+    headers:
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -550
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_processing_requeue
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/processing-jobs/{{ _.job_id }}/requeue?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Requeue processing (202)
+    description: "Expected: 202 only for queued work; 404/409 otherwise. This scoped action can replay pending outbox publication after queue recovery."
+    method: POST
+    body: {}
+    parameters: []
+    headers:
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -500
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
   - _id: fld_versions
     parentId: wrk_agreement_intelligence
     modified: 1787788800000

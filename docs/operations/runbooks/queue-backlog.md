@@ -28,6 +28,9 @@ health. Do not dump message bodies because they may contain scoped identifiers.
 3. Keep SQS as the durable job queue; do not move jobs into Redis.
 4. Let normal visibility-timeout/redelivery behavior recover messages. Do not purge the
    queue unless loss of all queued work is explicitly accepted.
+5. If the API committed work while SQS publication failed, invoke one authorized
+   retry/requeue or new same-scope processing action after recovery. This triggers the
+   dispatcher to revisit pending outbox rows; a restart alone does not.
 
 ## Verification and evidence
 
@@ -37,5 +40,6 @@ failure categories, start/end time, and action taken.
 
 ## Escalation and residual risk
 
-Escalate if depth continues to rise or poison messages repeatedly return. Local
-single-worker capacity does not establish production scaling behavior.
+Escalate if depth continues to rise, poison messages repeatedly return, or pending outbox
+rows remain after an explicit replay-triggering action. The API has no autonomous outbox
+poller. Local single-worker capacity does not establish production scaling behavior.

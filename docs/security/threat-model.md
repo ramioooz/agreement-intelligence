@@ -180,6 +180,11 @@ successful handling. Duplicate delivery, worker restart, provider timeout, queue
 and database interruption have focused recovery checks. Failed work remains visible and
 can be retried or requeued through authorized paths.
 
+If the API's immediate SQS publication attempt fails, the committed outbox row can remain
+pending until a later authorized processing submission/retry/requeue invokes the scoped
+dispatcher. There is no autonomous API outbox poller, so restarting alone must not be
+reported as recovery.
+
 Automatic historical provider-enrichment reconciliation is not guaranteed; manual
 reprocessing is current behavior and automatic backfill remains deferred.
 
@@ -213,8 +218,10 @@ does not expose mutation, approval, upload, or deletion tools.
 ### Supply chain and infrastructure
 
 Locked application dependencies, pinned CI action commits, pinned service image digests,
-production dependency audits, Terraform validation/policy checks, container scanning, and
-full-history secret scanning reduce build risk. They do not eliminate compromise risk.
+production dependency audits, Terraform validation/policy checks, and full-history secret
+scanning reduce build risk. Lightweight CI intentionally does not scan built container
+images; image scanning is an optional/deferred operator control and must not be claimed
+without separately captured evidence. These controls do not eliminate compromise risk.
 Real AWS least privilege, network paths, TLS, WAF, managed secrets, image signing, and
 runtime monitoring require an authorized deployment and separate evidence.
 

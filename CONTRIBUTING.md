@@ -131,8 +131,11 @@ The current gate installs locked dependencies, rejects high or critical
 production JavaScript vulnerabilities, audits locked Python dependencies, runs
 `make check`, checks for whitespace errors with `git diff --check`, validates
 Terraform, and scans the complete checked-out history for leaked secrets.
-Container image scanning and fresh-stack browser verification run through the
-release-rehearsal workflow described in the operations documentation.
+The lightweight hosted CI intentionally does not scan built container images. An owner may
+run an optional reviewed image scanner before visibility/deployment, but must not report it
+as implemented release evidence unless the exact command and result were actually captured.
+Fresh-stack browser verification runs through the release rehearsal described in the
+operations documentation.
 
 | Change | Minimum evidence |
 | --- | --- |
@@ -234,6 +237,13 @@ pnpm audit --prod --audit-level high
 uv run pip-audit --ignore-vuln PYSEC-2026-3046 --ignore-vuln PYSEC-2026-2447
 make terraform-check
 ```
+
+The Python gate must report zero unignored/actionable findings. Its two explicit exceptions
+are development-only: Ragas `0.3.9` (`PYSEC-2026-3046`, unused multimodal URL/file retrieval)
+and its DiskCache `5.6.3` dependency (`PYSEC-2026-2447`, attacker already needs write access
+to the owner-local ephemeral cache). Neither advisory currently lists a fixed version. See
+[Unified quality](docs/evaluation/unified-quality.md#dependency-boundary); remove each
+exception when an upstream fixed release is available.
 
 Run the repository's configured full-history secret scanner for release work.
 Report only its exit status and safe summary; never paste a detected value into

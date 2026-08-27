@@ -23,11 +23,13 @@ Required for the container stack:
 docker --version
 docker compose version
 make --version
+zip -v
 docker info
 ```
 
-Docker must be running and Docker Compose must be 2.24 or newer. A current desktop browser
-is required; automated browser coverage uses Playwright Chromium.
+Docker must be running, Docker Compose must be 2.24 or newer, and `zip` must be available
+for deterministic DOCX fixture generation. A current desktop browser is required;
+automated browser coverage uses Playwright Chromium.
 
 Source/release work additionally uses the versions pinned in the repository:
 
@@ -233,11 +235,21 @@ Install locked source dependencies:
 make setup
 ```
 
-The full source gate requires a disposable PostgreSQL URL for forced-RLS integration:
+The full source gate requires a disposable PostgreSQL URL for forced-RLS integration.
+Create the ignored `.env.release-test.local` in an editor, restrict it to the current user,
+and place the variable there (never in a command argument):
+
+```dotenv
+AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL=postgresql://USER:PASSWORD@127.0.0.1:PORT/agreement_intelligence_test
+```
 
 ```bash
-AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL=postgresql://<user>:<password>@127.0.0.1:<port>/<disposable-db> \
-  make check
+chmod 600 .env.release-test.local
+set -a
+. ./.env.release-test.local
+set +a
+make check
+unset AGREEMENT_INTELLIGENCE_TEST_POSTGRES_URL
 ```
 
 Never point that variable at retained or production data. Run documentation contracts:

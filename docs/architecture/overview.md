@@ -353,7 +353,7 @@ configuration, evaluation, or business audit.
 | Concern | Mechanism |
 | --- | --- |
 | HTTP replay | Idempotency keys/checksums and conflict responses |
-| Database/message gap | Transactional outbox and replayable dispatcher |
+| Database/message gap | Transactional outbox plus dispatcher replay on a later scoped processing action; no autonomous API poller |
 | Duplicate delivery | Leases, processing identity, idempotent writes, completion fences |
 | Partial artifact/deletion failure | Durable intent/inventory and recoverable terminal states |
 | Lost update | Immutable versions plus optimistic current-version checks |
@@ -365,6 +365,13 @@ configuration, evaluation, or business audit.
 The API persists business intent before returning. The worker acknowledges SQS only after
 successful handling; exceptions preserve redelivery. Redis loss may reduce coordination but
 must not erase authoritative state or become a missing durable job.
+
+The current API attempts outbox publication immediately. If that publish fails, the
+committed row remains pending, but no autonomous API outbox polling loop exists. A later
+authorized submission, retry, or requeue in the same tenant scope invokes the dispatcher and
+can replay it after SQS recovers. An API/worker restart by itself does not prove the pending
+row was published; operators must trigger replay and verify the exact job reaches a
+controlled terminal state.
 
 [Back to contents](#contents)
 

@@ -54,8 +54,15 @@ async function changeIdentity(
   username: string,
   password: string,
 ) {
+  await page.goto("about:blank");
   await page.context().clearCookies();
-  await page.goto(targetUrl);
+  await expect
+    .poll(async () => (await page.context().cookies()).length)
+    .toBe(0);
+  await page.goto("/sign-in", { waitUntil: "domcontentloaded" });
+  await expect(
+    page.getByRole("button", { name: "Continue with Keycloak" }),
+  ).toBeVisible();
   await signIn(page, username, password);
   await page.goto(targetUrl);
 }
@@ -73,7 +80,7 @@ test("legal and business approvers complete a routed review with immutable packa
   const jurisdiction = `A${Date.now().toString(36).slice(-6)}${Math.random()
     .toString(36)
     .slice(2, 6)}`.toUpperCase();
-  const policyName = "Sprint 6 E2E two-stage approval";
+  const policyName = `Release E2E two-stage approval ${unique}`;
   const agreementTitle = `Approval agreement ${unique}`;
 
   await page.goto("/dashboard/approval-policies");
@@ -90,7 +97,7 @@ test("legal and business approvers complete a routed review with immutable packa
   if ((await policyCard.count()) === 0) {
     await page.getByLabel("Policy name").fill(policyName);
     await page.getByLabel("Agreement family").selectOption(family);
-    await page.getByLabel("Jurisdiction").fill("any");
+    await page.getByLabel("Jurisdiction").fill(jurisdiction);
     await page.getByLabel("Legal review role").fill("legal_reviewer");
     await page.getByRole("button", { name: "Add business stage" }).click();
     await page.getByLabel("Business approval role").fill("business_approver");
@@ -108,12 +115,31 @@ test("legal and business approvers complete a routed review with immutable packa
     name: /Publish version/,
   });
   if ((await publish.count()) > 0) {
-    await publish.click();
-    await page.reload();
-    policyCard = page
-      .getByRole("heading", { name: policyName, exact: true })
-      .locator("..");
+    await Promise.all([
+      page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          response.url().includes("/dashboard/approval-policies"),
+      ),
+      publish.click(),
+    ]);
+    await expect
+      .poll(
+        async () => {
+          await page.reload({ waitUntil: "domcontentloaded" });
+          return page
+            .getByRole("heading", { name: policyName, exact: true })
+            .locator("..")
+            .getByText("published", { exact: true })
+            .isVisible();
+        },
+        { intervals: [500, 1_000, 2_000], timeout: 30_000 },
+      )
+      .toBe(true);
   }
+  policyCard = page
+    .getByRole("heading", { name: policyName, exact: true })
+    .locator("..");
   await expect(policyCard).toContainText(/published/i);
 
   await page.goto("/dashboard/playbooks");

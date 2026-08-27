@@ -124,8 +124,9 @@ describe("SearchWorkspace", () => {
     render(<SearchWorkspace initialQuery="termination rights" />);
 
     expect(
-      screen.getByText(/No reviewer-approved information is available/),
+      screen.getByText(/No reviewer-approved information matched this search/),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/Sprint 6/i)).not.toBeInTheDocument();
   });
 
   it("creates a new scoped question thread after restarting a search", async () => {

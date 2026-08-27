@@ -29,6 +29,8 @@ payloads. Check the agreement processing timeline in the browser.
 3. Use **Requeue analysis** on the agreement page only after the underlying condition
    is corrected. The job contract is idempotent; do not repeatedly click it.
 4. If source storage is unavailable, restore it before requeueing.
+5. If initial queue publication failed, use that authorized requeue/retry action after
+   LocalStack/SQS recovery to invoke pending-outbox replay; restart alone is insufficient.
 
 ## Verification and evidence
 
@@ -39,5 +41,6 @@ IDs, safe failure reason, queue depth before/after, recovery action, and timesta
 ## Escalation and residual risk
 
 Escalate if retries continue, queue depth grows, or a completed artifact is duplicated.
-Historical jobs that failed while the provider was unavailable may require manual
-requeue; automatic historical reconciliation is not guaranteed.
+Historical jobs that failed while the provider was unavailable may require manual requeue.
+Pending API outbox rows also require a later scoped action because autonomous outbox polling
+is not implemented.
