@@ -101,20 +101,28 @@ synthetic fixtures, comparison rendering, and the condition-based approval journ
 complete deterministic release gate then passed against the isolated
 `agreement-intelligence-public-release` stack.
 
+Final review-correction commit `e224598` was exercised at `2026-08-27T16:50:31Z` against
+that isolated no-key stack. Focused checks covered pre-commit jurisdiction normalization,
+the executable second-tenant agreement/citation/review/package fixture, actual document
+duplicate semantics, and the imported Insomnia multipart/idempotency contract. The exact
+release gate rebuilt and inspected API/worker containers, ran every source, audit,
+infrastructure, deterministic-evaluation, and browser gate, and passed. The dependency
+rebase and final clean-clone repeat remain required after #246 merges.
+
 | Item | Commit/time | Result | Safe evidence |
 | --- | --- | --- | --- |
 | Clean setup and tool versions | `24bc47f` / `2026-08-27` | Pass | Node `22.23.1`; pnpm `10.28.0`; uv `0.11.29`; locked installs completed |
-| No-key `stack-up` / `stack-check` | `24bc47f` / `2026-08-27` | Pass | Both provider-key variables empty; API, web, worker, MCP, PostgreSQL, Redis, Keycloak, LocalStack, and telemetry services healthy |
-| Documentation links/contracts/format | `6ab8720` / `2026-08-27` | Pass | 60 tracked source Markdown files; 47 stable `MQA-*` cases; link, structure, fixture, no-key, and Prettier checks passed |
-| `make check` with disposable PostgreSQL | `6ab8720` / `2026-08-27` | Pass | 64 web tests and 512 Python tests passed; lint, types across 192 Python files, CI/auth contracts, and all production builds passed |
-| Production dependency audits | `6ab8720` / `2026-08-27` | Pass | 0 unignored/actionable findings; accepted dev-tool advisories: Ragas `0.3.9` / `PYSEC-2026-3046` and DiskCache `5.6.3` / `PYSEC-2026-2447`; four internal packages are not published on PyPI and are listed as unauditable project packages |
-| Full-history secret scan | `6ab8720` / `2026-08-27` | Pass | 256 reachable commits / 4.61 MB scanned; 0 leaks; the materialized staged patch scan covered 1.03 MB and found 0 leaks |
-| Terraform/LocalStack | `6ab8720` / `2026-08-27` | Pass | Terraform valid; Checkov 29 passed / 0 failed; emulated apply, encrypted/private bucket, queue/DLQ, secret, and destroy assertions passed |
-| Deterministic `make ai-eval` | `6ab8720` / `2026-08-27` | Pass | SHA-256 `f1a10a531f0c3c5c2240c6a65d187dad8caf445749a8bc91582a757bc7157831`; all thresholds passed; 0 tokens, USD cost, and provider latency |
-| Playwright release project | `6ab8720` / `2026-08-27` | Pass | 5 passed / 0 failed / 0 skipped in one worker in 31.2 seconds, including approval and repository-to-comparison journeys |
+| No-key `stack-up` / `stack-check` | `e224598` / `2026-08-27` | Pass | Both provider-key variables empty; API/worker were rebuilt, recreated, and inspected; API, web, worker, MCP, PostgreSQL, Redis, Keycloak, LocalStack, and telemetry services were healthy |
+| Documentation links/contracts/format | `e224598` / `2026-08-27` | Pass | 60 tracked source Markdown files; 48 stable `MQA-*` cases, of which 47 remain owner-executed; link, structure, fixture, no-key, YAML, OpenAPI-path, and Prettier checks passed |
+| `make check` with disposable PostgreSQL | `e224598` / `2026-08-27` | Pass | 64 web tests and 517 Python tests passed; lint, types across 192 Python files, CI/auth contracts, and all production builds passed |
+| Production dependency audits | `e224598` / `2026-08-27` | Pass | 0 unignored/actionable findings; accepted dev-tool advisories: Ragas `0.3.9` / `PYSEC-2026-3046` and DiskCache `5.6.3` / `PYSEC-2026-2447`; four internal packages are not published on PyPI and are listed as unauditable project packages |
+| Full-history and changed-file secret scans | `e224598` / `2026-08-27` | Pass | 259 reachable commits / 4.63 MB plus all 12 changed source files scanned with redaction; 0 leaks |
+| Terraform/LocalStack | `e224598` / `2026-08-27` | Pass | Terraform valid; Checkov 29 passed / 0 failed; emulated apply, encrypted/private bucket, queue/DLQ, secret, and destroy assertions passed |
+| Deterministic `make ai-eval` | `e224598` / `2026-08-27` | Pass | SHA-256 `f1a10a531f0c3c5c2240c6a65d187dad8caf445749a8bc91582a757bc7157831`; all thresholds passed; 0 tokens, USD cost, and provider latency |
+| Playwright release project | `e224598` / `2026-08-27` | Pass | 5 passed / 0 failed / 0 skipped in one worker in 30.9 seconds, including approval and repository-to-comparison journeys |
 | Synthetic release media | `6ab8720` / `2026-08-27` | Pass | `grounded-search.png`: 227,649 bytes, SHA-256 `33051e8b60d44f1e817b3dbba8c3805af464311124b9c493c51e8cefbcf8bdff`; `public-release-demo.webm`: 656,070 bytes, 8.84 seconds, SHA-256 `1b2fa90767015824a8ef855d37fc77fc9f1e1801e77b23721e2a9177d136207e` |
-| Provider contract/no-key degradation | `6ab8720` / `2026-08-27` | Pass | API/worker configuration tests passed; recreated containers were inspected and rejected hosted/openai-compatible settings; deterministic analysis and lexical retrieval remained usable without a key; provider provenance stayed empty rather than fabricated |
-| Live provider smoke | `6ab8720` / `2026-08-27` | Blocked | No authorized provider secret was available; only the opt-in configuration contract was verified, no external request was sent, and no secret was read or logged |
+| Provider contract/no-key degradation | `e224598` / `2026-08-27` | Pass | API/worker configuration tests passed; recreated containers were inspected and rejected hosted/openai-compatible settings; deterministic analysis and lexical retrieval remained usable without a key; provider provenance stayed empty rather than fabricated |
+| Live provider smoke | `e224598` / `2026-08-27` | Blocked | No authorized provider secret was available; only the opt-in configuration contract was verified, no external request was sent, and no secret was read or logged |
 | Owner manual `MQA-*` pass | PR head / pre-visibility | Pending | 47 cases remain for owner execution and evidence review before the visibility decision |
 
 ## Honest release limitations
