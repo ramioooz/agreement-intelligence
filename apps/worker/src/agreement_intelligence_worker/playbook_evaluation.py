@@ -27,6 +27,7 @@ from sqlalchemy import (
     text,
 )
 
+from agreement_intelligence_worker.completion_fence import lock_active_agreement
 from agreement_intelligence_worker.fallback_suggestions import (
     FallbackModelComparator,
     FallbackSuggestion,
@@ -496,6 +497,13 @@ class SQLAlchemyPlaybookEvaluationSink:
                     text("SELECT set_config('app.organization_id', :organization_id, true)"),
                     {"organization_id": str(job.organization_id)},
                 )
+            if not lock_active_agreement(
+                connection,
+                agreement_id=job.agreement_id,
+                organization_id=job.organization_id,
+                workspace_id=job.workspace_id,
+            ):
+                return
             agreement = (
                 connection.execute(
                     select(agreements.c.agreement_type, agreements.c.audit_metadata)

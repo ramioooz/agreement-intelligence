@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from agreement_intelligence_platform.observability import inject_trace_context
+from agreement_intelligence_worker.artifact_commit import PreparedArtifact
 from agreement_intelligence_worker.playbook_evaluation import (
     SQLAlchemyPlaybookEvaluationSink,
     worker_evaluation_metadata,
@@ -33,6 +34,10 @@ class InMemoryRepository:
     job: ProcessingJob
     artifacts: list[CompletedArtifact]
 
+    def expect(self, job: ProcessingJob, artifact: CompletedArtifact) -> bool:
+        del job, artifact
+        return True
+
     def claim(
         self,
         job_id: UUID,
@@ -58,8 +63,9 @@ class InMemoryRepository:
         *,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
     ) -> bool | None:
-        del organization_id, workspace_id
+        del organization_id, workspace_id, claimed_job
         if self.job.id != job_id:
             raise LookupError(job_id)
         if self.job.state == "completed":
@@ -89,8 +95,10 @@ class InMemoryRepository:
         next_retry_at: datetime,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
-    ) -> None:
-        del organization_id, workspace_id
+        claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
+    ) -> bool:
+        del organization_id, workspace_id, claimed_job, expected_artifact
         assert self.job.id == job_id
         self.job = replace(
             self.job,
@@ -99,6 +107,7 @@ class InMemoryRepository:
             failure_message=message,
             next_retry_at=next_retry_at,
         )
+        return True
 
     def fail(
         self,
@@ -108,8 +117,10 @@ class InMemoryRepository:
         message: str,
         organization_id: UUID | None = None,
         workspace_id: UUID | None = None,
+        claimed_job: ProcessingJob | None = None,
+        expected_artifact: CompletedArtifact | None = None,
     ) -> None:
-        del organization_id, workspace_id
+        del organization_id, workspace_id, claimed_job, expected_artifact
         assert self.job.id == job_id
         self.job = replace(
             self.job, state="failed", failure_category=category, failure_message=message
@@ -132,16 +143,25 @@ class InMemoryQueue:
 
 
 class PlaceholderProcessor:
-    def process(self, job: ProcessingJob) -> CompletedArtifact:
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
         return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/placeholder.json")
+
+    def process(self, job: ProcessingJob) -> CompletedArtifact:
+        return self.expected_artifact(job)
 
 
 class FlakyProcessor:
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+        return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/placeholder.json")
+
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         raise TransientProcessingError("Temporary provider failure")
 
 
 class ParserSafetyProcessor:
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+        return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/placeholder.json")
+
     def process(self, job: ProcessingJob) -> CompletedArtifact:
         raise PermanentProcessingError(
             "Document parsing was rejected by safety limits.",
@@ -224,8 +244,9 @@ def test_completion_failure_does_not_run_evaluation_handler() -> None:
             *,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
+            claimed_job: ProcessingJob | None = None,
         ) -> None:
-            del job_id, artifact, organization_id, workspace_id
+            del job_id, artifact, organization_id, workspace_id, claimed_job
             raise RuntimeError("database completion failed")
 
     repository = FailingRepository(job=_job(), artifacts=[])
@@ -284,8 +305,65 @@ def test_completion_rejected_by_deletion_fence_discards_artifact_and_skips_handl
     assert observed == []
 
 
-def test_transient_completion_handler_failure_recovers_on_redelivery() -> None:
-    repository = InMemoryRepository(job=_job(), artifacts=[])
+def test_embedding_completion_handler_failure_recovers_from_durable_sentinel(
+    tmp_path: Path,
+) -> None:
+    from agreement_intelligence_worker.processing import (
+        agreements,
+        processing_artifacts,
+        processing_jobs,
+    )
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'embedding-replay.db'}")
+    create_processing_tables(engine)
+    organization_id, workspace_id, agreement_id, job_id = (
+        uuid4(),
+        uuid4(),
+        uuid4(),
+        uuid4(),
+    )
+    configuration_id = uuid4()
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                processing_state="queued",
+                updated_at=now,
+                deletion_requested_at=None,
+            )
+        )
+        connection.execute(
+            processing_jobs.insert().values(
+                id=job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                idempotency_key="embedding-replay",
+                profile=f"embedding-reindex:{configuration_id}",
+                state="queued",
+                attempt_count=0,
+                queued_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    class EmbeddingSentinelProcessor:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+            return CompletedArtifact(
+                job_id=job.id,
+                key=f"embedding-reindex/{configuration_id}.json",
+            )
+
+        def prepare(self, job: ProcessingJob) -> PreparedArtifact:
+            return PreparedArtifact(self.expected_artifact(job), None, None)
+
+        def finalize(self, *_: object) -> None:
+            return None
+
     attempts: list[str] = []
 
     class FlakyEvaluationHandler:
@@ -295,21 +373,30 @@ def test_transient_completion_handler_failure_recovers_on_redelivery() -> None:
                 raise RuntimeError("evaluation database temporarily unavailable")
 
     worker = JobProcessor(
-        repository,
+        SQLAlchemyProcessingJobRepository(engine),
         InMemoryQueue(retries=[]),
-        PlaceholderProcessor(),
+        EmbeddingSentinelProcessor(),
         completion_handler=FlakyEvaluationHandler(),
     )
 
     with raises(RuntimeError, match="temporarily unavailable"):
-        worker.handle(repository.job.id)
-    worker.handle(repository.job.id)
+        worker.handle(job_id, organization_id=organization_id, workspace_id=workspace_id)
+    worker.handle(job_id, organization_id=organization_id, workspace_id=workspace_id)
 
-    assert repository.job.state == "completed"
+    sentinel_key = f"embedding-reindex/{configuration_id}.json"
     assert attempts == [
-        f"checkpoints/{repository.job.id}/placeholder.json",
-        f"checkpoints/{repository.job.id}/placeholder.json",
+        sentinel_key,
+        sentinel_key,
     ]
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(processing_artifacts.c.artifact_key).where(
+                    processing_artifacts.c.job_id == job_id
+                )
+            )
+            is None
+        )
 
 
 def test_completing_a_version_job_updates_agreement_and_version_state(tmp_path: Path) -> None:
@@ -332,6 +419,7 @@ def test_completing_a_version_job_updates_agreement_and_version_state(tmp_path: 
             agreements.insert().values(
                 id=agreement_id,
                 organization_id=organization_id,
+                workspace_id=workspace_id,
                 current_version_id=version_id,
                 processing_state="queued",
                 updated_at=now,
@@ -432,6 +520,7 @@ def test_tombstone_completion_durably_inventories_artifact_for_retryable_cleanup
             agreements.insert().values(
                 id=agreement_id,
                 organization_id=organization_id,
+                workspace_id=workspace_id,
                 current_version_id=None,
                 processing_state="processing",
                 updated_at=now,
@@ -479,6 +568,19 @@ def test_tombstone_completion_durably_inventories_artifact_for_retryable_cleanup
                 updated_at=now,
             )
         )
+        connection.execute(
+            deletion_objects.insert().values(
+                id=uuid4(),
+                deletion_id=deletion_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                category="comparison",
+                object_key=comparison_key,
+                state="deleted",
+                updated_at=now,
+            )
+        )
         if has_outbox:
             connection.execute(
                 deletion_outbox.insert().values(
@@ -503,12 +605,25 @@ def test_tombstone_completion_durably_inventories_artifact_for_retryable_cleanup
 
     assert completed is False
     repository = SQLAlchemyProcessingJobRepository(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            processing_jobs.delete().where(processing_jobs.c.id == comparison_job_id)
+        )
     assert (
         repository.complete(
             comparison_job_id,
             CompletedArtifact(job_id=comparison_job_id, key=comparison_key),
             organization_id=organization_id,
             workspace_id=workspace_id,
+            claimed_job=ProcessingJob(
+                id=comparison_job_id,
+                agreement_id=agreement_id,
+                state="processing",
+                attempt_count=1,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                profile="version-comparison",
+            ),
         )
         is False
     )
@@ -589,14 +704,201 @@ def test_processing_loop_consumes_and_acknowledges_fake_messages() -> None:
     assert receiver.acked == ["receipt-1"]
 
 
+def test_replay_recovers_durable_artifact_intent_after_completion_db_failure_and_job_purge(
+    tmp_path: Path,
+) -> None:
+    from agreement_intelligence_worker.agreement_deletion import (
+        AgreementDeletionProcessor,
+        SQLAlchemyAgreementDeletionRepository,
+        deletion_metadata,
+        deletion_objects,
+        deletion_requests,
+    )
+    from agreement_intelligence_worker.processing import (
+        agreements,
+        processing_artifact_intents,
+        processing_jobs,
+    )
+
+    engine = create_engine(f"sqlite+pysqlite:///{tmp_path / 'restart-replay.db'}")
+    create_processing_tables(engine)
+    deletion_metadata.create_all(engine)
+    job_id, deletion_id = uuid4(), uuid4()
+    agreement_id, organization_id, workspace_id, actor_id = uuid4(), uuid4(), uuid4(), uuid4()
+    artifact_key = (
+        f"tenants/{organization_id}/workspaces/{workspace_id}/agreements/{agreement_id}/"
+        f"analysis/{'a' * 64}/document-analysis.v1.json"
+    )
+    now = datetime.now(UTC)
+    with engine.begin() as connection:
+        connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                current_version_id=None,
+                processing_state="queued",
+                updated_at=now,
+                deletion_requested_at=None,
+            )
+        )
+        connection.execute(
+            processing_jobs.insert().values(
+                id=job_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                version_id=None,
+                idempotency_key="restart-replay",
+                profile="baseline",
+                state="queued",
+                attempt_count=0,
+                queued_at=now,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    class StorageProcessor:
+        def __init__(self) -> None:
+            self.objects: set[str] = set()
+            self.process_calls = 0
+
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+            return CompletedArtifact(job_id=job.id, key=artifact_key)
+
+        def process(self, job: ProcessingJob) -> CompletedArtifact:
+            self.process_calls += 1
+            self.objects.add(artifact_key)
+            return CompletedArtifact(job_id=job.id, key=artifact_key)
+
+        def discard(self, artifact: CompletedArtifact) -> None:
+            self.objects.discard(artifact.key)
+
+        def delete(self, key: str) -> None:
+            self.objects.discard(key)
+
+    class CompletionDatabaseFailure:
+        def __init__(self, repository: SQLAlchemyProcessingJobRepository) -> None:
+            self.repository = repository
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(self.repository, name)
+
+        def complete(self, *_: object, **__: object) -> bool:
+            raise RuntimeError("completion database unavailable")
+
+    processor = StorageProcessor()
+    repository = SQLAlchemyProcessingJobRepository(engine)
+    with raises(RuntimeError, match="completion database unavailable"):
+        JobProcessor(
+            CompletionDatabaseFailure(repository),  # type: ignore[arg-type]
+            InMemoryQueue(retries=[]),
+            processor,
+        ).handle(job_id, organization_id=organization_id, workspace_id=workspace_id)
+    assert processor.objects == {artifact_key}
+    with engine.connect() as connection:
+        assert connection.scalar(select(processing_artifact_intents.c.artifact_key)) == artifact_key
+
+    with engine.begin() as connection:
+        connection.execute(
+            agreements.update()
+            .where(agreements.c.id == agreement_id)
+            .values(deletion_requested_at=now)
+        )
+        connection.execute(
+            deletion_requests.insert().values(
+                id=deletion_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                actor_id=actor_id,
+                title="Deleting",
+                agreement_type="client",
+                file_checksums=[],
+                state="completed",
+                attempt_count=0,
+                retry_cycle=1,
+                next_attempt_at=now,
+                accepted_at=now,
+                completed_at=now,
+                updated_at=now,
+            )
+        )
+        connection.execute(
+            deletion_objects.insert().values(
+                id=uuid4(),
+                deletion_id=deletion_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                agreement_id=agreement_id,
+                category="analysis",
+                object_key=artifact_key,
+                state="deleted",
+                updated_at=now,
+            )
+        )
+        connection.execute(processing_jobs.delete().where(processing_jobs.c.id == job_id))
+
+    stop_event = asyncio.Event()
+
+    class ReplayReceiver:
+        def __init__(self) -> None:
+            self.message: ProcessingMessage | None = ProcessingMessage(
+                job_id=job_id,
+                receipt_handle="replay-receipt",
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+            self.acked: list[str] = []
+
+        async def receive(self) -> ProcessingMessage | None:
+            message, self.message = self.message, None
+            if message is None:
+                stop_event.set()
+            return message
+
+        async def ack(self, message: ProcessingMessage) -> None:
+            self.acked.append(message.receipt_handle)
+
+    receiver = ReplayReceiver()
+    asyncio.run(
+        run_processing_loop(
+            stop_event,
+            receiver=receiver,
+            processor=JobProcessor(repository, InMemoryQueue(retries=[]), processor),
+            idle_sleep_seconds=0,
+        )
+    )
+
+    assert receiver.acked == ["replay-receipt"]
+    assert processor.process_calls == 1
+    with engine.connect() as connection:
+        inventory = connection.execute(select(deletion_objects)).mappings().one()
+        request = connection.execute(select(deletion_requests)).mappings().one()
+        assert connection.scalar(select(processing_artifact_intents.c.id)) is None
+    assert inventory["state"] == "pending"
+    assert request["state"] == "retrying"
+
+    AgreementDeletionProcessor(SQLAlchemyAgreementDeletionRepository(engine), processor).handle(
+        deletion_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+    )
+    assert processor.objects == set()
+
+
 def test_processing_loop_continues_the_message_trace_context() -> None:
     traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     observed_headers: dict[str, str] = {}
 
     class TraceAwareProcessor:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+            return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/result.json")
+
         def process(self, job: ProcessingJob) -> CompletedArtifact:
             inject_trace_context(observed_headers)
-            return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/result.json")
+            return self.expected_artifact(job)
 
     class OneMessageReceiver:
         def __init__(self, job: ProcessingJob) -> None:
@@ -785,6 +1087,7 @@ def test_processing_loop_recovers_unacked_evaluation_without_duplicate_findings(
 
 def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path: Path) -> None:
     from agreement_intelligence_worker.processing import (
+        agreements,
         processing_artifacts,
         processing_jobs,
     )
@@ -812,6 +1115,16 @@ def test_redelivery_repairs_processing_job_when_artifact_already_exists(tmp_path
     now = datetime.now(UTC)
     artifact_key = f"checkpoints/{job_id}/placeholder.json"
     with engine.begin() as connection:
+        connection.execute(
+            agreements.insert().values(
+                id=agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                current_version_id=None,
+                processing_state="processing",
+                updated_at=now,
+            )
+        )
         connection.execute(
             processing_jobs.insert().values(
                 id=job_id,
@@ -899,6 +1212,7 @@ def test_redelivery_reprocesses_processing_job_without_artifact(tmp_path: Path) 
             agreements.insert().values(
                 id=agreement_id,
                 organization_id=organization_id,
+                workspace_id=workspace_id,
                 current_version_id=None,
                 processing_state="processing",
                 updated_at=now,

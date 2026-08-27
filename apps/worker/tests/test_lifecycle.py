@@ -85,6 +85,10 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
         job: ProcessingJob
         artifact: CompletedArtifact | None = None
 
+        def expect(self, job: ProcessingJob, artifact: CompletedArtifact) -> bool:
+            del job, artifact
+            return True
+
         def claim(
             self,
             job_id: UUID,
@@ -110,8 +114,9 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             *,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
+            claimed_job: ProcessingJob | None = None,
         ) -> None:
-            del organization_id, workspace_id
+            del organization_id, workspace_id, claimed_job
             assert self.job.id == job_id
             self.artifact = artifact
             self.job = replace(self.job, state="completed", completed_at=datetime.now(UTC))
@@ -125,8 +130,19 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             next_retry_at: datetime,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
-        ) -> None:
-            del job_id, category, message, next_retry_at, organization_id, workspace_id
+            claimed_job: ProcessingJob | None = None,
+            expected_artifact: CompletedArtifact | None = None,
+        ) -> bool:
+            del (
+                job_id,
+                category,
+                message,
+                next_retry_at,
+                organization_id,
+                workspace_id,
+                claimed_job,
+                expected_artifact,
+            )
             raise AssertionError("unexpected retry")
 
         def fail(
@@ -137,8 +153,18 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             message: str,
             organization_id: UUID | None = None,
             workspace_id: UUID | None = None,
+            claimed_job: ProcessingJob | None = None,
+            expected_artifact: CompletedArtifact | None = None,
         ) -> None:
-            del job_id, category, message, organization_id, workspace_id
+            del (
+                job_id,
+                category,
+                message,
+                organization_id,
+                workspace_id,
+                claimed_job,
+                expected_artifact,
+            )
             raise AssertionError("unexpected failure")
 
     class Queue:
@@ -154,8 +180,11 @@ def test_worker_lifecycle_consumes_a_processing_message(tmp_path: Path) -> None:
             raise AssertionError("unexpected retry publish")
 
     class Processor:
-        def process(self, job: ProcessingJob) -> CompletedArtifact:
+        def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
             return CompletedArtifact(job_id=job.id, key=f"checkpoints/{job.id}/placeholder.json")
+
+        def process(self, job: ProcessingJob) -> CompletedArtifact:
+            return self.expected_artifact(job)
 
     class OneMessageReceiver:
         def __init__(self, job_id: UUID, stop_event: asyncio.Event) -> None:

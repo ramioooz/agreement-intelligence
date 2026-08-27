@@ -30,6 +30,7 @@ from agreement_intelligence_worker.ai_configuration import (
     resolve_configuration,
     resolve_configuration_by_id,
 )
+from agreement_intelligence_worker.completion_fence import lock_active_agreement
 from agreement_intelligence_worker.document_indexing import (
     retrieval_chunks,
     retrieval_index_builds,
@@ -74,6 +75,8 @@ class EmbeddingReindexCompletionHandler:
     embeddings: CompletionHandler
 
     def completed(self, job: ProcessingJob, artifact: CompletedArtifact) -> None:
+        if job.profile == "version-comparison":
+            return
         if embedding_reindex_configuration_id(job.profile) is not None:
             self.embeddings.completed(job, artifact)
             return
@@ -167,6 +170,13 @@ class SQLAlchemyEmbeddingIndexSink:
                     "SELECT set_config('app.organization_id', %s, true)",
                     (str(job.organization_id),),
                 )
+            if not lock_active_agreement(
+                connection,
+                agreement_id=job.agreement_id,
+                organization_id=job.organization_id,
+                workspace_id=job.workspace_id,
+            ):
+                return
             configuration_id = embedding_reindex_configuration_id(job.profile)
             active_configuration = (
                 resolve_configuration_by_id(

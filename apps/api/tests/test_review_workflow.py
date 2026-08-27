@@ -19,9 +19,11 @@ from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.reviews import workflow as workflow_module
 from agreement_intelligence_api.reviews import workflow_routes as workflow_routes_module
+from agreement_intelligence_api.reviews.final_package import reserve_final_package_intent
 from agreement_intelligence_api.reviews.models import (
     ReviewAssignmentRecord,
     ReviewCaseRecord,
+    ReviewFinalPackageRecord,
     ReviewNotificationEventRecord,
     ReviewWorkflowRecord,
 )
@@ -36,7 +38,7 @@ from agreement_intelligence_api.reviews.workflow_routes import (
     _workflow_for_package_update,
 )
 from fastapi import HTTPException
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, select
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -62,7 +64,11 @@ class _ImmutableStorage:
 
 
 class _AlwaysImmutableStorage:
+    def __init__(self) -> None:
+        self.put_keys: list[str] = []
+
     def put_immutable(self, key: str, content: bytes, *, content_type: str, sha256: str) -> bool:
+        self.put_keys.append(key)
         return True
 
     def read(self, key: str) -> StoredDocument | None:
@@ -90,6 +96,18 @@ class _FailingPackageStorage:
 
     def delete(self, key: str) -> None:
         self.deleted.append(key)
+        self.objects.discard(key)
+
+
+class _FailingCompensationStorage(_FailingPackageStorage):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fail_compensation = True
+
+    def delete(self, key: str) -> None:
+        self.deleted.append(key)
+        if self.fail_compensation:
+            raise RuntimeError("compensation unavailable")
         self.objects.discard(key)
 
 
@@ -281,13 +299,55 @@ def test_final_package_rechecks_tombstone_before_writing_objects(
     workflow_record.state = "rejected"
     agreement.deletion_requested_at = datetime.now(UTC)
     session.commit()
-    storage = _FailingPackageStorage()
+    storage = _AlwaysImmutableStorage()
     monkeypatch.setattr(workflow_routes_module, "storage_from_environment", lambda: storage)
 
     with pytest.raises(HTTPException, match="final_package_not_ready"):
         _create_final_package(session, review, workflow_record)
 
-    assert storage.objects == set()
+    assert storage.put_keys == []
+
+
+def test_final_package_reservation_boundary_commits_keys_and_fences_tombstones(
+    session: Session,
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-reservation-boundary",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.commit()
+    base = f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/final-package"
+
+    package = reserve_final_package_intent(
+        session,
+        review=review,
+        workflow=workflow_record,
+        manifest_key=f"{base}/manifest.json",
+        pdf_key=f"{base}/report.pdf",
+        manifest_checksum="a" * 64,
+        pdf_checksum="b" * 64,
+    )
+
+    assert session.get(ReviewFinalPackageRecord, package.id) is not None
+    agreement = session.get(AgreementRecord, review.agreement_id)
+    assert agreement is not None
+    agreement.deletion_requested_at = datetime.now(UTC)
+    session.commit()
+    with pytest.raises(HTTPException, match="final_package_not_ready"):
+        reserve_final_package_intent(
+            session,
+            review=review,
+            workflow=workflow_record,
+            manifest_key=package.manifest_key,
+            pdf_key=package.pdf_key,
+            manifest_checksum=package.manifest_checksum,
+            pdf_checksum=package.pdf_checksum,
+        )
 
 
 def test_partial_final_package_write_is_compensated_before_unlocking_agreement(
@@ -314,6 +374,65 @@ def test_partial_final_package_write_is_compensated_before_unlocking_agreement(
         f"reviews/{review.organization_id}/{review.workspace_id}/{review.id}/"
         "final-package/manifest.json"
     ]
+    package = session.scalar(
+        select(ReviewFinalPackageRecord).where(ReviewFinalPackageRecord.review_id == review.id)
+    )
+    assert package is not None
+
+
+def test_final_package_intent_precedes_storage_when_database_commit_fails(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-database-race",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.commit()
+    storage = _AlwaysImmutableStorage()
+    monkeypatch.setattr(workflow_routes_module, "storage_from_environment", lambda: storage)
+    monkeypatch.setattr(session, "commit", lambda: (_ for _ in ()).throw(RuntimeError("DB down")))
+
+    with pytest.raises(RuntimeError, match="DB down"):
+        _create_final_package(session, review, workflow_record)
+
+    assert storage.put_keys == []
+
+
+def test_final_package_compensation_failure_remains_retryable(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="final-package-compensation-retry",
+    )
+    workflow_record = session.get(ReviewWorkflowRecord, workflow.id)
+    assert workflow_record is not None
+    workflow_record.state = "rejected"
+    session.commit()
+    storage = _FailingCompensationStorage()
+    monkeypatch.setattr(workflow_routes_module, "storage_from_environment", lambda: storage)
+
+    with pytest.raises(RuntimeError, match="compensation unavailable"):
+        _create_final_package(session, review, workflow_record)
+    assert (
+        session.scalar(
+            select(ReviewFinalPackageRecord).where(ReviewFinalPackageRecord.review_id == review.id)
+        )
+        is not None
+    )
+    assert storage.objects
+
+    storage.fail_compensation = False
+    with pytest.raises(RuntimeError, match="S3 unavailable"):
+        _create_final_package(session, review, workflow_record)
+    assert storage.objects == set()
 
 
 def test_stage_activation_assigns_each_eligible_actor_once(session: Session) -> None:

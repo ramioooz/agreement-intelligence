@@ -41,6 +41,7 @@ grep -Eq 'resource "aws_s3_bucket_public_access_block" "documents"' "$terraform_
 grep -Eq 'resource "aws_secretsmanager_secret" "application"' "$terraform_dir/main.tf"
 grep -Eq 'default[[:space:]]*=[[:space:]]*true' "$terraform_dir/variables.tf"
 grep -Eq 'SERVICES: s3,sqs,secretsmanager' "$repo_root/compose.yaml"
+grep -Eq 'visibility_timeout_seconds[[:space:]]*=[[:space:]]*900' "$terraform_dir/main.tf"
 
 command -v terraform >/dev/null 2>&1 || {
   echo "terraform is required for this contract" >&2

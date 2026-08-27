@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     JSON,
@@ -26,6 +26,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.sql import text
 
 from agreement_intelligence_worker.ai_configuration import AIOperation, resolve_configuration
+from agreement_intelligence_worker.artifact_commit import PreparedArtifact
 from agreement_intelligence_worker.document_processor import ObjectStorage
 from agreement_intelligence_worker.model_gateway import ModelGateway
 from agreement_intelligence_worker.processing import (
@@ -126,18 +127,24 @@ class VersionComparisonProcessor:
         self._storage = storage
         self._gateway = gateway
 
-    def process(self, job: ProcessingJob) -> CompletedArtifact:
-        try:
-            return self._process(job)
-        except PermanentProcessingError as error:
-            self._mark_failed(job, str(error))
-            raise
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+        with self._engine.connect() as connection:
+            _set_tenant_context(connection, job)
+            run_id = connection.scalar(
+                select(_runs.c.id).where(_runs.c.processing_job_id == job.id)
+            )
+        if run_id is None:
+            raise PermanentProcessingError("Version comparison run is unavailable")
+        return CompletedArtifact(
+            job_id=job.id, key=f"comparisons/{run_id}/version-comparison.v1.json"
+        )
 
     def discard(self, artifact: CompletedArtifact) -> None:
         self._storage.delete(artifact.key)
 
-    def _process(self, job: ProcessingJob) -> CompletedArtifact:
-        with self._engine.begin() as connection:
+    def prepare(self, job: ProcessingJob) -> PreparedArtifact:
+        """Compute the comparison without mutating S3 or database state."""
+        with self._engine.connect() as connection:
             _set_tenant_context(connection, job)
             run = (
                 connection.execute(select(_runs).where(_runs.c.processing_job_id == job.id))
@@ -162,117 +169,176 @@ class VersionComparisonProcessor:
             )
             if baseline is None or target is None:
                 raise PermanentProcessingError("Version comparison sources are unavailable")
-            baseline_manifest = _manifest(
-                self._storage, _artifact_key_for_version(connection, baseline["id"])
+            baseline_key = _artifact_key_for_version(connection, baseline["id"])
+            target_key = _artifact_key_for_version(connection, target["id"])
+
+        baseline_version = canonical_version_from_manifest(_manifest(self._storage, baseline_key))
+        target_version = canonical_version_from_manifest(_manifest(self._storage, target_key))
+        materiality_configuration = resolve_configuration(
+            AIOperation.VERSION_MATERIALITY,
+            os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
+            organization_id=job.organization_id,
+            workspace_id=job.workspace_id,
+        )
+        baseline_by_id = {element.element_id: element for element in baseline_version.elements}
+        target_by_id = {element.element_id: element for element in target_version.elements}
+        changes: list[dict[str, object]] = []
+        for ordinal, alignment in enumerate(align_versions(baseline_version, target_version)):
+            old = "\n".join(baseline_by_id[key].text for key in alignment.baseline_element_ids)
+            new = "\n".join(target_by_id[key].text for key in alignment.target_element_ids)
+            old_citations = tuple(
+                anchor
+                for key in alignment.baseline_element_ids
+                for anchor in baseline_by_id[key].citation_anchor_ids
             )
-            target_manifest = _manifest(
-                self._storage, _artifact_key_for_version(connection, target["id"])
+            new_citations = tuple(
+                anchor
+                for key in alignment.target_element_ids
+                for anchor in target_by_id[key].citation_anchor_ids
             )
-            baseline_version = canonical_version_from_manifest(baseline_manifest)
-            target_version = canonical_version_from_manifest(target_manifest)
-            materiality_configuration = resolve_configuration(
-                AIOperation.VERSION_MATERIALITY,
-                os.environ.get("AI_CONFIGURATION_ENVIRONMENT", "local"),
-                organization_id=job.organization_id,
-                workspace_id=job.workspace_id,
+            change_type = "modified" if alignment.kind == "matched" else alignment.kind
+            assessment = assess_materiality_with_model(
+                MaterialityCandidate(
+                    change_type=change_type,
+                    baseline_text=old,
+                    target_text=new,
+                    baseline_citation_ids=old_citations,
+                    target_citation_ids=new_citations,
+                    alignment_confidence=alignment.confidence,
+                    review_required=alignment.review_required,
+                ),
+                gateway=self._gateway,
+                configuration=materiality_configuration,
             )
-            baseline_by_id = {element.element_id: element for element in baseline_version.elements}
-            target_by_id = {element.element_id: element for element in target_version.elements}
-            changes: list[dict[str, object]] = []
-            for ordinal, alignment in enumerate(align_versions(baseline_version, target_version)):
-                old = "\n".join(baseline_by_id[key].text for key in alignment.baseline_element_ids)
-                new = "\n".join(target_by_id[key].text for key in alignment.target_element_ids)
-                old_citations = tuple(
-                    anchor
-                    for key in alignment.baseline_element_ids
-                    for anchor in baseline_by_id[key].citation_anchor_ids
-                )
-                new_citations = tuple(
-                    anchor
-                    for key in alignment.target_element_ids
-                    for anchor in target_by_id[key].citation_anchor_ids
-                )
-                change_type = "modified" if alignment.kind == "matched" else alignment.kind
-                assessment = assess_materiality_with_model(
-                    MaterialityCandidate(
-                        change_type=change_type,
-                        baseline_text=old,
-                        target_text=new,
-                        baseline_citation_ids=old_citations,
-                        target_citation_ids=new_citations,
-                        alignment_confidence=alignment.confidence,
-                        review_required=alignment.review_required,
-                    ),
-                    gateway=self._gateway,
-                    configuration=materiality_configuration,
-                )
-                changes.append(
-                    {
-                        "id": uuid4(),
-                        "comparison_run_id": run["id"],
-                        "organization_id": job.organization_id,
-                        "workspace_id": job.workspace_id,
-                        "agreement_id": job.agreement_id,
-                        "ordinal": ordinal,
-                        "alignment_kind": alignment.kind,
-                        "baseline_element_ids": list(alignment.baseline_element_ids),
-                        "target_element_ids": list(alignment.target_element_ids),
-                        "baseline_citation_ids": list(old_citations),
-                        "target_citation_ids": list(new_citations),
-                        "word_diff": [
-                            {
-                                "kind": item.kind,
-                                "baseline_tokens": " ".join(item.baseline_tokens),
-                                "target_tokens": " ".join(item.target_tokens),
-                            }
-                            for item in assessment.word_diff
-                        ],
-                        "confidence": assessment.confidence,
-                        "review_required": assessment.review_required,
-                        "severity": assessment.severity,
-                        "legal_concepts": list(assessment.legal_concepts),
-                        "rationale": assessment.rationale,
-                        "provider_provenance": assessment.provider_provenance,
-                        "created_at": datetime.now(UTC),
-                    }
-                )
-            connection.execute(_changes.delete().where(_changes.c.comparison_run_id == run["id"]))
-            if changes:
-                connection.execute(_changes.insert(), changes)
-            provenance = dict(run["analysis_provenance"] or {})
-            provenance["alignment"] = "deterministic"
-            connection.execute(
-                update(_runs)
-                .where(_runs.c.id == run["id"])
-                .values(
-                    state="completed",
-                    analysis_provenance=provenance,
-                    completed_at=datetime.now(UTC),
-                    updated_at=datetime.now(UTC),
-                )
+            changes.append(
+                {
+                    "id": str(uuid4()),
+                    "comparison_run_id": str(run["id"]),
+                    "organization_id": str(job.organization_id),
+                    "workspace_id": str(job.workspace_id),
+                    "agreement_id": str(job.agreement_id),
+                    "ordinal": ordinal,
+                    "alignment_kind": alignment.kind,
+                    "baseline_element_ids": list(alignment.baseline_element_ids),
+                    "target_element_ids": list(alignment.target_element_ids),
+                    "baseline_citation_ids": list(old_citations),
+                    "target_citation_ids": list(new_citations),
+                    "word_diff": [
+                        {
+                            "kind": item.kind,
+                            "baseline_tokens": " ".join(item.baseline_tokens),
+                            "target_tokens": " ".join(item.target_tokens),
+                        }
+                        for item in assessment.word_diff
+                    ],
+                    "confidence": assessment.confidence,
+                    "review_required": assessment.review_required,
+                    "severity": assessment.severity,
+                    "legal_concepts": list(assessment.legal_concepts),
+                    "rationale": assessment.rationale,
+                    "provider_provenance": assessment.provider_provenance,
+                    "created_at": datetime.now(UTC).isoformat(),
+                }
             )
-        return CompletedArtifact(
+        provenance = dict(run["analysis_provenance"] or {})
+        provenance["alignment"] = "deterministic"
+        artifact = CompletedArtifact(
             job_id=job.id, key=f"comparisons/{run['id']}/version-comparison.v1.json"
         )
-
-    def _mark_failed(self, job: ProcessingJob, reason: str) -> None:
-        safe_reason = (
-            "Version analysis artifacts are unavailable"
-            if "artifact" in reason.lower()
-            else "Version comparison could not be completed"
+        payload = {
+            "schema_version": "version-comparison.v1",
+            "job_id": str(job.id),
+            "run_id": str(run["id"]),
+            "organization_id": str(job.organization_id),
+            "workspace_id": str(job.workspace_id),
+            "agreement_id": str(job.agreement_id),
+            "baseline_version_id": str(run["baseline_version_id"]),
+            "target_version_id": str(run["target_version_id"]),
+            "changes": changes,
+            "analysis_provenance": provenance,
+        }
+        return PreparedArtifact(
+            artifact=artifact,
+            content=json.dumps(payload, separators=(",", ":"), sort_keys=True).encode(),
+            content_type="application/json",
         )
-        with self._engine.begin() as connection:
-            _set_tenant_context(connection, job)
+
+    def finalize(
+        self,
+        connection: Connection,
+        job: ProcessingJob,
+        prepared: PreparedArtifact,
+        canonical_content: bytes | None,
+    ) -> None:
+        """Materialize a validated canonical comparison inside the commit fence."""
+        del prepared
+        if canonical_content is None:
+            raise PermanentProcessingError("Version comparison artifact is unavailable")
+        try:
+            payload = json.loads(canonical_content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PermanentProcessingError("Version comparison artifact is invalid") from error
+        if not isinstance(payload, dict):
+            raise PermanentProcessingError("Version comparison artifact is invalid")
+        run = (
             connection.execute(
-                update(_runs)
-                .where(_runs.c.processing_job_id == job.id)
-                .values(
-                    state="failed",
-                    failure_category="permanent",
-                    failure_message=safe_reason,
-                    updated_at=datetime.now(UTC),
-                )
+                select(_runs).where(_runs.c.processing_job_id == job.id).with_for_update()
             )
+            .mappings()
+            .one_or_none()
+        )
+        if run is None:
+            raise PermanentProcessingError("Version comparison run is unavailable")
+        expected_identity = {
+            "schema_version": "version-comparison.v1",
+            "job_id": str(job.id),
+            "run_id": str(run["id"]),
+            "organization_id": str(job.organization_id),
+            "workspace_id": str(job.workspace_id),
+            "agreement_id": str(job.agreement_id),
+            "baseline_version_id": str(run["baseline_version_id"]),
+            "target_version_id": str(run["target_version_id"]),
+        }
+        if any(payload.get(key) != value for key, value in expected_identity.items()):
+            raise PermanentProcessingError("Version comparison artifact identity conflicts")
+        raw_changes = payload.get("changes")
+        provenance = payload.get("analysis_provenance")
+        if not isinstance(raw_changes, list) or not isinstance(provenance, dict):
+            raise PermanentProcessingError("Version comparison artifact is invalid")
+        try:
+            changes = [
+                {
+                    **change,
+                    "id": UUID(str(change["id"])),
+                    "comparison_run_id": UUID(str(change["comparison_run_id"])),
+                    "organization_id": UUID(str(change["organization_id"])),
+                    "workspace_id": UUID(str(change["workspace_id"])),
+                    "agreement_id": UUID(str(change["agreement_id"])),
+                    "created_at": datetime.fromisoformat(str(change["created_at"])),
+                }
+                for change in raw_changes
+                if isinstance(change, dict)
+            ]
+        except (KeyError, TypeError, ValueError) as error:
+            raise PermanentProcessingError("Version comparison artifact is invalid") from error
+        if len(changes) != len(raw_changes):
+            raise PermanentProcessingError("Version comparison artifact is invalid")
+        connection.execute(_changes.delete().where(_changes.c.comparison_run_id == run["id"]))
+        if changes:
+            connection.execute(_changes.insert(), changes)
+        now = datetime.now(UTC)
+        connection.execute(
+            update(_runs)
+            .where(_runs.c.id == run["id"])
+            .values(
+                state="completed",
+                failure_category=None,
+                failure_message=None,
+                analysis_provenance=provenance,
+                completed_at=now,
+                updated_at=now,
+            )
+        )
 
 
 def _manifest(storage: ObjectStorage, key: str) -> dict[str, object]:

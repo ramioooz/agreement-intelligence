@@ -2,6 +2,7 @@ import asyncio
 import os
 import signal
 from dataclasses import dataclass
+from typing import Any, cast
 
 import boto3
 from agreement_intelligence_platform.telemetry import configure_telemetry
@@ -16,6 +17,7 @@ from agreement_intelligence_worker.analysis_provider import (
     fallback_comparator_from_environment,
     provider_from_environment,
 )
+from agreement_intelligence_worker.artifact_commit import PreparedArtifact
 from agreement_intelligence_worker.document_indexing import SQLAlchemyDocumentIndexSink
 from agreement_intelligence_worker.document_processor import (
     DocumentUnderstandingProcessor,
@@ -62,16 +64,51 @@ class ProfileProcessor:
         self._document = document
         self._comparison = comparison
 
-    def process(self, job: ProcessingJob) -> CompletedArtifact:
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
         if job.profile == "version-comparison":
-            return self._comparison.process(job)
+            return self._comparison.expected_artifact(job)
         configuration_id = embedding_reindex_configuration_id(job.profile)
         if configuration_id is not None:
             return CompletedArtifact(
                 job_id=job.id,
                 key=f"embedding-reindex/{configuration_id}.json",
             )
+        return self._document.expected_artifact(job)
+
+    def process(self, job: ProcessingJob) -> CompletedArtifact:
+        if job.profile == "version-comparison":
+            legacy = getattr(self._comparison, "process", None)
+            if callable(legacy):
+                return cast(CompletedArtifact, legacy(job))
+            return self._comparison.prepare(job).artifact
+        configuration_id = embedding_reindex_configuration_id(job.profile)
+        if configuration_id is not None:
+            return self.expected_artifact(job)
         return self._document.process(job)
+
+    def prepare(self, job: ProcessingJob) -> PreparedArtifact:
+        if job.profile == "version-comparison":
+            return self._comparison.prepare(job)
+        configuration_id = embedding_reindex_configuration_id(job.profile)
+        if configuration_id is not None:
+            return PreparedArtifact(
+                artifact=self.expected_artifact(job),
+                content=None,
+                content_type=None,
+            )
+        return self._document.prepare(job)
+
+    def finalize(
+        self,
+        connection: Any,
+        job: ProcessingJob,
+        prepared: PreparedArtifact,
+        canonical_content: bytes | None,
+    ) -> None:
+        if job.profile == "version-comparison":
+            self._comparison.finalize(connection, job, prepared, canonical_content)
+        elif embedding_reindex_configuration_id(job.profile) is None:
+            self._document.finalize(connection, job, prepared, canonical_content)
 
     def discard(self, artifact: CompletedArtifact) -> None:
         if artifact.key.startswith("comparisons/"):
@@ -166,13 +203,13 @@ def processing_runtime_from_environment() -> ProcessingRuntime | None:
         queue_url = str(client.get_queue_url(QueueName=queue_url)["QueueUrl"])
     engine = processing_engine_from_url(database_url)
     queue = SQSProcessingQueue(client=client, queue_url=queue_url)
-    repository = SQLAlchemyProcessingJobRepository(engine)
     document_client = boto3.client(
         "s3",
         endpoint_url=os.environ.get("AWS_ENDPOINT_URL"),
         region_name=region,
     )
     storage = S3ObjectStorage(client=document_client, bucket=bucket)
+    repository = SQLAlchemyProcessingJobRepository(engine, storage=storage)
     embedding_configuration = embedding_configuration_from_environment()
     model_gateway = model_gateway_from_environment()
     embedding_sink = SQLAlchemyEmbeddingIndexSink(

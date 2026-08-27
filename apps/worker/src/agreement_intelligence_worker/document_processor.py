@@ -16,6 +16,7 @@ from agreement_intelligence_worker.analysis_validation import (
     ValidatedAnalysis,
     validate_provider_analysis,
 )
+from agreement_intelligence_worker.artifact_commit import PreparedArtifact
 from agreement_intelligence_worker.classification import classify_document
 from agreement_intelligence_worker.clause_extraction import extract_clauses
 from agreement_intelligence_worker.document_understanding import (
@@ -105,7 +106,11 @@ class DocumentUnderstandingProcessor:
         self._storage = storage
         self._analysis_provider = analysis_provider
 
-    def process(self, job: ProcessingJob) -> CompletedArtifact:
+    def expected_artifact(self, job: ProcessingJob) -> CompletedArtifact:
+        source = _source_from(job)
+        return CompletedArtifact(job_id=job.id, key=_artifact_key(job, source.checksum))
+
+    def prepare(self, job: ProcessingJob) -> PreparedArtifact:
         source = _source_from(job)
         try:
             content = self._storage.read(source.storage_key)
@@ -133,7 +138,7 @@ class DocumentUnderstandingProcessor:
             raise TransientProcessingError("Document parser temporarily unavailable") from error
         except ValueError as error:
             raise PermanentProcessingError("The source document cannot be parsed") from error
-        artifact_key = _artifact_key(job, source.checksum)
+        artifact_key = self.expected_artifact(job).key
         assert job.organization_id is not None
         assert job.workspace_id is not None
         manifest = _manifest(
@@ -143,12 +148,48 @@ class DocumentUnderstandingProcessor:
             organization_id=job.organization_id,
             workspace_id=job.workspace_id,
         )
-        self._storage.put_immutable(
-            artifact_key,
-            json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode(),
+        return PreparedArtifact(
+            artifact=CompletedArtifact(job_id=job.id, key=artifact_key),
+            content=json.dumps(manifest, separators=(",", ":"), sort_keys=True).encode(),
             content_type="application/json",
         )
-        return CompletedArtifact(job_id=job.id, key=artifact_key)
+
+    def finalize(
+        self,
+        connection: Any,
+        job: ProcessingJob,
+        prepared: PreparedArtifact,
+        canonical_content: bytes | None,
+    ) -> None:
+        del connection, prepared
+        if canonical_content is None:
+            raise RuntimeError("document analysis artifact content is missing")
+        try:
+            manifest = json.loads(canonical_content)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise PermanentProcessingError("The document analysis artifact is invalid") from error
+        if not isinstance(manifest, dict):
+            raise PermanentProcessingError("The document analysis artifact is invalid")
+        source = manifest.get("source")
+        if (
+            manifest.get("schema_version") != _SCHEMA_VERSION
+            or not isinstance(source, dict)
+            or source.get("checksum") != job.source_checksum
+            or source.get("storage_key") != job.source_storage_key
+        ):
+            raise PermanentProcessingError("The document analysis artifact identity conflicts")
+
+    def process(self, job: ProcessingJob) -> CompletedArtifact:
+        """Compatibility helper for focused processor tests; production uses ``prepare``."""
+        prepared = self.prepare(job)
+        assert prepared.content is not None
+        assert prepared.content_type is not None
+        self._storage.put_immutable(
+            prepared.artifact.key,
+            prepared.content,
+            content_type=prepared.content_type,
+        )
+        return prepared.artifact
 
     def discard(self, artifact: CompletedArtifact) -> None:
         self._storage.delete(artifact.key)

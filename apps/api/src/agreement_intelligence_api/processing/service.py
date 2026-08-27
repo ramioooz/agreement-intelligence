@@ -211,6 +211,15 @@ class ProcessingJobService:
         job_id: UUID,
     ) -> ProcessingJobResponse:
         self._authorize(principal, organization_id=organization_id, workspace_id=workspace_id)
+        if (
+            self._agreements.get_for_update(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
+            is None
+        ):
+            raise AgreementNotFoundError
         job = self._job_in_scope(
             agreement_id,
             job_id,
@@ -224,6 +233,8 @@ class ProcessingJobService:
         job.failure_category = None
         job.failure_message = None
         job.next_retry_at = None
+        job.claim_token = None
+        job.claim_lease_expires_at = None
         job.queued_at = now
         job.updated_at = now
         idempotency_key = job.idempotency_key

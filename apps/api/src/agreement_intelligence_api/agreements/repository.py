@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import Select, func, select, text
@@ -24,6 +25,7 @@ from agreement_intelligence_api.agreements.schemas import (
 from agreement_intelligence_api.comparisons.models import VersionComparisonRunRecord
 from agreement_intelligence_api.documents.service import UploadedDocument
 from agreement_intelligence_api.processing.models import (
+    ProcessingArtifactIntentRecord,
     ProcessingArtifactRecord,
     ProcessingJobRecord,
 )
@@ -67,6 +69,23 @@ class SQLAlchemyAgreementRepository:
         if record is None:
             return None
         return self._to_response(record)
+
+    def get_for_update(
+        self,
+        agreement_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+    ) -> AgreementResponse | None:
+        record = self._session.scalar(
+            active_agreement_statement(
+                agreement_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                for_update=True,
+            )
+        )
+        return None if record is None else self._to_response(record)
 
     def list_for_scope(
         self,
@@ -254,6 +273,15 @@ class SQLAlchemyAgreementRepository:
             )
             if (category := _artifact_category(profile)) is not None
         ]
+        artifact_intents = [
+            (cast(str, category), cast(str, artifact_key))
+            for category, artifact_key in self._session.execute(
+                select(
+                    ProcessingArtifactIntentRecord.category,
+                    ProcessingArtifactIntentRecord.artifact_key,
+                ).where(ProcessingArtifactIntentRecord.agreement_id == agreement.id)
+            )
+        ]
         version_source_keys = list(
             self._session.scalars(
                 select(AgreementVersionRecord.storage_key)
@@ -285,6 +313,7 @@ class SQLAlchemyAgreementRepository:
         objects = [
             *(("source", key) for key in source_keys),
             *artifact_objects,
+            *artifact_intents,
             *(("comparison", key) for key in comparison_keys),
             *package_objects,
         ]
