@@ -1,15 +1,20 @@
+import asyncio
 from contextlib import contextmanager
 from datetime import UTC, datetime
+from threading import Event
 from typing import Any
 from uuid import uuid4
 
+import pytest
 from agreement_intelligence_worker import review_workflow
 from agreement_intelligence_worker.review_workflow import (
     PostgresWorkflowCheckpointStore,
     SQLAlchemyWorkflowEventProcessor,
+    WorkflowMessage,
     _workflow_event_for_update,
     agreements,
     reviews,
+    run_workflow_loop,
     workflow_events,
     workflow_metadata,
     workflows,
@@ -24,7 +29,7 @@ def test_workflow_event_delivery_locks_the_outbox_row_before_checkpointing() -> 
 
     sql = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
 
-    assert "FOR UPDATE OF review_workflow_outbox" in sql
+    assert "FOR UPDATE OF review_workflows, review_workflow_outbox" in sql
 
 
 def test_checkpoint_graph_accepts_an_event_derived_top_level_thread() -> None:
@@ -44,6 +49,59 @@ def test_checkpoint_graph_accepts_an_event_derived_top_level_thread() -> None:
     )
 
     assert graph.get_state(config).values["event_id"] == str(event_id)
+
+
+def test_workflow_loop_keeps_event_loop_responsive_during_blocking_package_work() -> None:
+    timeline: list[str] = []
+    release = Event()
+    stop_event = asyncio.Event()
+    message = WorkflowMessage(
+        event_id=uuid4(),
+        receipt_handle="receipt",
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+    )
+
+    class Receiver:
+        delivered = False
+
+        async def receive(self) -> WorkflowMessage | None:
+            if self.delivered:
+                await stop_event.wait()
+                return None
+            self.delivered = True
+            return message
+
+        async def ack(self, received: WorkflowMessage) -> None:
+            assert received == message
+            stop_event.set()
+
+    class BlockingProcessor:
+        def process(self, *args: object, **kwargs: object) -> bool:
+            timeline.append("process-started")
+            release.wait(timeout=0.2)
+            timeline.append("process-finished")
+            return True
+
+    async def heartbeat() -> None:
+        while "process-started" not in timeline:
+            await asyncio.sleep(0)
+        timeline.append("heartbeat")
+        release.set()
+
+    async def exercise() -> None:
+        await asyncio.gather(
+            run_workflow_loop(
+                stop_event,
+                Receiver(),
+                BlockingProcessor(),  # type: ignore[arg-type]
+            ),
+            heartbeat(),
+        )
+
+    asyncio.run(exercise())
+
+    assert timeline == ["process-started", "heartbeat", "process-finished"]
 
 
 def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
@@ -107,8 +165,9 @@ def test_postgres_checkpoint_schema_is_initialized_before_event_processing(
 
 
 class RecordingCheckpointStore:
-    def __init__(self) -> None:
+    def __init__(self, timeline: list[str] | None = None) -> None:
         self.calls: list[tuple[object, object, object, object]] = []
+        self.timeline = timeline
 
     def persist(
         self,
@@ -118,7 +177,42 @@ class RecordingCheckpointStore:
         workflow_id: object,
         event_type: object,
     ) -> None:
+        if self.timeline is not None:
+            self.timeline.append("checkpoint")
         self.calls.append((event_id, checkpoint_id, workflow_id, event_type))
+
+
+class RecordingFinalPackageGenerator:
+    def __init__(
+        self, *, timeline: list[str] | None = None, failure: Exception | None = None
+    ) -> None:
+        self.prepare_calls: list[tuple[object, object, object, object]] = []
+        self.commit_calls: list[tuple[object, object]] = []
+        self.timeline = timeline
+        self.failure = failure
+
+    def prepare(
+        self,
+        connection: object,
+        *,
+        event_id: object,
+        workflow_id: object,
+        correlation_id: object,
+    ) -> object:
+        if self.timeline is not None:
+            self.timeline.append("prepare")
+        prepared = (event_id, workflow_id, correlation_id)
+        self.prepare_calls.append((connection, *prepared))
+        return prepared
+
+    def commit(self, connection: object, *, prepared: object) -> None:
+        if self.timeline is not None:
+            self.timeline.append("commit")
+        self.commit_calls.append((connection, prepared))
+        if self.failure is not None:
+            failure = self.failure
+            self.failure = None
+            raise failure
 
 
 def test_workflow_event_is_checkpointed_once_even_when_delivery_is_repeated() -> None:
@@ -223,4 +317,80 @@ def test_workflow_event_for_deleted_agreement_is_not_processed() -> None:
         is False
     )
     assert checkpoints.calls == []
+    engine.dispose()
+
+
+def test_terminal_event_prepares_before_lock_and_commits_after_active_agreement_fence(
+    monkeypatch: Any,
+) -> None:
+    """Fails if payload work holds locks or storage can precede the deletion fence."""
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    workflow_metadata.create_all(engine)
+    agreement_id, review_id = uuid4(), uuid4()
+    workflow_id, event_id, checkpoint_id = uuid4(), uuid4(), uuid4()
+    organization_id, workspace_id = uuid4(), uuid4()
+    with engine.begin() as connection:
+        connection.execute(insert(agreements).values(id=agreement_id, deletion_requested_at=None))
+        connection.execute(insert(reviews).values(id=review_id, agreement_id=agreement_id))
+        connection.execute(
+            insert(workflows).values(
+                id=workflow_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                review_id=review_id,
+                checkpoint_id=checkpoint_id,
+            )
+        )
+        connection.execute(
+            insert(workflow_events).values(
+                id=event_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                workflow_id=workflow_id,
+                event_type="review.workflow.terminal",
+                processed_at=None,
+            )
+        )
+    timeline: list[str] = []
+    checkpoints = RecordingCheckpointStore(timeline)
+    packages = RecordingFinalPackageGenerator(
+        timeline=timeline, failure=RuntimeError("storage unavailable")
+    )
+
+    def record_agreement_lock(*args: object, **kwargs: object) -> bool:
+        timeline.append("agreement-lock")
+        return True
+
+    monkeypatch.setattr(
+        review_workflow,
+        "lock_active_agreement",
+        record_agreement_lock,
+    )
+    processor = SQLAlchemyWorkflowEventProcessor(engine, checkpoints, packages)
+
+    with pytest.raises(RuntimeError, match="storage unavailable"):
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+
+    with engine.connect() as connection:
+        assert (
+            connection.scalar(
+                select(workflow_events.c.processed_at).where(workflow_events.c.id == event_id)
+            )
+            is None
+        )
+    assert timeline == ["prepare", "checkpoint", "agreement-lock", "commit"]
+
+    timeline.clear()
+    assert (
+        processor.process(event_id, organization_id=organization_id, workspace_id=workspace_id)
+        is True
+    )
+    assert timeline == ["prepare", "checkpoint", "agreement-lock", "commit"]
+    assert len(packages.prepare_calls) == 2
+    assert packages.prepare_calls[-1][1:] == (event_id, workflow_id, None)
+    assert len(packages.commit_calls) == 2
+    assert checkpoints.calls == [
+        (event_id, checkpoint_id, workflow_id, "review.workflow.terminal"),
+        (event_id, checkpoint_id, workflow_id, "review.workflow.terminal"),
+    ]
     engine.dispose()

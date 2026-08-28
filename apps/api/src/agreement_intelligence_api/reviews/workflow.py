@@ -27,11 +27,15 @@ from agreement_intelligence_api.approval_policies.models import (
     ApprovalPolicyStageRecord,
     ApprovalPolicyVersionRecord,
 )
+from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.audit.service import AuditEventWriter
 from agreement_intelligence_api.identity.models import Membership, WorkspaceMembership
 from agreement_intelligence_api.reviews.models import (
+    PlaybookEvaluationRecord,
+    PlaybookFindingRecord,
     ReviewAssignmentRecord,
     ReviewCaseRecord,
+    ReviewCommentRecord,
     ReviewNotificationEventRecord,
     ReviewWorkflowDecisionRecord,
     ReviewWorkflowOutboxRecord,
@@ -69,6 +73,8 @@ class ReviewWorkflowQueuePublisher(Protocol):
 
 
 class LoggingReviewWorkflowQueuePublisher:
+    configured = False
+
     def publish(self, event: ReviewWorkflowOutboxRecord) -> None:
         logger.info(
             "review workflow queued",
@@ -77,6 +83,8 @@ class LoggingReviewWorkflowQueuePublisher:
 
 
 class SQSReviewWorkflowQueuePublisher:
+    configured = True
+
     def __init__(self, *, client: Any, queue_url: str) -> None:
         self._client = client
         self._queue_url = queue_url
@@ -309,12 +317,6 @@ class ReviewWorkflowCoordinator:
             self._advance(workflow, stage, now)
         workflow.revision += 1
         workflow.updated_at = now
-        self._emit(
-            workflow,
-            event_type="review.workflow.resume",
-            correlation_id=correlation_id,
-            idempotency_key=f"workflow:{workflow.id}:decision:{idempotency_key}",
-        )
         self._audit.record(
             organization_id=workflow.organization_id,
             workspace_id=workflow.workspace_id,
@@ -328,6 +330,16 @@ class ReviewWorkflowCoordinator:
             after_ref={"state": workflow.state, "stage": workflow.active_stage_ordinal},
             metadata={},
             occurred_at=now,
+        )
+        self._emit(
+            workflow,
+            event_type=(
+                "review.workflow.terminal"
+                if workflow.state in {"approved", "rejected", "revision_requested"}
+                else "review.workflow.resume"
+            ),
+            correlation_id=correlation_id,
+            idempotency_key=f"workflow:{workflow.id}:decision:{idempotency_key}",
         )
         organization_id = workflow.organization_id
         self._session.commit()
@@ -616,19 +628,153 @@ class ReviewWorkflowCoordinator:
         correlation_id: str,
         idempotency_key: str,
     ) -> None:
+        self._session.flush()
+        event_id = uuid4()
+        package_base = (
+            f"reviews/{workflow.organization_id}/{workflow.workspace_id}/"
+            f"{workflow.review_id}/final-package"
+        )
+        terminal = event_type == "review.workflow.terminal"
         self._session.add(
             ReviewWorkflowOutboxRecord(
-                id=uuid4(),
+                id=event_id,
                 workflow_id=workflow.id,
                 organization_id=workflow.organization_id,
                 workspace_id=workflow.workspace_id,
                 event_type=event_type,
                 correlation_id=correlation_id,
                 idempotency_key=idempotency_key,
+                package_snapshot=(
+                    self._terminal_package_snapshot(
+                        workflow,
+                        event_id=event_id,
+                        correlation_id=correlation_id,
+                    )
+                    if terminal
+                    else None
+                ),
+                package_manifest_key=f"{package_base}/manifest.json" if terminal else None,
+                package_pdf_key=f"{package_base}/report.pdf" if terminal else None,
                 delivered_at=None,
                 created_at=datetime.now(UTC),
             )
         )
+
+    def _terminal_package_snapshot(
+        self,
+        workflow: ReviewWorkflowRecord,
+        *,
+        event_id: UUID,
+        correlation_id: str,
+    ) -> dict[str, object]:
+        review = self._review(workflow.review_id)
+        decisions = self._session.scalars(
+            select(ReviewWorkflowDecisionRecord)
+            .where(ReviewWorkflowDecisionRecord.workflow_id == workflow.id)
+            .order_by(ReviewWorkflowDecisionRecord.occurred_at, ReviewWorkflowDecisionRecord.id)
+        ).all()
+        stages = self._session.scalars(
+            select(ReviewWorkflowStageRecord)
+            .where(ReviewWorkflowStageRecord.workflow_id == workflow.id)
+            .order_by(ReviewWorkflowStageRecord.ordinal)
+        ).all()
+        assignments = self._session.scalars(
+            select(ReviewAssignmentRecord)
+            .where(ReviewAssignmentRecord.review_id == review.id)
+            .order_by(ReviewAssignmentRecord.created_at, ReviewAssignmentRecord.id)
+        ).all()
+        comments = self._session.scalars(
+            select(ReviewCommentRecord)
+            .where(ReviewCommentRecord.review_id == review.id)
+            .order_by(ReviewCommentRecord.created_at, ReviewCommentRecord.id)
+        ).all()
+        audit_ids = self._session.scalars(
+            select(AuditEventRecord.id)
+            .where(AuditEventRecord.organization_id == review.organization_id)
+            .where(AuditEventRecord.workspace_id == review.workspace_id)
+            .where(AuditEventRecord.resource_id == review.id)
+            .order_by(AuditEventRecord.occurred_at, AuditEventRecord.id)
+        ).all()
+        findings = self._session.scalars(
+            select(PlaybookFindingRecord)
+            .join(PlaybookEvaluationRecord)
+            .where(PlaybookFindingRecord.organization_id == review.organization_id)
+            .where(PlaybookFindingRecord.workspace_id == review.workspace_id)
+            .where(PlaybookEvaluationRecord.agreement_id == review.agreement_id)
+            .order_by(PlaybookFindingRecord.id)
+        ).all()
+        package_base = (
+            f"reviews/{workflow.organization_id}/{workflow.workspace_id}/{review.id}/final-package"
+        )
+        return {
+            "organization_id": str(workflow.organization_id),
+            "workspace_id": str(workflow.workspace_id),
+            "review_id": str(review.id),
+            "agreement_id": str(review.agreement_id),
+            "agreement_version_id": str(review.agreement_version_id)
+            if review.agreement_version_id
+            else None,
+            "workflow_id": str(workflow.id),
+            "policy_version_id": str(workflow.policy_version_id),
+            "manifest_key": f"{package_base}/manifest.json",
+            "pdf_key": f"{package_base}/report.pdf",
+            "state": workflow.state,
+            "revision": workflow.revision,
+            "decisions": [
+                {
+                    "actor_id": str(item.actor_id),
+                    "action": item.action,
+                    "stage_id": str(item.workflow_stage_id),
+                    "occurred_at": item.occurred_at.isoformat(),
+                }
+                for item in decisions
+            ],
+            "stages": [
+                {
+                    "id": str(item.id),
+                    "ordinal": item.ordinal,
+                    "state": item.state,
+                    "activated_at": item.activated_at.isoformat() if item.activated_at else None,
+                    "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+                }
+                for item in stages
+            ],
+            "assignments": [
+                {
+                    "id": str(item.id),
+                    "assignee_id": str(item.assignee_id),
+                    "status": item.status,
+                    "due_at": item.due_at.isoformat() if item.due_at else None,
+                }
+                for item in assignments
+            ],
+            "comments": [
+                {
+                    "id": str(item.id),
+                    "author_id": str(item.author_id),
+                    "finding_id": str(item.finding_id) if item.finding_id else None,
+                    "created_at": item.created_at.isoformat(),
+                }
+                for item in comments
+            ],
+            "findings": [
+                {
+                    "id": str(item.id),
+                    "result": item.result,
+                    "severity": item.severity,
+                    "citation_ids": item.citation_ids,
+                }
+                for item in findings
+            ],
+            "audit_event_ids": [str(item) for item in audit_ids],
+            "provenance": {
+                "generator": "review-final-package-worker",
+                "source": "postgresql-terminal-snapshot",
+                "workflow_correlation_id": correlation_id,
+                "workflow_event_id": str(event_id),
+                "workflow_revision": workflow.revision,
+            },
+        }
 
     @staticmethod
     def _snapshot(workflow: ReviewWorkflowRecord) -> WorkflowSnapshot:
@@ -729,6 +875,8 @@ class ReviewWorkflowQueueDispatcher:
     def dispatch_pending(
         self, *, organization_id: UUID, workspace_id: UUID, limit: int = 50
     ) -> int:
+        if not getattr(self._publisher, "configured", True):
+            return 0
         _scope_transaction(self._session, organization_id)
         events = self._session.scalars(
             select(ReviewWorkflowOutboxRecord)

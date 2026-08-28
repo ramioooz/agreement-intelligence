@@ -118,3 +118,49 @@ def test_serve_keeps_heartbeat_only_when_queue_is_not_configured(
     asyncio.run(worker_main.serve())
 
     assert captured == {}
+
+
+def test_workflow_runtime_wires_durable_terminal_package_storage(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Fails if terminal workflow events reach a processor without S3 package generation."""
+    from agreement_intelligence_worker import main as worker_main
+
+    clients = {"sqs": object(), "s3": object()}
+    receiver = object()
+    engine = object()
+    checkpoints = object()
+    storage = object()
+    packages = object()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setenv("SQS_NOTIFICATION_QUEUE", "https://sqs.example/review-workflow")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://worker")
+    monkeypatch.setenv("S3_DOCUMENT_BUCKET", "documents")
+    monkeypatch.setattr(
+        vars(worker_main)["boto3"],
+        "client",
+        lambda service, **kwargs: clients[service],
+    )
+    monkeypatch.setattr(
+        worker_main,
+        "SQSWorkflowMessageReceiver",
+        lambda **kwargs: receiver,
+    )
+    monkeypatch.setattr(worker_main, "processing_engine_from_url", lambda url: engine)
+    monkeypatch.setattr(worker_main, "PostgresWorkflowCheckpointStore", lambda url: checkpoints)
+    monkeypatch.setattr(worker_main, "S3FinalPackageStorage", lambda **kwargs: storage)
+    monkeypatch.setattr(worker_main, "TerminalReviewPackageGenerator", lambda value: packages)
+
+    def processor_factory(*args: object) -> object:
+        captured["args"] = args
+        return object()
+
+    monkeypatch.setattr(worker_main, "SQLAlchemyWorkflowEventProcessor", processor_factory)
+
+    runtime = worker_main.workflow_runtime_from_environment()
+
+    assert runtime is not None
+    assert runtime.receiver is receiver
+    assert captured["args"] == (engine, checkpoints, packages)

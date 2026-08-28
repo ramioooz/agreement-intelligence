@@ -29,7 +29,12 @@ from agreement_intelligence_api.processing.models import (
     ProcessingArtifactRecord,
     ProcessingJobRecord,
 )
-from agreement_intelligence_api.reviews.models import ReviewCaseRecord, ReviewFinalPackageRecord
+from agreement_intelligence_api.reviews.models import (
+    ReviewCaseRecord,
+    ReviewFinalPackageRecord,
+    ReviewWorkflowOutboxRecord,
+    ReviewWorkflowRecord,
+)
 
 
 class SQLAlchemyAgreementRepository:
@@ -310,12 +315,42 @@ class SQLAlchemyAgreementRepository:
                 ("review_pdf", pdf_key),
             )
         ]
+        terminal_package_intents: list[tuple[str, str]] = []
+        terminal_events = self._session.execute(
+            select(
+                ReviewWorkflowOutboxRecord.package_manifest_key,
+                ReviewWorkflowOutboxRecord.package_pdf_key,
+                ReviewWorkflowOutboxRecord.package_snapshot,
+            )
+            .join(
+                ReviewWorkflowRecord,
+                ReviewWorkflowRecord.id == ReviewWorkflowOutboxRecord.workflow_id,
+            )
+            .join(ReviewCaseRecord, ReviewCaseRecord.id == ReviewWorkflowRecord.review_id)
+            .where(ReviewCaseRecord.agreement_id == agreement.id)
+            .where(ReviewWorkflowOutboxRecord.event_type == "review.workflow.terminal")
+            .where(ReviewWorkflowOutboxRecord.package_snapshot.is_not(None))
+        )
+        for manifest_key, pdf_key, snapshot in terminal_events:
+            legacy_manifest_key = snapshot.get("legacy_manifest_key") if snapshot else None
+            legacy_pdf_key = snapshot.get("legacy_pdf_key") if snapshot else None
+            terminal_package_intents.extend(
+                (category, key)
+                for category, key in (
+                    ("review_manifest", manifest_key),
+                    ("review_pdf", pdf_key),
+                    ("review_manifest", legacy_manifest_key),
+                    ("review_pdf", legacy_pdf_key),
+                )
+                if isinstance(key, str)
+            )
         objects = [
             *(("source", key) for key in source_keys),
             *artifact_objects,
             *artifact_intents,
             *(("comparison", key) for key in comparison_keys),
             *package_objects,
+            *terminal_package_intents,
         ]
         return list(dict.fromkeys(objects))
 

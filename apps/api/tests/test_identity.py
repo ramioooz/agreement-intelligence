@@ -617,6 +617,7 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     "review": uuid4(),
                     "workflow": uuid4(),
                     "outbox": uuid4(),
+                    "package": uuid4(),
                 }
                 tenant_records[organization_id] = records
                 parameters = {
@@ -755,10 +756,33 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                         """
                         INSERT INTO review_workflow_outbox (
                             id, workflow_id, organization_id, workspace_id, event_type,
-                            correlation_id, idempotency_key
+                            correlation_id, idempotency_key, package_snapshot,
+                            package_manifest_key, package_pdf_key
                         ) VALUES (
-                            :outbox, :workflow, :organization_id, :workspace_id, 'resume',
-                            'test', 'workflow-outbox-' || :suffix
+                            :outbox, :workflow, :organization_id, :workspace_id,
+                            'review.workflow.terminal',
+                            'test', 'workflow-outbox-' || :suffix, '{}'::jsonb,
+                            'reviews/' || CAST(:organization_id AS text) || '/' ||
+                                CAST(:workspace_id AS text) || '/' || CAST(:review AS text) ||
+                                '/final-package/manifest.json',
+                            'reviews/' || CAST(:organization_id AS text) || '/' ||
+                                CAST(:workspace_id AS text) || '/' || CAST(:review AS text) ||
+                                '/final-package/report.pdf'
+                        )
+                        """
+                    ),
+                    parameters,
+                )
+                connection.execute(
+                    text(
+                        """
+                        INSERT INTO review_final_packages (
+                            id, organization_id, workspace_id, review_id, workflow_id, state,
+                            manifest_key, pdf_key, manifest_checksum, pdf_checksum
+                        ) VALUES (
+                            :package, :organization_id, :workspace_id, :review, :workflow,
+                            'rejected', 'manifest-' || :suffix, 'pdf-' || :suffix,
+                            'manifest-checksum-' || :suffix, 'pdf-checksum-' || :suffix
                         )
                         """
                     ),
@@ -812,6 +836,56 @@ def test_postgresql_tenant_isolation_enforces_rls_and_immutable_identifiers() ->
                     ),
                     {"organization_b": organization_b, "workspace_id": workspace_a},
                 )
+
+            for mutation in (
+                "UPDATE review_final_packages SET state = 'approved' WHERE id = :package_id",
+                "DELETE FROM review_final_packages WHERE id = :package_id",
+            ):
+                with (
+                    pytest.raises(Exception, match="review final packages are immutable"),
+                    connection.begin_nested(),
+                ):
+                    connection.execute(
+                        text(mutation),
+                        {"package_id": tenant_records[organization_a]["package"]},
+                    )
+
+            with (
+                pytest.raises(
+                    Exception,
+                    match="terminal workflow outbox business fields are immutable",
+                ),
+                connection.begin_nested(),
+            ):
+                connection.execute(
+                    text(
+                        "UPDATE review_workflow_outbox "
+                        'SET package_snapshot = \'{"state":"rejected"}\'::json '
+                        "WHERE id = :outbox_id"
+                    ),
+                    {"outbox_id": tenant_records[organization_a]["outbox"]},
+                )
+
+            for mutation in (
+                "UPDATE review_workflow_outbox SET event_type = 'review.workflow.resume' "
+                "WHERE id = :outbox_id",
+                "UPDATE review_workflow_outbox SET workflow_id = :replacement "
+                "WHERE id = :outbox_id",
+            ):
+                with (
+                    pytest.raises(
+                        Exception,
+                        match="terminal workflow outbox business fields are immutable",
+                    ),
+                    connection.begin_nested(),
+                ):
+                    connection.execute(
+                        text(mutation),
+                        {
+                            "outbox_id": tenant_records[organization_a]["outbox"],
+                            "replacement": uuid4(),
+                        },
+                    )
 
             for table_name, values in (
                 (
