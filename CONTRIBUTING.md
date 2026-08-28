@@ -3,6 +3,22 @@
 This repository uses issue-driven, pull-request-only delivery. The repository
 owner is solely responsible for merging changes into `main`.
 
+## Contents
+
+- [1. Choose an issue](#1-choose-an-issue)
+- [2. Create a dedicated branch](#2-create-a-dedicated-branch)
+- [3. Keep delivery metadata vendor-neutral](#3-keep-delivery-metadata-vendor-neutral)
+- [4. Commit intentionally](#4-commit-intentionally)
+- [5. Open a pull request](#5-open-a-pull-request)
+- [6. Verification expectations](#6-verification-expectations)
+- [7. Review and merge](#7-review-and-merge)
+- [8. Definition of done](#8-definition-of-done)
+- [9. Data and security](#9-data-and-security)
+- [10. Isolated worktrees](#10-isolated-worktrees)
+- [11. Toolchain and setup](#11-toolchain-and-setup)
+- [12. Dependency and secret gates](#12-dependency-and-secret-gates)
+- [13. Documentation changes](#13-documentation-changes)
+
 ## 1. Choose an issue
 
 Before starting:
@@ -115,8 +131,11 @@ The current gate installs locked dependencies, rejects high or critical
 production JavaScript vulnerabilities, audits locked Python dependencies, runs
 `make check`, checks for whitespace errors with `git diff --check`, validates
 Terraform, and scans the complete checked-out history for leaked secrets.
-Container image scanning and fresh-stack browser verification run through the
-release-rehearsal workflow described in the operations documentation.
+The lightweight hosted CI intentionally does not scan built container images. An owner may
+run an optional reviewed image scanner before visibility/deployment, but must not report it
+as implemented release evidence unless the exact command and result were actually captured.
+Fresh-stack browser verification runs through the release rehearsal described in the
+operations documentation.
 
 | Change | Minimum evidence |
 | --- | --- |
@@ -175,3 +194,88 @@ Immediately stop and notify the owner if a change exposes:
 - unsafe external actions;
 - unverifiable legal claims; or
 - a destructive migration without a tested recovery path.
+
+## 10. Isolated worktrees
+
+Use one issue branch in an isolated, ignored worktree when the main checkout is
+active or contains unrelated work:
+
+```bash
+git fetch origin main
+git check-ignore -q .worktrees
+git worktree add .worktrees/<short-description> -b <type>/<short-description> origin/main
+```
+
+Never place a worktree in a tracked directory. Before removing a worktree,
+confirm every intended file is committed and the branch has been merged. A pull
+request worktree remains available for review feedback; the owner decides when
+it can be removed.
+
+## 11. Toolchain and setup
+
+The source toolchain is pinned in the repository: Node.js in `.node-version`,
+pnpm in `package.json`, Python in `.python-version`, uv through CI, and Terraform
+through CI. Docker Compose 2.24 or newer and GNU Make are required for the full
+local stack.
+
+```bash
+make setup
+make check-toolchain
+make check-container-toolchain
+```
+
+Do not update a runtime, lockfile, base image, or CI action incidentally. Keep
+dependency and build-input changes in the issue that owns them.
+
+## 12. Dependency and secret gates
+
+Before requesting review for a public-release or dependency-sensitive change,
+run the relevant locked checks:
+
+```bash
+pnpm audit --prod --audit-level high
+uv run pip-audit --ignore-vuln PYSEC-2026-3046 --ignore-vuln PYSEC-2026-2447
+make terraform-check
+```
+
+The Python gate must report zero unignored/actionable findings. Its two explicit exceptions
+are development-only: Ragas `0.3.9` (`PYSEC-2026-3046`, unused multimodal URL/file retrieval)
+and its DiskCache `5.6.3` dependency (`PYSEC-2026-2447`, attacker already needs write access
+to the owner-local ephemeral cache). Neither advisory currently lists a fixed version. See
+[Unified quality](docs/evaluation/unified-quality.md#dependency-boundary); remove each
+exception when an upstream fixed release is available.
+
+Run the repository's configured full-history secret scanner for release work.
+Report only its exit status and safe summary; never paste a detected value into
+an issue or pull request. A real secret must be revoked even when it is removed
+from Git history.
+
+Use synthetic `.example.test` identities and synthetic or legally reusable
+agreements. Do not commit `.env`, browser storage, cookies, tokens, provider
+keys, local backups, traces, screenshots with personal browser chrome, or API
+client private environments.
+
+## 13. Documentation changes
+
+Public documentation must describe merged behavior and distinguish:
+
+- deterministic/no-key behavior from optional provider behavior;
+- local verification from the cloud-valid reference design;
+- LocalStack emulation from deferred real-AWS validation; and
+- diagnostics such as `ocr_required` from capabilities such as an OCR engine.
+
+Use relative links, GitHub-rendered Mermaid, meaningful image alt text, and
+synthetic examples. Verify the exact command, route, role, port, variable, and
+status against source before documenting it.
+
+```bash
+node scripts/check-doc-links.mjs
+tests/docs/test-documentation-contract.sh
+pnpm exec prettier --check README.md SECURITY.md CODE_OF_CONDUCT.md CONTRIBUTING.md docs
+git diff --check
+```
+
+When a check cannot run, record it as blocked with the reason and follow-up
+owner action. Never mark an unexecuted manual case as passed.
+
+[Back to contents](#contents)

@@ -12,7 +12,7 @@ COMPOSE := docker compose --project-name $(STACK_PROJECT_NAME) --env-file $(STAC
 	backup-local restore-local format format-check lint typecheck test build check \
 	terraform-check terraform-provision-local \
 	provider-smoke retrieval-eval version-comparison-eval performance-local resilience-local \
-	ai-eval ai-eval-assisted
+	ai-eval ai-eval-assisted release-check
 
 help:
 	@echo "Agreement Intelligence developer commands"
@@ -42,6 +42,7 @@ help:
 	@echo "  make resilience-local Run opt-in isolated local recovery checks"
 	@echo "  make ai-eval         Run the deterministic unified AI release gate"
 	@echo "  make ai-eval-assisted Run opt-in Promptfoo and Ragas provider evaluations"
+	@echo "  make release-check    Run the non-destructive public-release gate"
 
 check-toolchain:
 	@command -v node >/dev/null 2>&1 || { echo "Node.js is not installed."; exit 1; }
@@ -210,3 +211,7 @@ ai-eval-assisted:
 		--output artifacts/evaluation/promptfoo-report.json
 	uv run python -m evals.ragas --results "$(RAGAS_RESULTS)" \
 		--output artifacts/evaluation/ragas-report.json
+
+release-check:
+	@STACK_ENV_FILE="$(STACK_ENV_FILE)" STACK_PROJECT_NAME="$(STACK_PROJECT_NAME)" \
+		scripts/release-check.sh

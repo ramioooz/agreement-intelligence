@@ -278,7 +278,7 @@ export function VersionComparisonWorkspace({
                           }
                           key={`${change.id}-${index}`}
                         >
-                          {part.text}
+                          {part.text}{" "}
                         </span>
                       ))}
                     </p>

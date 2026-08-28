@@ -15,9 +15,9 @@ export default async function Home() {
         intelligence.
       </h1>
       <p className="mt-6 max-w-2xl text-lg leading-8 text-slate-600">
-        The local platform now supports secure sign-in and a protected
-        navigation shell. Document workflows will be added in the next delivery
-        iterations.
+        The local platform supports secure sign-in, agreement uploads,
+        deterministic processing, scoped search, playbook review, version
+        comparison, and routed human approvals.
       </p>
       <div className="mt-8 flex flex-col gap-4 sm:flex-row sm:items-center">
         <Link

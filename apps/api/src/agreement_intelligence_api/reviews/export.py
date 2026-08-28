@@ -225,9 +225,11 @@ def _finding_lines(
     return lines
 
 
-def _render_pdf(lines: list[str]) -> bytes:
+def _render_pdf(lines: list[str], *, creation_date: datetime | None = None) -> bytes:
     with _unicode_font_path() as font_path:
         pdf = FPDF(format="letter", unit="pt")
+        if creation_date is not None:
+            pdf.set_creation_date(creation_date)
         pdf.set_auto_page_break(auto=True, margin=36)
         pdf.add_page()
         pdf.add_font(family="ReviewReport", fname=str(font_path))

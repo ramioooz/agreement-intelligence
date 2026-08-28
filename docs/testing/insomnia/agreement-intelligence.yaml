@@ -1,0 +1,786 @@
+_type: export
+__export_format: 4
+__export_date: 2026-08-27T00:00:00.000Z
+__export_source: insomnia.desktop.app
+resources:
+  - _id: wrk_agreement_intelligence
+    parentId: null
+    modified: 1787788800000
+    created: 1787788800000
+    name: Agreement Intelligence
+    description: Placeholder-only local API collection. Keep executed values private.
+    scope: collection
+    _type: workspace
+  - _id: env_agreement_intelligence
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: Base Environment
+    data:
+      base_url: http://localhost:8000
+      authorize_url: http://localhost:8080/realms/agreement-intelligence/protocol/openid-connect/auth
+      token_url: http://localhost:8080/realms/agreement-intelligence/protocol/openid-connect/token
+      client_id: ""
+      client_secret: ""
+      username: ""
+      password: ""
+      access_token: ""
+      organization_id: ""
+      workspace_id: ""
+      agreement_id: ""
+      version_id: ""
+      baseline_version_id: ""
+      target_version_id: ""
+      comparison_id: ""
+      job_id: ""
+      playbook_version_id: ""
+      finding_id: ""
+      thread_id: ""
+      review_id: ""
+      document_path: ""
+      request_run_id: ""
+    dataPropertyOrder: null
+    color: null
+    isPrivate: false
+    metaSortKey: 1
+    _type: environment
+  - _id: jar_agreement_intelligence
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: Default Jar
+    cookies: []
+    _type: cookie_jar
+  - _id: fld_health
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 01 Health
+    description: Public process and dependency health.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -1000
+    _type: request_group
+  - _id: req_health_live
+    parentId: fld_health
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/health/live"
+    name: Liveness (200)
+    description: "Expected: 200. No authentication, idempotent, no cleanup."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_health_ready
+    parentId: fld_health
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/health/ready"
+    name: Readiness (200 or 503)
+    description: "Expected: 200 when dependencies are ready; 503 otherwise. No cleanup."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+    authentication: {}
+    metaSortKey: -900
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_identity
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 02 Identity and capabilities
+    description: Bearer and tenant-scope checks.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -900
+    _type: request_group
+  - _id: req_capabilities
+    parentId: fld_identity
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/identity/organizations/{{ _.organization_id }}/workspaces/{{ _.workspace_id }}/capabilities"
+    name: Workspace capabilities (200)
+    description: "Expected: 200; 401 invalid bearer; hidden denial inaccessible scope. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_agreements
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 03 Agreements, documents, processing
+    description: Synthetic records only.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -800
+    _type: request_group
+  - _id: req_agreements_list
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}&limit=25"
+    name: List agreements (200)
+    description: "Expected: 200; 401/hidden denial. Read-only and idempotent."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_agreement_create
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Create synthetic agreement (201)
+    description: "Expected: 201; 403/422 denial. Capture agreement_id; delete only this synthetic record."
+    method: POST
+    body:
+      mimeType: application/json
+      text: |-
+        {
+          "title": "MQA-API-002 synthetic agreement",
+          "agreement_type": "client_agreement",
+          "status": "draft",
+          "parties": [
+            {"name": "Northstar Demo Markets Ltd", "role": "client"},
+            {"name": "Cedar Demo Trading LLC", "role": "counterparty"}
+          ],
+          "files": [],
+          "processing_state": "pending",
+          "audit_metadata": {"source": "manual_qa"}
+        }
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -900
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_document_upload
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/documents"
+    name: Upload synthetic document (201/200 duplicate)
+    description: "Expected: 201 on first upload; 200 with duplicate:true for the same checksum and scope; 422 unsupported or malformed multipart; 404 hidden scope. Use generated fixture only."
+    method: POST
+    body:
+      mimeType: multipart/form-data
+      params:
+        - id: pair_document_organization
+          name: organization_id
+          value: "{{ _.organization_id }}"
+          type: text
+          disabled: false
+        - id: pair_document_workspace
+          name: workspace_id
+          value: "{{ _.workspace_id }}"
+          type: text
+          disabled: false
+        - id: pair_synthetic_file
+          name: file
+          value: ""
+          description: Generated synthetic PDF/DOCX only.
+          type: file
+          fileName: "{{ _.document_path }}"
+          disabled: false
+    parameters: []
+    headers:
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -800
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_processing_submit
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/processing-jobs?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Submit processing (202)
+    description: "Expected: 202; 404/409 denial. Capture the response id as job_id; do not duplicate terminal work."
+    method: POST
+    body:
+      mimeType: application/json
+      text: '{"profile":"baseline"}'
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+      - name: Idempotency-Key
+        value: "mqa-processing-{{ _.request_run_id }}"
+    authentication: {}
+    metaSortKey: -700
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_processing_status
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/processing-jobs/{{ _.job_id }}?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Processing status (200)
+    description: "Expected: 200; 404 hidden/absent. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -600
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_processing_retry
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/processing-jobs/{{ _.job_id }}/retry?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Retry processing (202)
+    description: "Expected: 202 only for retryable failed work; 404/409 otherwise. Poll the exact job and do not repeat after terminal state."
+    method: POST
+    body: {}
+    parameters: []
+    headers:
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -550
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_processing_requeue
+    parentId: fld_agreements
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/processing-jobs/{{ _.job_id }}/requeue?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Requeue processing (202)
+    description: "Expected: 202 only for queued work; 404/409 otherwise. This scoped action can replay pending outbox publication after queue recovery."
+    method: POST
+    body: {}
+    parameters: []
+    headers:
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -500
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_versions
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 04 Versions and comparisons
+    description: Immutable synthetic version lineage.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -700
+    _type: request_group
+  - _id: req_versions_list
+    parentId: fld_versions
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/versions?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: List versions (200)
+    description: "Expected: 200; 404 hidden/absent. Capture version IDs."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_comparison_create
+    parentId: fld_versions
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/version-comparisons?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Create comparison (202)
+    description: "Expected: 202; 404/409/422 denial. Capture comparison_id."
+    method: POST
+    body:
+      mimeType: application/json
+      text: |-
+        {
+          "baseline_version_id": "{{ _.baseline_version_id }}",
+          "target_version_id": "{{ _.target_version_id }}",
+          "analysis_version": "version-comparison.v1"
+        }
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+      - name: Idempotency-Key
+        value: "mqa-comparison-{{ _.request_run_id }}"
+    authentication: {}
+    metaSortKey: -900
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_comparison_get
+    parentId: fld_versions
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/version-comparisons/{{ _.comparison_id }}?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Comparison result (200)
+    description: "Expected: 200; 404 hidden/absent. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -800
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_intelligence
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 05 Playbooks, findings, search and Q&A
+    description: Retrieval state and citations must remain explicit.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -600
+    _type: request_group
+  - _id: req_playbooks_list
+    parentId: fld_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/playbooks?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: List playbooks (200)
+    description: "Expected: 200; 401/hidden denial. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_findings_list
+    parentId: fld_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements/{{ _.agreement_id }}/playbook-evaluations?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: List playbook evaluations (200)
+    description: "Expected: 200; 404 hidden/absent. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -900
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_search
+    parentId: fld_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/search?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}&query=NORTHSTAR-SYNTHETIC-ALPHA&limit=10"
+    name: Scoped search (200)
+    description: "Expected: 200 with explicit lexical/semantic state; 401/hidden/422 denial."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -800
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_thread_create
+    parentId: fld_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/questions/threads?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Create question thread (201)
+    description: "Expected: 201; 401/403/422 denial. Capture thread_id."
+    method: POST
+    body:
+      mimeType: application/json
+      text: '{"agreement_ids":["{{ _.agreement_id }}"]}'
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -700
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_turn_create
+    parentId: fld_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/questions/threads/{{ _.thread_id }}/turns?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Ask grounded question (201)
+    description: "Expected: 201 with cited answer or explicit unavailable/refusal state; 404/422 denial."
+    method: POST
+    body:
+      mimeType: application/json
+      text: '{"question":"What termination notice is stated?"}'
+    parameters: []
+    headers:
+      - name: Content-Type
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -600
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_reviews
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 06 Approval, reviews, audit and packages
+    description: Human workflow and immutable evidence.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -500
+    _type: request_group
+  - _id: req_policies_list
+    parentId: fld_reviews
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/approval-policies?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: List approval policies (200)
+    description: "Expected: 200 for authorized scope; 401/hidden denial. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_reviews_inbox
+    parentId: fld_reviews
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/reviews/inbox?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Review inbox (200)
+    description: "Expected: 200 role-scoped assignments; 401/hidden denial. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -900
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_review_timeline
+    parentId: fld_reviews
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/reviews/{{ _.review_id }}/timeline?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Review timeline (200)
+    description: "Expected: 200; 404 hidden/absent. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -800
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_final_package
+    parentId: fld_reviews
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/reviews/{{ _.review_id }}/final-package?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Final package metadata (poll 503 to 200)
+    description: "Read-only contract: 409 before a terminal review; normal async 503 with detail.code final_package_pending, detail.retryable true, and Retry-After 3 until the worker finishes; wait 3 seconds and retry this same GET until 200. Missing, corrupt, or transiently unavailable package storage returns retryable 503 final_package_unavailable with Retry-After 3. Foreign or unauthorized scope remains an opaque 404."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -700
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_audit
+    parentId: fld_reviews
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/audit-events?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}&limit=50"
+    name: Audit events (200)
+    description: "Expected: 200 with audit permission; 403/hidden denial. Read-only."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -600
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: fld_negative
+    parentId: wrk_agreement_intelligence
+    modified: 1787788800000
+    created: 1787788800000
+    name: 07 Negative authorization
+    description: Requests must not reveal cross-tenant resource data.
+    environment: {}
+    environmentPropertyOrder: null
+    metaSortKey: -400
+    _type: request_group
+  - _id: req_no_bearer
+    parentId: fld_negative
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
+    name: Missing bearer (401)
+    description: "Expected: 401 without resource details. No cleanup."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+    authentication: {}
+    metaSortKey: -1000
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request
+  - _id: req_cross_scope
+    parentId: fld_negative
+    modified: 1787788800000
+    created: 1787788800000
+    url: "{{ _.base_url }}/agreements?organization_id={{ _.organization_id }}&workspace_id=00000000-0000-4000-8000-000000000000"
+    name: Cross-workspace denial
+    description: "Expected: hidden/empty denial according to route; never another workspace's data. No cleanup."
+    method: GET
+    body: {}
+    parameters: []
+    headers:
+      - name: Accept
+        value: application/json
+      - name: Authorization
+        value: "Bearer {{ _.access_token }}"
+    authentication: {}
+    metaSortKey: -900
+    isPrivate: false
+    settingStoreCookies: false
+    settingSendCookies: false
+    settingDisableRenderRequestBody: false
+    settingEncodeUrl: true
+    settingRebuildPath: true
+    settingFollowRedirects: global
+    _type: request

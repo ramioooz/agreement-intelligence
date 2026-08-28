@@ -3,10 +3,12 @@ from __future__ import annotations
 from collections.abc import Callable, Generator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
 from agreement_intelligence_api.agreements.models import AgreementRecord
+from agreement_intelligence_api.approval_policies.service import ApprovalPolicyService
 from agreement_intelligence_api.audit.models import AuditEventRecord
 from agreement_intelligence_api.db import get_session
 from agreement_intelligence_api.identity.authz import Principal, current_principal
@@ -14,7 +16,11 @@ from agreement_intelligence_api.identity.models import Base
 from agreement_intelligence_api.identity.permissions import RoleKey
 from agreement_intelligence_api.identity.service import IdentityService
 from agreement_intelligence_api.main import app
-from agreement_intelligence_api.reviews.models import ReviewAssignmentRecord, ReviewCommentRecord
+from agreement_intelligence_api.reviews.models import (
+    ReviewAssignmentRecord,
+    ReviewCaseRecord,
+    ReviewCommentRecord,
+)
 from agreement_intelligence_api.reviews.workflow import (
     ReviewWorkflowCoordinator,
     ReviewWorkflowQueueDispatcher,
@@ -23,6 +29,8 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, inspect, select
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -92,6 +100,63 @@ def test_deletion_tombstone_blocks_existing_review_reads_and_mutations(
     assert blocked_read.status_code == 404
     assert blocked_comment.status_code == 404
     assert session.query(ReviewCommentRecord).count() == 0
+
+
+def test_review_detail_read_does_not_take_the_mutation_row_lock(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    review = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "unlocked-review-detail",
+        },
+    ).json()
+    statements: list[str] = []
+    original_scalar = session.scalar
+
+    def record_scalar(statement: Any, *args: Any, **kwargs: Any) -> Any:
+        if hasattr(statement, "compile"):
+            statements.append(
+                str(
+                    statement.compile(
+                        dialect=postgresql.dialect()  # type: ignore[no-untyped-call]
+                    )
+                )
+            )
+        return original_scalar(statement, *args, **kwargs)
+
+    monkeypatch.setattr(session, "scalar", record_scalar)
+
+    response = client.get(f"/reviews/{review['id']}", params=seeded.scope)
+
+    assert response.status_code == 200
+    review_reads = [
+        statement for statement in statements if "FROM review_cases JOIN agreements" in statement
+    ]
+    assert len(review_reads) == 1
+    assert "FOR UPDATE" not in review_reads[0]
+
+    statements.clear()
+    mutation = client.post(
+        f"/reviews/{review['id']}/comments",
+        params=seeded.scope,
+        json={
+            "body": "Mutation paths retain the review row lock.",
+            "idempotency_key": "locked-review-comment",
+        },
+    )
+    assert mutation.status_code == 201
+    mutation_reads = [
+        statement for statement in statements if "FROM review_cases JOIN agreements" in statement
+    ]
+    assert len(mutation_reads) == 1
+    assert "FOR UPDATE" in mutation_reads[0]
 
 
 def test_review_assignment_reassignment_and_comment_are_workspace_scoped_and_idempotent(
@@ -299,6 +364,180 @@ def test_review_start_reapplies_tenant_scope_after_creation_commit(
     )
 
     assert response.status_code == 201
+    assert scoped_organizations == [seeded.organization_id, seeded.organization_id]
+
+
+def test_review_start_restores_tenant_scope_before_integrity_conflict_lookup(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    real_commit = session.commit
+    conflict_id = uuid4()
+    conflict_created_at = datetime.now(UTC)
+    commit_attempted = False
+
+    def lose_insert_race() -> None:
+        nonlocal commit_attempted
+        assert commit_attempted is False
+        commit_attempted = True
+        session.rollback()
+        session.add(
+            ReviewCaseRecord(
+                id=conflict_id,
+                organization_id=seeded.organization_id,
+                workspace_id=seeded.workspace_id,
+                agreement_id=seeded.agreement_id,
+                agreement_version_id=None,
+                state="open",
+                created_by=seeded.assigner_id,
+                idempotency_key="review-integrity-conflict",
+                revision=0,
+                created_at=conflict_created_at,
+                updated_at=conflict_created_at,
+            )
+        )
+        real_commit()
+        raise IntegrityError("insert review", {}, RuntimeError("duplicate"))
+
+    monkeypatch.setattr(session, "commit", lose_insert_race)
+    scoped_organizations: list[UUID] = []
+    real_scope = IdentityService.scope_organization
+
+    def track_scope(service: IdentityService, organization_id: UUID) -> None:
+        scoped_organizations.append(organization_id)
+        real_scope(service, organization_id)
+
+    monkeypatch.setattr(IdentityService, "scope_organization", track_scope)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "review-integrity-conflict",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == str(conflict_id)
+    assert scoped_organizations == [seeded.organization_id]
+
+
+def test_assignment_restores_tenant_scope_before_post_commit_serialization(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    review = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={"agreement_id": str(seeded.agreement_id), "idempotency_key": "assign-scope"},
+    ).json()
+    scoped_organizations: list[UUID] = []
+    real_scope = IdentityService.scope_organization
+
+    def track_scope(service: IdentityService, organization_id: UUID) -> None:
+        scoped_organizations.append(organization_id)
+        real_scope(service, organization_id)
+
+    monkeypatch.setattr(IdentityService, "scope_organization", track_scope)
+
+    response = client.post(
+        f"/reviews/{review['id']}/assignments",
+        params=seeded.scope,
+        json={"assignee_id": str(seeded.reviewer_id), "idempotency_key": "assign-scope"},
+    )
+
+    assert response.status_code == 201
+    assert scoped_organizations == [seeded.organization_id]
+
+
+@pytest.mark.parametrize("kind", ["reassign", "delegate"])
+def test_assignment_transfer_restores_tenant_scope_before_post_commit_serialization(
+    kind: str,
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    review = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": f"{kind}-scope-review",
+        },
+    ).json()
+    assignment = client.post(
+        f"/reviews/{review['id']}/assignments",
+        params=seeded.scope,
+        json={
+            "assignee_id": str(seeded.reviewer_id),
+            "idempotency_key": f"{kind}-scope-assignment",
+        },
+    ).json()
+    scoped_organizations: list[UUID] = []
+    real_scope = IdentityService.scope_organization
+
+    def track_scope(service: IdentityService, organization_id: UUID) -> None:
+        scoped_organizations.append(organization_id)
+        real_scope(service, organization_id)
+
+    monkeypatch.setattr(IdentityService, "scope_organization", track_scope)
+
+    response = client.post(
+        f"/reviews/{review['id']}/assignments/{assignment['id']}/{kind}",
+        params=seeded.scope,
+        json={
+            "assignee_id": str(seeded.replacement_id),
+            "expected_revision": 0,
+            "idempotency_key": f"{kind}-scope-transfer",
+        },
+    )
+
+    assert response.status_code == 201
+    assert scoped_organizations == [seeded.organization_id]
+
+
+def test_review_comment_reapplies_tenant_scope_after_creation_commit(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seeded = _seed_scope(session)
+    client = client_for_session(seeded.assigner_id)
+    review = client.post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "comment-tenant-scope-review",
+        },
+    ).json()
+    scoped_organizations: list[UUID] = []
+    original_scope_organization = IdentityService.scope_organization
+
+    def track_scope(service: IdentityService, organization_id: UUID) -> None:
+        scoped_organizations.append(organization_id)
+        original_scope_organization(service, organization_id)
+
+    monkeypatch.setattr(IdentityService, "scope_organization", track_scope)
+
+    response = client.post(
+        f"/reviews/{review['id']}/comments",
+        params=seeded.scope,
+        json={
+            "body": "Confirm the tenant-scoped comment response.",
+            "idempotency_key": "comment-tenant-scope",
+        },
+    )
+
+    assert response.status_code == 201
     assert scoped_organizations == [seeded.organization_id]
 
 
@@ -332,6 +571,57 @@ def test_policy_override_persists_only_the_structured_reason_code(
     )
     assert audit_event is not None
     assert audit_event.metadata_json == {"reason_code": "risk_exception"}
+
+
+@pytest.mark.parametrize(
+    ("stored_jurisdiction", "expected_jurisdiction"),
+    [
+        ("UAE", "UAE"),
+        (" uae ", "UAE"),
+        ("", "any"),
+        ("X", "any"),
+        ("JURISDICTION-TOO-LONG", "any"),
+    ],
+)
+def test_start_review_routes_using_a_safe_agreement_jurisdiction(
+    session: Session,
+    client_for_session: Callable[[UUID], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+    stored_jurisdiction: str,
+    expected_jurisdiction: str,
+) -> None:
+    seeded = _seed_scope(session)
+    agreement = session.get(AgreementRecord, seeded.agreement_id)
+    assert agreement is not None
+    agreement.audit_metadata = {"jurisdiction": stored_jurisdiction}
+    session.commit()
+    routed_jurisdictions: list[str] = []
+
+    def capture_route(
+        _service: ApprovalPolicyService,
+        _principal: Principal,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        request: Any,
+    ) -> None:
+        assert organization_id == seeded.organization_id
+        assert workspace_id == seeded.workspace_id
+        routed_jurisdictions.append(request.jurisdiction)
+
+    monkeypatch.setattr(ApprovalPolicyService, "route", capture_route)
+
+    response = client_for_session(seeded.assigner_id).post(
+        "/reviews",
+        params=seeded.scope,
+        json={
+            "agreement_id": str(seeded.agreement_id),
+            "idempotency_key": "jurisdiction-routed-review",
+        },
+    )
+
+    assert response.status_code == 201
+    assert routed_jurisdictions == [expected_jurisdiction]
 
 
 def test_policy_override_uses_other_code_for_legacy_reason_without_auditing_it(

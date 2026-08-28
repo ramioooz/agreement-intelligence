@@ -124,10 +124,11 @@ class VersionComparisonService:
         )
         comparison.processing_job_id = job.id
         try:
-            self._repository.create(comparison)
             response = self._processing.create(job)
+            self._repository.create(comparison)
         except IntegrityError as error:
             self._identity.session.rollback()
+            self._identity.scope_organization(organization_id)
             existing = self._repository.by_identity(
                 agreement_id, baseline_id, target_id, request.analysis_version
             )
@@ -137,11 +138,16 @@ class VersionComparisonService:
         self._processing.enqueue_outbox(
             response, idempotency_key=job.idempotency_key, profile=job.profile
         )
+        comparison_id = comparison.id
         self._identity.session.commit()
         ProcessingOutboxDispatcher(
             session=self._identity.session, publisher=self._queue
         ).dispatch_pending(organization_id=organization_id, workspace_id=workspace_id)
-        return self._repository.response(comparison), True
+        self._identity.scope_organization(organization_id)
+        committed = self._repository.get(comparison_id)
+        if committed is None:
+            raise AgreementNotFoundError
+        return self._repository.response(committed), True
 
     def get(
         self,

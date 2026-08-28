@@ -21,7 +21,7 @@ export async function GET(
   if (artifact !== "pdf" && artifact !== "manifest")
     return Response.json({ message: "Not found." }, { status: 404 });
   const response = await fetch(
-    `${apiBaseUrl.replace(/\/$/, "")}/reviews/${encodeURIComponent(reviewId)}/final-package/${artifact}`,
+    `${apiBaseUrl.replace(/\/$/, "")}/reviews/${encodeURIComponent(reviewId)}/final-package/${artifact}?organization_id=${encodeURIComponent(process.env.API_ORGANIZATION_ID ?? "")}&workspace_id=${encodeURIComponent(process.env.API_WORKSPACE_ID ?? "")}`,
     {
       cache: "no-store",
       headers: { Authorization: `Bearer ${session.accessToken}` },

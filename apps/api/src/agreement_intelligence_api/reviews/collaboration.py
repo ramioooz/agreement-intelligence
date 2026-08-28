@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
 from uuid import UUID, uuid4
@@ -39,6 +40,12 @@ class ReviewConflictError(Exception):
     pass
 
 
+@dataclass(frozen=True)
+class ReviewRouteContext:
+    agreement_type: str
+    jurisdiction: str
+
+
 class ReviewCollaborationService:
     def __init__(self, session: Session, identity: IdentityService) -> None:
         self._session = session
@@ -51,9 +58,16 @@ class ReviewCollaborationService:
         organization_id: UUID,
         workspace_id: UUID,
         request: StartReviewRequest,
-    ) -> tuple[ReviewCaseResponse, bool]:
+    ) -> tuple[ReviewCaseResponse, bool, ReviewRouteContext]:
         self._authorize_assign(principal, organization_id, workspace_id)
-        self._agreement(request.agreement_id, organization_id, workspace_id)
+        agreement = self._agreement(request.agreement_id, organization_id, workspace_id)
+        audit_metadata = agreement.audit_metadata
+        route_context = ReviewRouteContext(
+            agreement_type=agreement.agreement_type,
+            jurisdiction=_safe_route_jurisdiction(
+                audit_metadata.get("jurisdiction") if isinstance(audit_metadata, dict) else None
+            ),
+        )
         self._version(
             request.agreement_version_id, request.agreement_id, organization_id, workspace_id
         )
@@ -69,7 +83,7 @@ class ReviewCollaborationService:
                 or existing.agreement_version_id != request.agreement_version_id
             ):
                 raise ReviewConflictError
-            return self._review_response(existing), False
+            return self._review_response(existing), False, route_context
         now = datetime.now(UTC)
         record = ReviewCaseRecord(
             id=uuid4(),
@@ -87,8 +101,10 @@ class ReviewCollaborationService:
         self._session.add(record)
         try:
             self._session.commit()
+            self._identity.scope_organization(organization_id)
         except IntegrityError as error:
             self._session.rollback()
+            self._identity.scope_organization(organization_id)
             existing = self._session.scalar(
                 select(ReviewCaseRecord)
                 .where(ReviewCaseRecord.agreement_id == request.agreement_id)
@@ -97,14 +113,16 @@ class ReviewCollaborationService:
             )
             if existing is None:
                 raise error
-            return self._review_response(existing), False
-        return self._review_response(record), True
+            return self._review_response(existing), False, route_context
+        return self._review_response(record), True, route_context
 
     def get(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID, review_id: UUID
     ) -> ReviewCaseResponse:
         self._authorize_read(principal, organization_id, workspace_id)
-        return self._review_response(self._review(review_id, organization_id, workspace_id))
+        return self._review_response(
+            self._review(review_id, organization_id, workspace_id, for_update=False)
+        )
 
     def inbox(
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID
@@ -140,7 +158,7 @@ class ReviewCollaborationService:
         self, principal: Principal, *, organization_id: UUID, workspace_id: UUID, review_id: UUID
     ) -> list[ReviewCommentResponse]:
         self._authorize_read(principal, organization_id, workspace_id)
-        self._review(review_id, organization_id, workspace_id)
+        self._review(review_id, organization_id, workspace_id, for_update=False)
         records = self._session.scalars(
             select(ReviewCommentRecord)
             .where(ReviewCommentRecord.organization_id == organization_id)
@@ -208,8 +226,13 @@ class ReviewCollaborationService:
             event_type="review.assignment.created",
             idempotency_key=f"assignment:{record.id}",
         )
+        record_id = record.id
         self._session.commit()
-        return self._assignment_response(record), True
+        self._identity.scope_organization(organization_id)
+        committed = self._session.get(ReviewAssignmentRecord, record_id)
+        if committed is None:
+            hide_resource()
+        return self._assignment_response(committed), True
 
     def transfer(
         self,
@@ -282,8 +305,13 @@ class ReviewCollaborationService:
             else "review.assignment.reassigned",
             idempotency_key=f"assignment:{record.id}",
         )
+        record_id = record.id
         self._session.commit()
-        return self._assignment_response(record), True
+        self._identity.scope_organization(organization_id)
+        committed = self._session.get(ReviewAssignmentRecord, record_id)
+        if committed is None:
+            hide_resource()
+        return self._assignment_response(committed), True
 
     def comment(
         self,
@@ -342,6 +370,7 @@ class ReviewCollaborationService:
                 idempotency_key=f"comment:{record.id}:owner",
             )
         self._session.commit()
+        self._identity.scope_organization(organization_id)
         return self._comment_response(record), True
 
     def _authorize_assign(
@@ -367,17 +396,24 @@ class ReviewCollaborationService:
             hide_resource()
 
     def _review(
-        self, review_id: UUID, organization_id: UUID, workspace_id: UUID
+        self,
+        review_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        *,
+        for_update: bool = True,
     ) -> ReviewCaseRecord:
-        record = self._session.scalar(
+        statement = (
             select(ReviewCaseRecord)
             .join(AgreementRecord, ReviewCaseRecord.agreement_id == AgreementRecord.id)
             .where(ReviewCaseRecord.id == review_id)
             .where(ReviewCaseRecord.organization_id == organization_id)
             .where(ReviewCaseRecord.workspace_id == workspace_id)
             .where(AgreementRecord.deletion_requested_at.is_(None))
-            .with_for_update()
         )
+        if for_update:
+            statement = statement.with_for_update()
+        record = self._session.scalar(statement)
         if record is None:
             hide_resource()
         return record
@@ -514,3 +550,10 @@ def _same_due_at(left: datetime | None, right: datetime | None) -> bool:
     if left is None or right is None:
         return left is right
     return left.replace(tzinfo=left.tzinfo or UTC) == right.replace(tzinfo=right.tzinfo or UTC)
+
+
+def _safe_route_jurisdiction(value: object) -> str:
+    if not isinstance(value, str):
+        return "any"
+    normalized = value.strip()
+    return normalized if 2 <= len(normalized) <= 16 else "any"

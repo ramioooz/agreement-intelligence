@@ -129,13 +129,13 @@ class SQLAlchemyVersionComparisonRepository:
             target_element_ids=record.target_element_ids,
             baseline_citation_ids=record.baseline_citation_ids,
             target_citation_ids=record.target_citation_ids,
-            word_diff=record.word_diff,
+            word_diff=_render_word_diff(record.word_diff),
             confidence=record.confidence,
             review_required=record.review_required,
             severity=record.severity,
             legal_concepts=record.legal_concepts,
             rationale=record.rationale,
-            provider_provenance=record.provider_provenance,
+            provider_provenance=record.provider_provenance or {},
         )
 
 
@@ -145,3 +145,29 @@ def _aware(value: datetime) -> datetime:
 
 def _aware_optional(value: datetime | None) -> datetime | None:
     return None if value is None else _aware(value)
+
+
+def _render_word_diff(parts: list[dict[str, str]]) -> list[dict[str, str]]:
+    rendered: list[dict[str, str]] = []
+    for part in parts:
+        operation = part.get("operation")
+        text = part.get("text")
+        if operation in {"equal", "insert", "delete"} and text:
+            rendered.append({"operation": operation, "text": text})
+            continue
+
+        kind = part.get("kind")
+        baseline = part.get("baseline_tokens", "")
+        target = part.get("target_tokens", "")
+        if kind == "equal" and (baseline or target):
+            rendered.append({"operation": "equal", "text": baseline or target})
+        elif kind == "delete" and baseline:
+            rendered.append({"operation": "delete", "text": baseline})
+        elif kind == "insert" and target:
+            rendered.append({"operation": "insert", "text": target})
+        elif kind == "replace":
+            if baseline:
+                rendered.append({"operation": "delete", "text": baseline})
+            if target:
+                rendered.append({"operation": "insert", "text": target})
+    return rendered

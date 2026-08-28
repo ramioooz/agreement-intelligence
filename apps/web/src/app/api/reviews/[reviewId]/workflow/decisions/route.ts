@@ -20,7 +20,7 @@ export async function POST(
   }
   const { reviewId } = await context.params;
   const response = await fetch(
-    `${apiBaseUrl.replace(/\/$/, "")}/reviews/${encodeURIComponent(reviewId)}/workflow/decisions`,
+    `${apiBaseUrl.replace(/\/$/, "")}/reviews/${encodeURIComponent(reviewId)}/workflow/decisions?organization_id=${encodeURIComponent(process.env.API_ORGANIZATION_ID ?? "")}&workspace_id=${encodeURIComponent(process.env.API_WORKSPACE_ID ?? "")}`,
     {
       method: "POST",
       cache: "no-store",

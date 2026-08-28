@@ -136,6 +136,14 @@ describe("version comparison workspace", () => {
     expect(screen.getByLabelText("Target version")).toBeInTheDocument();
     expect(screen.getByText("Liability wording changed")).toBeInTheDocument();
     expect(screen.getByText("Review required")).toBeInTheDocument();
+    expect(screen.getByText("Old")).toBeInTheDocument();
+    expect(screen.getByText("New")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        (_, element) =>
+          element?.tagName === "P" && element.textContent === "Old New ",
+      ),
+    ).toBeInTheDocument();
     expect(
       screen.getAllByRole("link", { name: /View .* citation/ }),
     ).toHaveLength(2);

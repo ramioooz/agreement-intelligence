@@ -5,7 +5,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from agreement_intelligence_api.agreements.access import active_agreement_statement
 from agreement_intelligence_api.approval_policies.schemas import (
     ApprovalPolicyRouteRequest,
     SupportedAgreementFamily,
@@ -63,25 +62,17 @@ def start_review(
         override_reason_code = "other" if request.policy_override_reason is not None else None
     if request.policy_version_id is not None and override_reason_code is None:
         raise HTTPException(status_code=400, detail="policy_override_reason_code_required")
-    review, created = service.start(
+    review, created, route_context = service.start(
         principal, organization_id=organization_id, workspace_id=workspace_id, request=request
     )
     if created:
         identity = IdentityService(session)
         identity.scope_organization(organization_id)
-        agreement = session.scalar(
-            active_agreement_statement(
-                review.agreement_id,
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-            )
-        )
         selected_policy_id = request.policy_version_id
-        if (
-            selected_policy_id is None
-            and agreement is not None
-            and agreement.agreement_type in {"client_agreement", "liquidity_provider_agreement"}
-        ):
+        if selected_policy_id is None and route_context.agreement_type in {
+            "client_agreement",
+            "liquidity_provider_agreement",
+        }:
             routed = ApprovalPolicyService(session, identity).route(
                 principal,
                 organization_id=organization_id,
@@ -89,8 +80,9 @@ def start_review(
                 request=ApprovalPolicyRouteRequest(
                     agreement_family=cast(
                         SupportedAgreementFamily,
-                        agreement.agreement_type,
-                    )
+                        route_context.agreement_type,
+                    ),
+                    jurisdiction=route_context.jurisdiction,
                 ),
             )
             selected_policy_id = routed.id if routed is not None else None

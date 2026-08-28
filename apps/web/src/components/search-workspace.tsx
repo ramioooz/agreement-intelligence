@@ -355,9 +355,9 @@ export function SearchWorkspace({
           Reviewer-approved information
         </h2>
         <p className="mt-1 text-sm text-slate-600" role="status">
-          No reviewer-approved information is available for this search yet.
-          Approval decisions will appear here when the review workflow is
-          delivered in Sprint 6.
+          No reviewer-approved information matched this search. Approved
+          decisions appear here only when an authorized reviewed finding matches
+          the current scope and query.
         </p>
       </section>
 
