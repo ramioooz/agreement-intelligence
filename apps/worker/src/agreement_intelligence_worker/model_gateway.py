@@ -497,8 +497,10 @@ def model_gateway_from_environment(
     mode = cast(GatewayMode, os.environ.get("MODEL_GATEWAY_MODE", "openai"))
     if mode not in {"openai", "openai-compatible"}:
         raise GatewayConfigurationError("MODEL_GATEWAY_MODE must be openai or openai-compatible")
-    model = model_override or os.environ.get(
-        "MODEL_GATEWAY_MODEL", os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
+    model = (
+        model_override
+        or os.environ.get("MODEL_GATEWAY_MODEL")
+        or os.environ.get("OPENAI_MODEL", "gpt-5.4-mini")
     )
     version = configuration_version_override or os.environ.get(
         "MODEL_GATEWAY_CONFIG_VERSION", "model-gateway.v1"
@@ -512,7 +514,7 @@ def model_gateway_from_environment(
         output_cost_per_million_tokens_override,
     )
     if mode == "openai":
-        api_key = os.environ.get("MODEL_GATEWAY_API_KEY", os.environ.get("OPENAI_API_KEY"))
+        api_key = os.environ.get("MODEL_GATEWAY_API_KEY") or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             return None
         configuration = ModelGatewayConfiguration(
@@ -543,11 +545,13 @@ def model_gateway_from_environment(
         model=model,
         endpoint_kind="openai-compatible",
         base_url=base_url,
-        api_key=os.environ.get("MODEL_GATEWAY_API_KEY", "not-required"),
+        api_key=os.environ.get("MODEL_GATEWAY_API_KEY") or "not-required",
         configuration_version=version,
         fallback_model=(
             fallback_model_override
-            or os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL", os.environ.get("OPENAI_MODEL", model))
+            or os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL")
+            or os.environ.get("OPENAI_MODEL")
+            or model
             if fallback_key
             else None
         ),

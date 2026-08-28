@@ -91,7 +91,7 @@ Remove stale claims that processing, search, comparison, playbooks, or approval 
 Render this clickable row near the top, outside a code block:
 
 ```markdown
-[Overview](#overview) | [Quick start](docs/getting-started.md) | [Architecture](docs/architecture/overview.md) | [Manual QA](docs/testing/manual-test-plan.md) | [API testing](docs/testing/api-testing.md) | [Operations](docs/operations/platform-foundation.md) | [Roadmap](docs/roadmap.md)
+[Overview](#overview) | [Quick start](docs/getting-started.md) | [Architecture](docs/architecture/overview.md) | [Manual QA & API](docs/testing/manual-test-plan.md) | [Operations](docs/operations/platform-foundation.md) | [Roadmap](docs/roadmap.md)
 ```
 
 Add a contents index and compact `[Back to contents](#contents)` links in long sections.
@@ -190,7 +190,7 @@ git commit -m "docs: add comprehensive manual QA plan"
 ### Task 4: Add safe API and Insomnia testing guidance (#55)
 
 **Files:**
-- Create: `docs/testing/api-testing.md`
+- Superseded: API instructions are now combined in `docs/testing/manual-test-plan.md`
 - Create: `docs/testing/insomnia/agreement-intelligence.yaml`
 - Modify: `tests/docs/test-documentation-contract.sh`
 
@@ -217,7 +217,7 @@ Add a script assertion that the YAML contains no bearer token, provider key, `ch
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/testing/api-testing.md docs/testing/insomnia tests/docs/test-documentation-contract.sh
+git add docs/testing/manual-test-plan.md docs/testing/insomnia tests/docs/test-documentation-contract.sh
 git commit -m "docs: add safe API test collection"
 ```
 

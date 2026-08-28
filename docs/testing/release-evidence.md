@@ -13,12 +13,13 @@ contains provider keys, tokens, cookies, prompts, provider bodies, or raw agreem
 | Infrastructure | Terraform/Checkov/LocalStack gates | Do not infer live-AWS readiness |
 | Stack | Fresh-clone `stack-up`/`stack-check` in no-key mode | Inspect service/status evidence |
 | Deterministic AI | `make ai-eval` report/checksum | Review threshold summary |
-| Browser/API | Playwright release project plus `MQA-*` owner pass | Record Pass/Fail/Blocked per case |
+| Browser/API | Playwright release project plus the 14-test manual/API pass | Review the dated observed result per test |
 | Provider contract | No key exposure; smoke only when an ignored key is already safely available | Owner authorizes external request |
 | Visibility | Not automated | Owner decides after manual pass |
 
-The branch/PR evidence below records the final automated rehearsal. The owner manual pass
-remains Pending until every release-critical case is executed.
+The historical branch/PR evidence below records the original automated rehearsal. The
+current 14-test manual/API result is maintained in the combined
+[Manual QA and API guide](manual-test-plan.md).
 
 PR #246 merged into `main` at `e728cf2`. PR #247 was then rebased onto that revision and
 rehearsed from a disposable clean clone, so the branch now includes the documented durable
@@ -120,7 +121,7 @@ source, configuration, or test path.
 | --- | --- | --- | --- |
 | Clean setup and tool versions | `14424442` / `2026-08-28` | Pass | Node `22.23.1`; pnpm `10.28.0`; uv `0.11.29`; locked installs completed in a disposable clone |
 | No-key `stack-up` / `stack-check` | `14424442` / `2026-08-28` | Pass | Both provider-key variables empty; API/worker were rebuilt, recreated, and inspected; API, web, worker, MCP, PostgreSQL, Redis, Keycloak, LocalStack, and telemetry services were healthy |
-| Documentation links/contracts/format | `14424442` / `2026-08-28` | Pass | 60 tracked source Markdown files; 48 stable `MQA-*` cases, of which 47 remain owner-executed; link, structure, fixture, no-key, YAML, OpenAPI-path, and Prettier checks passed; Ruff confirmed 235 formatted files |
+| Documentation links/contracts/format | `14424442` / `2026-08-28` | Pass | Historical pre-consolidation link, structure, fixture, no-key, YAML, OpenAPI-path, Prettier, and Ruff checks passed |
 | `make check` with disposable PostgreSQL | `14424442` / `2026-08-28` | Pass | 64 web tests and 529 Python tests passed; lint, types across 197 Python files, CI/auth contracts, and all production builds passed |
 | Production dependency audits | `14424442` / `2026-08-28` | Pass | 0 unignored/actionable findings; accepted dev-tool advisories: Ragas `0.3.9` / `PYSEC-2026-3046` and DiskCache `5.6.3` / `PYSEC-2026-2447`; four internal packages are not published on PyPI and are listed as unauditable project packages |
 | Full-history secret scan | `14424442` / `2026-08-28` | Pass | 244 reachable commits / 4.61 MB scanned with redaction; 0 leaks |
@@ -130,18 +131,19 @@ source, configuration, or test path.
 | Synthetic release media | `14424442` / `2026-08-28` | Pass | `grounded-search.png`: 227,649 bytes, SHA-256 `33051e8b60d44f1e817b3dbba8c3805af464311124b9c493c51e8cefbcf8bdff`; `public-release-demo.webm`: 656,070 bytes, 8.84 seconds, SHA-256 `1b2fa90767015824a8ef855d37fc77fc9f1e1801e77b23721e2a9177d136207e` |
 | Provider contract/no-key degradation | `14424442` / `2026-08-28` | Pass | API/worker configuration tests passed; recreated containers were inspected and rejected hosted/openai-compatible settings; deterministic analysis and lexical retrieval remained usable without a key; provider provenance stayed empty rather than fabricated |
 | Live provider smoke | `14424442` / `2026-08-28` | Blocked | No authorized provider secret was available; only the opt-in configuration contract was verified, no external request was sent, and no secret was read or logged |
-| Owner manual `MQA-*` pass | PR head / pre-visibility | Pending | 47 cases remain for owner execution and evidence review before the visibility decision |
+| Consolidated manual/API pass | `4084f11` / `2026-08-28` | Partial | Exact clean-clone release gate passed; 14 critical tests evaluated: 9 Pass, 1 Pass with note, 4 Partial; exact observations and unexecuted portions are in the combined guide |
 
 ## Honest release limitations
 
-- Manual QA and the owner visibility decision cannot be automated.
+- The owner visibility decision remains manual; the 14-test result contains four explicitly
+  Partial observations and must not be represented as an all-pass certification.
 - External provider quality/latency/cost is variable; a live call is not a deterministic
   release gate.
 - No OCR engine exists; `ocr_required` is diagnostic only.
 - Historical provider enrichment is not automatically backfilled.
 - LocalStack and Docker evidence does not validate live AWS.
 
-See [Manual QA](manual-test-plan.md), [API testing](api-testing.md), and
+See the combined [Manual QA and API guide](manual-test-plan.md) and
 [Evidence template](evidence-template.md).
 
 [Back to top](#public-release-evidence)

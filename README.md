@@ -5,7 +5,7 @@ platform for financial agreements. It turns PDF and DOCX agreements into structu
 cited, reviewable information and keeps legal review, approval, and audit decisions under
 human control.
 
-[Overview](#overview) | [Quick start](docs/getting-started.md) | [Architecture](docs/architecture/overview.md) | [Manual QA](docs/testing/manual-test-plan.md) | [API testing](docs/testing/api-testing.md) | [Operations](docs/operations/platform-foundation.md) | [Roadmap](docs/roadmap.md)
+[Overview](#overview) | [Quick start](docs/getting-started.md) | [Architecture](docs/architecture/overview.md) | [Manual QA & API](docs/testing/manual-test-plan.md) | [Operations](docs/operations/platform-foundation.md) | [Roadmap](docs/roadmap.md)
 
 > [!IMPORTANT]
 > This repository demonstrates a complete local product and a cloud-valid reference
@@ -335,8 +335,8 @@ Provider mode adds validated enrichment, embeddings, semantic retrieval, and gen
 answers. No-key mode still demonstrates repository, deterministic analysis, playbooks,
 lexical search, versions, review, approval, audit, and explicit provider-unavailable state.
 
-The [manual QA plan](docs/testing/manual-test-plan.md) provides exact identities,
-preconditions, evidence, cleanup, negative paths, and stable `MQA-*` IDs.
+The [manual QA and API guide](docs/testing/manual-test-plan.md) provides one indexed list of
+14 critical tests, concise execution steps, expected behavior, and dated observed results.
 
 [Back to contents](#contents)
 
@@ -431,8 +431,8 @@ pnpm exec prettier --check README.md SECURITY.md CODE_OF_CONDUCT.md CONTRIBUTING
 git diff --check
 ```
 
-API and browser execution are covered by [API testing](docs/testing/api-testing.md) and
-[Manual QA](docs/testing/manual-test-plan.md). Performance, resilience, backups, provider
+API and browser execution are covered by the combined
+[Manual QA and API guide](docs/testing/manual-test-plan.md). Performance, resilience, backups, provider
 smoke, and assisted evaluation are opt-in because they require live containers, disposable
 state, or an external provider.
 

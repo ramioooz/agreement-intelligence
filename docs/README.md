@@ -8,8 +8,7 @@ Use this page to choose the shortest trustworthy path for your role. The root
 | Audience | Document | Purpose |
 | --- | --- | --- |
 | First-time operator | [Getting started](getting-started.md) | Exact prerequisites, safe configuration, startup, identities, no-key/provider modes, shutdown, and first checks |
-| Product evaluator or QA owner | [Manual QA plan](testing/manual-test-plan.md) | Stable `MQA-*` cases, evidence, cleanup, negative/security/accessibility/recovery coverage, traceability |
-| API evaluator | [API and Insomnia testing](testing/api-testing.md) | Safe token handling, query scope, request contracts, negative cases, collection import |
+| Product or API evaluator | [Manual QA and API guide](testing/manual-test-plan.md) | Fourteen critical journeys, observed results, Insomnia setup, safety, and cleanup |
 | Architect or security reviewer | [Architecture overview](architecture/overview.md) | Local components, data flows, authorization, retrieval, approval, MCP, telemetry, AWS boundary |
 | Operator | [Platform operations](operations/platform-foundation.md) | Services, health, provider modes, runbooks, backups, Terraform/LocalStack and recovery |
 | Contributor | [Contributing](../CONTRIBUTING.md) | Issue/branch/worktree/PR policy, checks, data and documentation rules |
@@ -44,11 +43,10 @@ owned by the root README, current architecture, source, API schema, and operatio
 
 | Document | Audience and purpose |
 | --- | --- |
-| [Manual QA plan](testing/manual-test-plan.md) | End-to-end browser/API/MCP/operations execution with stable IDs |
+| [Manual QA and API guide](testing/manual-test-plan.md) | Fourteen end-to-end browser, API, security, and recovery journeys with observed results |
 | [Synthetic test data](testing/test-data.md) | Approved identities, fixtures, naming, and prohibited data |
 | [Evidence template](testing/evidence-template.md) | Pass/Fail/Blocked record without secrets or agreement content |
 | [Release evidence](testing/release-evidence.md) | Clean-clone, no-key/provider contract, automated gate, owner sign-off status |
-| [API testing](testing/api-testing.md) | Insomnia setup, requests, expected success/denial, cleanup |
 | [Insomnia collection](testing/insomnia/agreement-intelligence.yaml) | Importable placeholder-only request collection |
 
 ## Evaluation and quality

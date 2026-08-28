@@ -300,7 +300,7 @@ running-stack configuration documented in [Release evidence](../testing/release-
 It never invokes `stack-reset`. Provider smoke/assisted AI evaluation and the owner manual
 pass remain separate opt-ins.
 
-Use [Manual QA](../testing/manual-test-plan.md), [API testing](../testing/api-testing.md), and
+Use the combined [Manual QA and API guide](../testing/manual-test-plan.md) and
 the [evidence template](../testing/evidence-template.md). Record safe commands, commit,
 timestamp, pass/fail/blocked, counts/checksums, and cleanup—never credentials or content.
 

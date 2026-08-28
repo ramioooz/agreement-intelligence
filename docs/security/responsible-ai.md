@@ -132,7 +132,7 @@ tenant, access, retention, backup, and deletion boundary.
 - New queries can retry embeddings after recovery, but complete automatic historical
   re-enrichment/backfill is deferred.
 - Materiality and clause alignment are decision support, not binding legal conclusions.
-- The UI does not prove accessibility conformance; the manual plan covers basic keyboard,
+- The UI does not prove accessibility conformance; the manual guide covers basic keyboard,
   focus, labeling, responsive, and error-state checks.
 - LocalStack and Docker do not validate live AWS privacy, security, resilience, cost, or
   identity-federation behavior.
@@ -157,7 +157,7 @@ Before relying on an output:
       the [security policy](../../SECURITY.md).
 - [ ] Preserve only non-sensitive evidence needed for audit and defect reproduction.
 
-See the [manual QA plan](../testing/manual-test-plan.md) for executable positive,
+See the [manual QA and API guide](../testing/manual-test-plan.md) for executable positive,
 negative, security, provider-outage, and cross-tenant cases.
 
 [Back to top](#responsible-ai-and-human-review)

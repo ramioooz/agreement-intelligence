@@ -158,16 +158,16 @@ rm -rf artifacts/manual-qa/fixtures
 
 ## Stable names
 
-Prefix mutable records with the case ID and run ID:
+Prefix mutable records with the 14-test ID and run ID:
 
 ```text
-MQA-<AREA>-<NNN> <UTC-YYYYMMDD-HHMMSS> <short synthetic title>
+QA-<01-14> <UTC-YYYYMMDD-HHMMSS> <short synthetic title>
 ```
 
 Recommended records:
 
-- playbook: `MQA-INT-001 <run> Client Agreement baseline`;
-- approval policy: `MQA-REV-001 <run> Legal then business`;
+- playbook: `QA-07 <run> Client Agreement baseline`;
+- approval policy: `QA-10 <run> Legal then business`;
 - review comment: `Synthetic QA comment; no legal or personal data.`;
 - reviewer rationale: `Synthetic evidence supports the recorded QA decision.`;
 - temporary user: a non-deliverable `.example.test` address stored only in local Keycloak.
@@ -194,6 +194,6 @@ in source, product routes, and visible status/provenance. Crop browser chrome. R
 tokens, cookies, client secrets, local filesystem paths, queue URLs, trace IDs when they
 encode an environment, and any free-form value not authored for this run.
 
-See the [evidence template](evidence-template.md) and [manual plan](manual-test-plan.md).
+See the [evidence template](evidence-template.md) and [manual QA and API guide](manual-test-plan.md).
 
 [Back to top](#synthetic-manual-qa-test-data)

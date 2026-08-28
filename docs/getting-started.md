@@ -261,6 +261,6 @@ tests/docs/test-documentation-contract.sh
 
 The complete non-destructive release gate and its explicit prerequisites are documented in
 [Release evidence](testing/release-evidence.md). Manual execution uses the
-[Manual QA plan](testing/manual-test-plan.md).
+[Manual QA and API guide](testing/manual-test-plan.md).
 
 [Back to top](#getting-started-from-a-fresh-clone)

@@ -1,39 +1,26 @@
 # Manual-QA evidence template
 
-Copy one block per `MQA-*` case into an ignored local evidence file. Do not commit tokens,
+Copy one short row per test into an ignored local evidence file. Record the commit, date,
+host, provider mode, and operator once above the table. Do not commit tokens,
 cookies, passwords, provider keys/bodies, prompts, raw agreement text, personal browser
 chrome, local filesystem paths, or real user/customer data.
 
 ```markdown
-## MQA-AREA-NNN — Case title
+Commit: <sha> | Date: <UTC> | Host: <OS/Docker> | Mode: <mode> | Operator: <initials>
 
-- Commit:
-- UTC start/end:
-- Operator:
-- Environment: OS / Docker / browser or Insomnia version
-- Mode: no-key / provider-powered / simulated outage / not applicable
-- Identity role (never password):
-- Synthetic fixture and checksum:
-- Result: Pass / Fail / Blocked
-- Expected:
-- Observed:
-- Safe command/status evidence:
-- Screenshot or artifact filename:
-- Artifact checksum:
-- Defect reference (Fail only):
-- Blocker and required owner action (Blocked only):
-- Cleanup completed:
-- Reviewer/sign-off:
+| Test | Result | Safe evidence | Cleanup |
+| --- | --- | --- | --- |
+| 01 | Pass / Fail / Partial / Blocked | command count or cropped synthetic screenshot | Done / N/A |
 ```
 
 ## Evidence naming
 
 ```text
-<commit-short>/<case-id>/<utc-timestamp>-<kind>.<extension>
+<commit-short>/<test-id>/<utc-timestamp>-<kind>.<extension>
 ```
 
-Examples: `d5eb988/MQA-REP-001/20260827T090000Z-repository.png` and
-`d5eb988/MQA-REV-006/20260827T101500Z-manifest.sha256.txt`.
+Examples: `d5eb988/03/20260827T090000Z-repository.png` and
+`d5eb988/11/20260827T101500Z-manifest.sha256.txt`.
 
 ## Status definitions
 
@@ -41,6 +28,8 @@ Examples: `d5eb988/MQA-REP-001/20260827T090000Z-repository.png` and
   persisted, authorization, and cleanup result matched.
 - **Fail:** execution completed but at least one expected result did not match. Preserve
   minimum safe evidence and report through the existing issue/PR process.
+- **Partial:** the main journey completed, but one stated expectation did not match. Record
+  the exact mismatch without presenting the test as Pass.
 - **Blocked:** a prerequisite, authorization, external provider, or owner-only action
   prevented execution. Record the exact blocker; do not convert it to Pass.
 
