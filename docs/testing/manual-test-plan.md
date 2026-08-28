@@ -858,28 +858,52 @@ only through supported lifecycle if available.
 
 ### MQA-REV-006 — Terminal package, manifest checksums, and audit timeline
 
-**Purpose and risk:** Verify terminal PDF/JSON artifacts are immutable, internally linked,
-and checksum-backed.
+**Purpose and risk:** Verify read-only asynchronous package generation and retry behavior,
+then verify terminal PDF/JSON artifacts are immutable, internally linked, and checksum-backed.
 
 **Identity:** `platform.admin` and authorized review participant.
 
-**Preconditions and test data:** Completed MQA-REV-004 terminal review.
+**Preconditions and test data:** Fresh MQA-REV-004 review ready for its terminal decision.
+To deterministically observe the normal pending response, stop the worker immediately before
+that final action. If the earlier review already has a package, create a new synthetic review
+instead of altering or deleting its immutable package.
 
 **Steps:**
 
-1. Open final package metadata and download PDF plus JSON manifest.
-2. Compute local SHA-256 values and compare with displayed/manifest checksums and exact
-   review/agreement/version/policy identifiers.
-3. Reload and request artifacts again; inspect complete timeline/audit order and attempt an
-   unauthorized download.
+1. Run
+   `docker compose --project-name agreement-intelligence --env-file .env stop worker`, submit
+   the terminal decision, and immediately request final-package metadata. Record HTTP 503,
+   `detail.code=final_package_pending`, `detail.retryable=true`, and `Retry-After: 3`.
+2. Start the worker with
+   `docker compose --project-name agreement-intelligence --env-file .env start worker`. Wait
+   the returned three seconds before each retry of the same metadata GET until it returns
+   200; do not use tight-loop polling.
+3. Download the PDF and JSON manifest. Compute local SHA-256 values and compare them with
+   displayed/manifest checksums and exact review/agreement/version/policy identifiers.
+4. Stop LocalStack with
+   `docker compose --project-name agreement-intelligence --env-file .env stop localstack`,
+   then request metadata, manifest, and PDF. Record retryable HTTP 503
+   `final_package_unavailable` plus `Retry-After: 3`; missing or corrupt stored objects use
+   this same response contract.
+5. Restart LocalStack with
+   `docker compose --project-name agreement-intelligence --env-file .env start localstack`,
+   run `make stack-check`, and poll no faster than the returned interval until reads recover
+   to 200. Reload and request the artifacts again, inspect the complete timeline/audit order,
+   and attempt an unauthorized download.
 
-**Expected result:** Checksums/IDs match; repeat reads return the same immutable artifacts;
-timeline is ordered/attributed; unauthorized principal cannot access metadata or bytes.
+**Expected result:** A terminal review without completed worker output returns read-only 503
+`final_package_pending` with `Retry-After: 3`, then reaches 200 through interval-respecting
+polling. Checksums/IDs match and repeat reads return the same immutable artifacts. Missing,
+corrupt, or transiently unavailable storage returns retryable 503
+`final_package_unavailable` with `Retry-After: 3`; it never returns unverified bytes. The
+timeline is ordered/attributed, and a foreign or unauthorized scope remains an opaque 404
+without metadata or byte access.
 
-**Evidence:** Metadata screenshot and checksum comparison file only.
+**Evidence:** Status/code/`Retry-After` polling timeline, transient outage/recovery responses,
+metadata screenshot, and checksum comparison file only.
 
-**Cleanup:** Store only synthetic artifact checksums/evidence; delete downloaded bytes after
-review if not needed.
+**Cleanup:** Ensure worker and LocalStack are running, run `make stack-check`, store only
+synthetic artifact checksums/evidence, and delete downloaded bytes after review if not needed.
 
 **Result:** Pass / Fail / Blocked — ______
 

@@ -135,9 +135,18 @@ The collection includes these representative requests:
 | Approval policies/list | `GET /approval-policies` | 200 for authorized scope | 401/hidden denial; read-only |
 | Reviews/inbox | `GET /reviews/inbox` | 200 | 401/hidden denial; read-only |
 | Reviews/timeline | `GET /reviews/{review_id}/timeline` | 200 | 404 hidden/absent; read-only |
-| Final package | `GET /reviews/{review_id}/final-package` | 200 after terminal package exists | 404/409 before eligible state; read-only |
+| Final package | `GET /reviews/{review_id}/final-package` | 200 after the durable package and checksum-valid objects exist | 409 before a terminal state; normal async 503 `final_package_pending` until the worker finishes; 503 `final_package_unavailable` for missing, corrupt, or transiently unavailable storage; 404 hidden scope; read-only |
 | Audit | `GET /audit-events` | 200 for audit permission | 403/hidden denial; read-only |
 | Negative/cross scope | `GET /agreements` with `00000000-0000-4000-8000-000000000000` workspace | Hidden/empty denial per route | Never creates data |
+
+Final-package generation is asynchronous after the review reaches `approved`, `rejected`,
+or `revision_requested`. Poll the same metadata GET when it returns HTTP 503 with
+`detail.code=final_package_pending` and `detail.retryable=true`: wait the response's
+`Retry-After: 3` seconds before each retry and stop when it returns 200. Metadata, manifest,
+and PDF reads return HTTP 503 with `detail.code=final_package_unavailable`,
+`detail.retryable=true`, and `Retry-After: 3` when recorded objects are missing, corrupt, or
+transiently unavailable; retry only after the stated interval and investigate persistent
+failures. A foreign or unauthorized scope remains an opaque 404, not a polling signal.
 
 Create Agreement body:
 

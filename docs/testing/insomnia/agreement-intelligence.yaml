@@ -681,8 +681,8 @@ resources:
     modified: 1787788800000
     created: 1787788800000
     url: "{{ _.base_url }}/reviews/{{ _.review_id }}/final-package?organization_id={{ _.organization_id }}&workspace_id={{ _.workspace_id }}"
-    name: Final package metadata (200)
-    description: "Expected: 200 only for an eligible terminal review; hidden/conflict otherwise. Read-only."
+    name: Final package metadata (poll 503 to 200)
+    description: "Read-only contract: 409 before a terminal review; normal async 503 with detail.code final_package_pending, detail.retryable true, and Retry-After 3 until the worker finishes; wait 3 seconds and retry this same GET until 200. Missing, corrupt, or transiently unavailable package storage returns retryable 503 final_package_unavailable with Retry-After 3. Foreign or unauthorized scope remains an opaque 404."
     method: GET
     body: {}
     parameters: []
