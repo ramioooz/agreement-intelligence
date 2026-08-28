@@ -190,6 +190,11 @@ def test_provider_sends_bounded_instruction_for_cited_agreement_analysis() -> No
     assert "risks" in client.requested_instruction
     assert "summaries" in client.requested_instruction
     assert "only cite supplied anchor IDs" in client.requested_instruction
+    assert "short semantic metadata labels" in client.requested_instruction
+    assert "normalized field values must be exact excerpts" in client.requested_instruction
+    assert "copy each classification rationale" in client.requested_instruction
+    assert "verbatim" in client.requested_instruction
+    assert "never paraphrase" in client.requested_instruction
 
 
 def test_fallback_comparator_only_requests_a_cited_comparison_of_approved_language() -> None:

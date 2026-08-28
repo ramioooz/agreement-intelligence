@@ -248,5 +248,21 @@ export async function getFinalReviewPackage({
     { cache: "no-store", headers: requestHeaders(token) },
   );
   if (response.status === 409 || response.status === 404) return null;
+  if (response.status === 503) {
+    const payload = (await response
+      .clone()
+      .json()
+      .catch(() => null)) as {
+      detail?: { code?: string; retryable?: boolean };
+    } | null;
+    if (
+      payload?.detail?.retryable === true &&
+      ["final_package_pending", "final_package_unavailable"].includes(
+        payload.detail.code ?? "",
+      )
+    ) {
+      return null;
+    }
+  }
   return decode(response);
 }

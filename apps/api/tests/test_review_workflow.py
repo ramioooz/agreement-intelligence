@@ -4,7 +4,8 @@ from collections.abc import Callable, Generator
 from datetime import UTC, datetime
 from hashlib import sha256
 from json import dumps
-from uuid import uuid4
+from typing import Literal
+from uuid import UUID, uuid4
 
 import agreement_intelligence_api.playbooks.models  # noqa: F401
 import agreement_intelligence_api.processing.models  # noqa: F401
@@ -446,6 +447,91 @@ def test_decision_restores_tenant_scope_before_refreshing_after_commit(
 
     assert [kind for kind, _ in calls[-2:]] == ["scope", "refresh"]
     assert calls[-2][1] == review.organization_id
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_state"),
+    [("reject", "rejected"), ("request_changes", "revision_requested")],
+)
+def test_terminal_decision_synchronizes_review_case_state(
+    session: Session,
+    action: Literal["reject", "request_changes"],
+    expected_state: Literal["rejected", "revision_requested"],
+) -> None:
+    """Fails if the persisted review remains open after its workflow terminates."""
+    review, policy_version = _seed_review_and_published_policy(session)
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id=f"review-start-{action}",
+    )
+
+    ReviewWorkflowCoordinator(session).decide(
+        workflow_id=workflow.id,
+        actor_id=review.created_by,
+        action=action,
+        idempotency_key=f"decision-{action}",
+        expected_revision=workflow.revision,
+        correlation_id=f"decision-{action}",
+    )
+
+    persisted = session.get(ReviewCaseRecord, review.id)
+    assert persisted is not None
+    assert persisted.state == expected_state
+
+
+def test_final_stage_approval_synchronizes_review_case_state(session: Session) -> None:
+    """Fails if an approved workflow leaves its persisted review marked open."""
+    review, policy_version = _seed_review_and_published_policy(session)
+    identity = IdentityService(session)
+    actor_ids: list[UUID] = []
+    for role_key, label in (
+        (RoleKey.LEGAL_ADMIN, "Legal reviewer"),
+        (RoleKey.BUSINESS_APPROVER, "Business approver"),
+    ):
+        actor = identity.provision_user(
+            issuer="https://identity.example/realms/demo",
+            subject=f"{label.casefold().replace(' ', '-')}-{uuid4()}",
+            display_name=label,
+        )
+        membership = identity.grant_membership(
+            organization_id=review.organization_id,
+            user_id=actor.id,
+            role_key=role_key,
+        )
+        identity.grant_workspace_membership(
+            organization_id=review.organization_id,
+            membership_id=membership.id,
+            workspace_id=review.workspace_id,
+        )
+        actor_ids.append(actor.id)
+    session.commit()
+    workflow = ReviewWorkflowCoordinator(session).start(
+        review_id=review.id,
+        policy_version_id=policy_version.id,
+        correlation_id="review-start-approved",
+    )
+
+    second_stage = ReviewWorkflowCoordinator(session).decide(
+        workflow_id=workflow.id,
+        actor_id=actor_ids[0],
+        action="approve",
+        idempotency_key="decision-legal-approved",
+        expected_revision=workflow.revision,
+        correlation_id="decision-legal-approved",
+    )
+    ReviewWorkflowCoordinator(session).decide(
+        workflow_id=workflow.id,
+        actor_id=actor_ids[1],
+        action="approve",
+        idempotency_key="decision-business-approved",
+        expected_revision=second_stage.revision,
+        correlation_id="decision-business-approved",
+    )
+
+    persisted = session.get(ReviewCaseRecord, review.id)
+    assert persisted is not None
+    assert persisted.state == "approved"
 
 
 def test_final_package_reservation_scopes_before_accessing_commit_expired_review(

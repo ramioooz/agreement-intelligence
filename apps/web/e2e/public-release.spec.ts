@@ -132,7 +132,13 @@ test("public release repository, analysis, search, and version comparison journe
   await expect(
     page.getByRole("heading", { name: "Document understanding" }),
   ).toBeVisible({ timeout: 45_000 });
-  await expect(page.getByText("Deterministic analysis.")).toBeVisible();
+  await expect(
+    page.getByText(
+      process.env.OPENAI_API_KEY
+        ? /^Hybrid analysis using .+\.$/
+        : "Deterministic analysis.",
+    ),
+  ).toBeVisible();
   await capture(page, "agreement-analysis.png");
 
   await page.getByLabel("Revision file").setInputFiles({

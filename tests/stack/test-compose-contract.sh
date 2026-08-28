@@ -215,6 +215,18 @@ if (!observabilityConfig.services?.["otel-collector"]?.environment?.LANGFUSE_OTL
 }
 NODE
 
+uv run python - docker/otel/collector.yaml <<'PY'
+from pathlib import Path
+import sys
+
+from yaml import safe_load
+
+config = safe_load(Path(sys.argv[1]).read_text())
+protocols = config["receivers"]["otlp"]["protocols"]
+assert protocols["grpc"]["endpoint"] == "0.0.0.0:4317"
+assert protocols["http"]["endpoint"] == "0.0.0.0:4318"
+PY
+
 grep -q '^name: agreement-intelligence$' "$config_file"
 ! grep -q 'container_name:' compose.yaml
 

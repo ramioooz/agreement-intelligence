@@ -94,11 +94,27 @@ export function ApprovalReviewWorkspace({
   const [error, setError] = useState<string>();
   const [activeWorkflow, setActiveWorkflow] = useState(workflow);
   const [deciding, setDeciding] = useState(false);
+  const workflowIsTerminal =
+    activeWorkflow?.state === "approved" ||
+    activeWorkflow?.state === "rejected" ||
+    activeWorkflow?.state === "revision_requested";
   useEffect(() => {
-    if (activeWorkflow?.state !== "waiting_for_approval") return;
-    const timer = window.setTimeout(() => window.location.reload(), 10_000);
+    if (
+      activeWorkflow?.state !== "waiting_for_approval" &&
+      !(workflowIsTerminal && !finalPackage)
+    )
+      return;
+    const timer = window.setTimeout(
+      () => window.location.reload(),
+      workflowIsTerminal ? 3_000 : 10_000,
+    );
     return () => window.clearTimeout(timer);
-  }, [activeWorkflow?.state, activeWorkflow?.revision]);
+  }, [
+    activeWorkflow?.state,
+    activeWorkflow?.revision,
+    finalPackage,
+    workflowIsTerminal,
+  ]);
   const timeline = useMemo(
     () => [
       {
@@ -116,16 +132,7 @@ export function ApprovalReviewWorkspace({
     ],
     [commentItems, review.created_at, review.id],
   );
-  const resolvedFinalPackage =
-    finalPackage ??
-    (activeWorkflow?.state === "approved"
-      ? {
-          pdf_url: `/api/reviews/${review.id}/final-package/pdf`,
-          manifest_url: `/api/reviews/${review.id}/final-package/manifest`,
-          checksum: "Final package metadata is available for download.",
-          created_at: review.created_at,
-        }
-      : null);
+  const resolvedFinalPackage = finalPackage;
   const packageDownloadUrls = resolvedFinalPackage
     ? {
         pdf: `/api/reviews/${review.id}/final-package/pdf`,
@@ -390,8 +397,9 @@ export function ApprovalReviewWorkspace({
               </>
             ) : (
               <p className="mt-2 text-sm text-slate-600">
-                Final package will be available when the approval workflow
-                completes.
+                {workflowIsTerminal
+                  ? "The final package is being prepared. This page will refresh automatically."
+                  : "Final package will be available when the approval workflow completes."}
               </p>
             )}
           </section>

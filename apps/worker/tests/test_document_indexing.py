@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,6 +10,7 @@ from agreement_intelligence_worker.document_indexing import (
     structural_chunks_from_manifest,
     worker_index_metadata,
 )
+from agreement_intelligence_worker.embedding_indexing import embedding_metadata
 from agreement_intelligence_worker.processing import CompletedArtifact, ProcessingJob
 from sqlalchemy import create_engine, insert, select
 from sqlalchemy.exc import IntegrityError
@@ -136,6 +138,38 @@ def test_activation_replaces_stale_chunks_only_after_new_build_is_ready() -> Non
     sink = SQLAlchemyDocumentIndexSink(engine, storage)
 
     sink.completed(job, CompletedArtifact(job_id=job.id, key="analysis/one.json"))
+    with engine.begin() as connection:
+        chunk = (
+            connection.execute(select(worker_index_metadata.tables["retrieval_chunks"]))
+            .mappings()
+            .first()
+        )
+        assert chunk is not None
+        now = datetime.now(UTC)
+        connection.execute(
+            insert(embedding_metadata.tables["retrieval_chunk_embeddings"]).values(
+                organization_id=job.organization_id,
+                workspace_id=job.workspace_id,
+                agreement_id=job.agreement_id,
+                build_id=chunk["build_id"],
+                chunk_id=chunk["chunk_id"],
+                index_version="embedding-v1",
+                dimensions=1,
+                embedding=[0.5],
+                state="ready",
+                provider="openai",
+                model="text-embedding-3-small",
+                configuration_version="embedding-gateway.v1",
+                input_tokens=1,
+                latency_ms=1,
+                cost_usd=0.0,
+                retry_outcome="not_needed",
+                fallback_outcome="not_needed",
+                failure_reason=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
     storage.objects["analysis/two.json"] = json.dumps(_manifest("b" * 64)).encode()
     sink.completed(job, CompletedArtifact(job_id=job.id, key="analysis/two.json"))
 
@@ -146,8 +180,12 @@ def test_activation_replaces_stale_chunks_only_after_new_build_is_ready() -> Non
             )
         ).all()
         chunks = connection.execute(select(worker_index_metadata.tables["retrieval_chunks"])).all()
+        embeddings = connection.execute(
+            select(embedding_metadata.tables["retrieval_chunk_embeddings"])
+        ).all()
     assert [row._mapping["state"] for row in builds] == ["stale", "active"]
     assert {row._mapping["source_checksum"] for row in chunks} == {"b" * 64}
+    assert embeddings == []
 
 
 class _Storage:
