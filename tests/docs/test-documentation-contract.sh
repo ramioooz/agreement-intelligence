@@ -20,7 +20,6 @@ docs/testing/manual-test-plan.md
 docs/testing/test-data.md
 docs/testing/evidence-template.md
 docs/testing/release-evidence.md
-docs/testing/api-testing.md
 docs/testing/insomnia/agreement-intelligence.yaml
 scripts/check-doc-links.mjs
 scripts/release-check.sh
@@ -52,16 +51,12 @@ const fs = require("node:fs");
 const manualPath = "docs/testing/manual-test-plan.md";
 const manual = fs.readFileSync(manualPath, "utf8");
 const requiredSections = [
-  "Execution conventions",
-  "Installation and health",
-  "Authentication and authorization",
-  "Agreement repository and analysis",
-  "Playbooks, search, Q&A, and comparison",
-  "Review, approval, audit, and packages",
-  "API, MCP, and operations",
-  "Browser quality and accessibility",
-  "Failure recovery and security",
-  "Release traceability matrix",
+  "Critical test list",
+  "Setup",
+  "Insomnia setup",
+  "Verified results",
+  "Run the tests",
+  "Evidence and cleanup",
 ];
 for (const heading of requiredSections) {
   if (!manual.includes(`## ${heading}`)) {
@@ -69,31 +64,24 @@ for (const heading of requiredSections) {
   }
 }
 
-const matches = [...manual.matchAll(/^### (MQA-[A-Z]+-\d{3}) — .*$/gm)];
-if (matches.length < 35) {
-  throw new Error(`Expected at least 35 detailed MQA cases; found ${matches.length}.`);
+const matches = [...manual.matchAll(/^### (\d{2}) — .*$/gm)];
+if (matches.length !== 14) {
+  throw new Error(`Expected exactly 14 critical QA cases; found ${matches.length}.`);
 }
 const seen = new Set();
-const fields = [
-  "**Purpose and risk:**",
-  "**Identity:**",
-  "**Preconditions and test data:**",
-  "**Steps:**",
-  "**Expected result:**",
-  "**Evidence:**",
-  "**Cleanup:**",
-  "**Result:**",
-];
 for (let index = 0; index < matches.length; index += 1) {
   const id = matches[index][1];
   if (seen.has(id)) throw new Error(`Duplicate manual QA ID: ${id}`);
   seen.add(id);
+  if (id !== String(index + 1).padStart(2, "0")) {
+    throw new Error(`Expected case ${String(index + 1).padStart(2, "0")}; found ${id}.`);
+  }
   const start = matches[index].index;
   const end = matches[index + 1]?.index ?? manual.length;
   const block = manual.slice(start, end);
-  for (const field of fields) {
-    if (!block.includes(field)) throw new Error(`${id} is missing ${field}`);
-  }
+  if (!block.includes("**Steps**")) throw new Error(`${id} is missing Steps.`);
+  if (!block.includes("**Expected:**")) throw new Error(`${id} is missing Expected.`);
+  if (!block.includes("**Actual:**")) throw new Error(`${id} is missing Actual.`);
   if (!/^\d+\. /m.test(block)) throw new Error(`${id} has no numbered steps.`);
 }
 

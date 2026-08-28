@@ -73,6 +73,9 @@ def test_resolved_configuration_applies_only_supported_openai_parameters() -> No
 
 def test_environment_selects_openai_by_default(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MODEL", "hosted-model")
+    monkeypatch.setenv("MODEL_GATEWAY_API_KEY", "")
+    monkeypatch.setenv("MODEL_GATEWAY_MODEL", "")
     monkeypatch.delenv("MODEL_GATEWAY_MODE", raising=False)
 
     gateway = model_gateway_from_environment(client_factory=lambda **_: object())
@@ -80,6 +83,8 @@ def test_environment_selects_openai_by_default(monkeypatch: MonkeyPatch) -> None
     assert gateway is not None
     assert gateway.configuration.mode == "openai"
     assert gateway.configuration.endpoint_kind == "hosted"
+    assert gateway.configuration.api_key == "test-key"
+    assert gateway.configuration.model == "hosted-model"
 
 
 def test_embedding_configuration_is_independent_from_generation_configuration(
