@@ -22,8 +22,10 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     Uuid,
+    column,
     delete,
     select,
+    table,
     text,
     update,
 )
@@ -50,6 +52,10 @@ class ArtifactStorage(Protocol):
 
 
 worker_index_metadata = MetaData()
+retrieval_chunk_embeddings = table(
+    "retrieval_chunk_embeddings",
+    column("build_id", Uuid(as_uuid=True)),
+)
 retrieval_index_builds = Table(
     "retrieval_index_builds",
     worker_index_metadata,
@@ -238,6 +244,11 @@ class SQLAlchemyDocumentIndexSink:
                 .values(state="active", activated_at=now)
             )
             if stale_ids:
+                connection.execute(
+                    delete(retrieval_chunk_embeddings).where(
+                        retrieval_chunk_embeddings.c.build_id.in_(stale_ids)
+                    )
+                )
                 connection.execute(
                     delete(retrieval_chunks).where(retrieval_chunks.c.build_id.in_(stale_ids))
                 )

@@ -73,6 +73,7 @@ test("a platform administrator publishes an immutable client-agreement playbook"
   await page.getByRole("button", { name: "Create next draft" }).click();
   await expect(page.getByText(/^Draft · Version 2$/)).toBeVisible();
   await page.getByRole("link", { name: "Back to playbooks" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/playbooks$/);
 
   const card = page.getByRole("article", { name: name });
   await expect(
@@ -126,6 +127,7 @@ test("a platform administrator permanently deletes an unused draft playbook", as
   await page.getByRole("button", { name: "Create draft" }).click();
 
   await page.getByRole("link", { name: "Back to playbooks" }).click();
+  await expect(page).toHaveURL(/\/dashboard\/playbooks$/);
   const card = page.getByRole("article", { name });
   await card.getByRole("button", { name: "Delete playbook" }).click();
   await expect(

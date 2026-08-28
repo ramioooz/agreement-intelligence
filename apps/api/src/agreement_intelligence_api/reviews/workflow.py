@@ -495,6 +495,7 @@ class ReviewWorkflowCoordinator:
         if next_stage is None:
             workflow.state = "approved"
             workflow.active_stage_ordinal = None
+            self._synchronize_review_state(workflow, "approved", now)
             return
         next_stage.state = "active"
         next_stage.activated_at = now
@@ -525,6 +526,19 @@ class ReviewWorkflowCoordinator:
             assignment.status = "completed"
         workflow.state = state
         workflow.active_stage_ordinal = None
+        self._synchronize_review_state(workflow, state, now)
+
+    def _synchronize_review_state(
+        self,
+        workflow: ReviewWorkflowRecord,
+        state: Literal["approved", "rejected", "revision_requested"],
+        now: datetime,
+    ) -> None:
+        review = self._session.get(ReviewCaseRecord, workflow.review_id)
+        if review is None:
+            raise ReviewWorkflowConflictError("review_not_found")
+        review.state = state
+        review.updated_at = now
 
     def _eligible_actor_ids(
         self, workflow: ReviewWorkflowRecord, policy_stage: ApprovalPolicyStageRecord

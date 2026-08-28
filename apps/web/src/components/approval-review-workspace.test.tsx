@@ -2,6 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ApprovalReviewWorkspace } from "@/components/approval-review-workspace";
+import { getFinalReviewPackage } from "@/lib/approval-api";
 
 const review = {
   id: "review-1",
@@ -111,6 +112,51 @@ describe("ApprovalReviewWorkspace", () => {
     ).toHaveAttribute("href", "/api/reviews/review-1/final-package/manifest");
     expect(screen.getByText("Manifest sha256:manifest")).toBeVisible();
     expect(screen.getByText("PDF sha256:pdf")).toBeVisible();
+  });
+
+  it("keeps package downloads hidden while an approved package is pending", () => {
+    render(
+      <ApprovalReviewWorkspace
+        canDecide={false}
+        comments={[]}
+        finalPackage={null}
+        review={{ ...review, state: "approved" }}
+        title="Master services agreement"
+        workflow={{
+          id: "workflow-1",
+          state: "approved",
+          active_stage_ordinal: null,
+          revision: 4,
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/final package is being prepared/i)).toBeVisible();
+    expect(
+      screen.queryByRole("link", { name: "Download final PDF" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("treats the durable worker package delay as a retryable pending state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            detail: { code: "final_package_pending", retryable: true },
+          }),
+          { status: 503, headers: { "Retry-After": "3" } },
+        ),
+      ),
+    );
+
+    await expect(
+      getFinalReviewPackage({
+        baseUrl: "https://api.example.test",
+        scope: { organizationId: "org", workspaceId: "workspace" },
+        reviewId: review.id,
+      }),
+    ).resolves.toBeNull();
   });
 
   it("records an approval against the workflow revision", async () => {

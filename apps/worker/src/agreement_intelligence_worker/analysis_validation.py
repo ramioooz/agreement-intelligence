@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import NotRequired, TypedDict
@@ -11,7 +12,9 @@ MAX_CLAUSES = 100
 MAX_RISKS = 100
 MAX_SUMMARIES = 2
 MAX_NORMALIZED_FIELDS = 25
+MAX_NORMALIZED_FIELD_NAME_LENGTH = 64
 MAX_CITATION_ANCHORS = 20
+NORMALIZED_FIELD_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9 _-]{0,63}$")
 
 CLAUSE_CATEGORIES = frozenset(
     {
@@ -262,13 +265,21 @@ def _normalized_field(
     payload = _mapping(value, "normalized field")
     _required_keys(payload, {"name", "value"})
     return {
-        "name": _grounded_text(
-            payload["name"], "normalized field name", citations, allowed_anchors
-        ),
+        "name": _normalized_field_name(payload["name"]),
         "value": _grounded_text(
             payload["value"], "normalized field value", citations, allowed_anchors
         ),
     }
+
+
+def _normalized_field_name(value: object) -> str:
+    """Return a canonical metadata key without treating the key as document evidence."""
+    label = _material_string(value, "normalized field name").strip()
+    if len(label) > MAX_NORMALIZED_FIELD_NAME_LENGTH or not NORMALIZED_FIELD_NAME_PATTERN.fullmatch(
+        label
+    ):
+        raise ProviderOutputValidationError("Invalid normalized field name")
+    return re.sub(r"[ _-]+", "_", label.casefold())
 
 
 def _citations(value: object, allowed_anchors: dict[str, str]) -> list[str]:
