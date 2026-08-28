@@ -131,11 +131,11 @@ source, configuration, or test path.
 | Synthetic release media | `14424442` / `2026-08-28` | Pass | `grounded-search.png`: 227,649 bytes, SHA-256 `33051e8b60d44f1e817b3dbba8c3805af464311124b9c493c51e8cefbcf8bdff`; `public-release-demo.webm`: 656,070 bytes, 8.84 seconds, SHA-256 `1b2fa90767015824a8ef855d37fc77fc9f1e1801e77b23721e2a9177d136207e` |
 | Provider contract/no-key degradation | `14424442` / `2026-08-28` | Pass | API/worker configuration tests passed; recreated containers were inspected and rejected hosted/openai-compatible settings; deterministic analysis and lexical retrieval remained usable without a key; provider provenance stayed empty rather than fabricated |
 | Live provider smoke | `14424442` / `2026-08-28` | Blocked | No authorized provider secret was available; only the opt-in configuration contract was verified, no external request was sent, and no secret was read or logged |
-| Consolidated manual/API pass | `docs/public-manual-qa` / `2026-08-28` | Partial | 14 critical tests evaluated: 9 Pass, 1 Pass with note, 4 Partial; exact observations and unexecuted portions are in the combined guide |
+| Consolidated manual/API pass | `4084f11` / `2026-08-28` | Partial | Exact clean-clone release gate passed; 14 critical tests evaluated: 9 Pass, 1 Pass with note, 4 Partial; exact observations and unexecuted portions are in the combined guide |
 
 ## Honest release limitations
 
-- The owner visibility decision remains manual; the 14-test result contains two explicitly
+- The owner visibility decision remains manual; the 14-test result contains four explicitly
   Partial observations and must not be represented as an all-pass certification.
 - External provider quality/latency/cost is variable; a live call is not a deterministic
   release gate.

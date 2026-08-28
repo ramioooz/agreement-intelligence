@@ -134,7 +134,9 @@ Swagger UI is at <http://localhost:8000/docs>; the machine contract is
 ## Verified results
 
 The repository owner should replace this snapshot with a new dated run before a public
-release. The snapshot contains synthetic data only.
+release. The snapshot contains synthetic data only. The complete clean-clone release gate
+exercised source commit `4084f11` on 2026-08-28; the results-only documentation update that
+records it was checked separately for formatting, links, and secrets.
 
 | ID | Result on 2026-08-28 | Observed evidence |
 | --- | --- | --- |
@@ -155,7 +157,7 @@ release. The snapshot contains synthetic data only.
 
 The 104-test focused run covered tenant isolation, review authorization, permanent deletion,
 LocalStack cleanup, bounded parsing, hostile-evidence guardrails, and privacy redaction.
-The no-key release run passed 5/5 browser journeys in 2.0 minutes. Results marked **Partial**
+The exact clean-clone no-key release run passed 5/5 browser journeys in 28.0 seconds. Results marked **Partial**
 are deliberately not presented as release passes.
 
 [Back to contents](#contents)
