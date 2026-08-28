@@ -141,7 +141,7 @@ release. The snapshot contains synthetic data only.
 | 01 | **Pass** | `make check`, provider/no-key stack startup, and `make stack-check` passed. |
 | 02 | **Pass** | Release browser run authenticated admin, legal reviewer, and business approver. |
 | 03 | **Pass** | Release journey uploaded and processed synthetic agreements without manual reload. |
-| 04 | **Pass** | Real `gpt-5.4-mini` smoke passed: 508 input, 232 output tokens, 3899 ms, validation passed. |
+| 04 | **Partial** | Real `gpt-5.4-mini` gateway smoke passed: 508 input, 232 output tokens, 3899 ms, validation passed. A complete provider-backed browser analysis/citation journey was not run. |
 | 05 | **Pass** | No-key stack stayed healthy and all 5 release browser journeys passed; provider worked after restore. |
 | 06 | **Pass** | Focused tenant/auth suite passed within the 104-test security run. |
 | 07 | **Pass with note** | Playbook suite passed 2/2 on rerun; the first cold run timed out once after publish. |
@@ -150,7 +150,7 @@ release. The snapshot contains synthetic data only.
 | 10 | **Pass** | Two-stage legal/business approval and immutable package browser journey passed. |
 | 11 | **Partial** | Request changes, Version 2, successor review, reload, and package checks passed; the old review page still renders `Open` while its workflow is `revision_requested`. |
 | 12 | **Pass** | Durable deletion, LocalStack cleanup, authorization, and audit coverage passed in the 104-test run. |
-| 13 | **Pass** | Collection/OpenAPI contract and representative release API flows passed. |
+| 13 | **Partial** | Collection/OpenAPI structure and representative browser-backed API flows passed. A complete manual Insomnia PKCE/idempotency/error-scope session was not run. |
 | 14 | **Partial** | Functional recovery/security passed; 5-second restart objective passed once at 4.771 s and missed at 6.234, 6.619, and 5.776 s. |
 
 The 104-test focused run covered tenant isolation, review authorization, permanent deletion,
@@ -212,8 +212,10 @@ without leaving and reopening the page.
 **Expected:** strict provider output validates, citations resolve to supplied anchors, and the
 model/provider are visible without exposing prompts, keys, or unrestricted text.
 
-**Actual:** **Pass** — `gpt-5.4-mini`, 508 input tokens, 232 output tokens, 3899 ms,
-`validation_status=passed`.
+**Actual:** **Partial** — the real `gpt-5.4-mini` gateway smoke passed with 508 input
+tokens, 232 output tokens, 3899 ms, and `validation_status=passed`. The complete
+provider-backed browser analysis, citation, and provenance journey was not executed in this
+run.
 
 ### 05 — No-key mode and provider recovery
 
@@ -338,8 +340,10 @@ scrubbed tombstone and immutable audit evidence remain.
 **Expected:** success codes match the table above; idempotent repeats do not duplicate work;
 validation is `422`; async package polling honors `Retry-After`; foreign scope is non-disclosing.
 
-**Actual:** **Pass** — all collection operations/required parameters matched live OpenAPI and
-the representative API-backed browser journeys completed.
+**Actual:** **Partial** — all collection operations and required parameters matched live
+OpenAPI, and representative API-backed browser journeys completed. A manual Insomnia PKCE
+session covering replayed idempotency keys, malformed requests, and foreign scope was not
+executed in this run.
 
 ### 14 — Recovery, hostile input, privacy, and keyboard use
 

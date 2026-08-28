@@ -545,11 +545,13 @@ def model_gateway_from_environment(
         model=model,
         endpoint_kind="openai-compatible",
         base_url=base_url,
-        api_key=os.environ.get("MODEL_GATEWAY_API_KEY", "not-required"),
+        api_key=os.environ.get("MODEL_GATEWAY_API_KEY") or "not-required",
         configuration_version=version,
         fallback_model=(
             fallback_model_override
-            or os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL", os.environ.get("OPENAI_MODEL", model))
+            or os.environ.get("MODEL_GATEWAY_FALLBACK_MODEL")
+            or os.environ.get("OPENAI_MODEL")
+            or model
             if fallback_key
             else None
         ),
