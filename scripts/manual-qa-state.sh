@@ -226,6 +226,11 @@ SQL
       --set workflow_id="$workflow_id" \
       --set package_id="$package_id" <<'SQL'
 BEGIN;
+UPDATE agreements
+   SET deletion_requested_at = COALESCE(deletion_requested_at, CURRENT_TIMESTAMP)
+ WHERE id = :'agreement_id'::uuid
+   AND organization_id = :'organization_id'::uuid
+   AND workspace_id = :'workspace_id'::uuid;
 DELETE FROM review_final_packages WHERE id = :'package_id'::uuid;
 DELETE FROM review_workflows WHERE id = :'workflow_id'::uuid;
 DELETE FROM review_cases WHERE id = :'review_id'::uuid;
