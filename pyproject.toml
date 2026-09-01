@@ -6,14 +6,14 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "boto3-stubs[s3]==1.43.60",
-  "httpx2==2.9.1",
-  "langchain-community==0.3.31",
-  "mypy==2.3.0",
+  "boto3-stubs[s3]==1.43.83",
+  "httpx2==2.12.0",
+  "langchain-community==0.4.2",
+  "mypy==2.3.1",
   "pip-audit==2.10.1",
   "pytest==9.1.1",
-  "ragas==0.3.9",
-  "ruff==0.16.0",
+  "ragas==0.4.3",
+  "ruff==0.16.5",
 ]
 
 [tool.uv]
