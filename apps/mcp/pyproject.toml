@@ -14,5 +14,5 @@ agreement-intelligence-api = { workspace = true }
 agreement-intelligence-platform = { workspace = true }
 
 [build-system]
-requires = ["uv_build==0.11.32"]
+requires = ["uv_build==0.12.7"]
 build-backend = "uv_build"

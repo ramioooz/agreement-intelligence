@@ -3,7 +3,7 @@ name = "agreement-intelligence-api"
 version = "0.1.0"
 requires-python = "==3.13.*"
 dependencies = [
-  "alembic==1.16.4",
+  "alembic==1.19.1",
   "boto3==1.43.60",
   "agreement-intelligence-platform>=0.1.0",
   "agreement-intelligence-worker>=0.1.0",
