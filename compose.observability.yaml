@@ -50,7 +50,7 @@ services:
       retries: 20
 
   langfuse-redis:
-    image: redis:7.4.2-alpine
+    image: redis:8.10.1-alpine
     profiles: ["observability"]
     command:
       ["redis-server", "--requirepass", "${LANGFUSE_REDIS_PASSWORD:?required}"]
